@@ -76,121 +76,33 @@ struct RegisteredFont {
 // TextRun (internal)
 // ---------------------------------------------------------------------------
 
-struct TextRun {
+pub(crate) struct TextRun {
     text: String,
     font_name: String,
     color: Option<Color>,
 }
 
 // ---------------------------------------------------------------------------
-// DocumentBuilder
+// FontRegistry
 // ---------------------------------------------------------------------------
 
-pub struct DocumentBuilder {
-    // Page geometry
-    paper: PaperSize,
-    margins: [f64; 4], // top, right, bottom, left
-    header_height: f64,
-    footer_height: f64,
-    frame_gap: f64,
-
-    // Font system
-    font_db: FontDatabase,
+pub struct FontRegistry {
+    db: FontDatabase,
     fonts: std::collections::HashMap<String, RegisteredFont>,
     shaper: Box<dyn Shaper>,
-    current_font: Option<String>,
-
-    // Hyphenation
-    hyphenation: HyphenationDictionary,
-    language: String,
-
-    // Style state
-    current_color: Option<Color>,
-    direction: Direction,
-    alignment: TextAlign,
-
-    // Paragraph state
-    paragraph_runs: Vec<TextRun>,
-    paragraph_indent: f64,
-    paragraph_skip: f64,
-    leading: f64,
-    space_settings: SpaceSettings,
-    first_paragraph: bool,
-
-    // Settings
-    linebreak_settings: LinebreakSettings,
-    page_break_settings: PageBreakSettings,
-
-    // Accumulated vertical content
-    vertical_queue: Vec<Node>,
-
-    // PDF config
-    pdf_config: PdfConfig,
-    bookmarks: Vec<Bookmark>,
-    page_count: usize,
 }
 
-impl DocumentBuilder {
-    pub fn new(paper: PaperSize) -> Self {
+impl FontRegistry {
+    fn new() -> Self {
         Self {
-            paper,
-            margins: [72.0; 4],
-            header_height: 0.0,
-            footer_height: 0.0,
-            frame_gap: 0.0,
-            font_db: FontDatabase::new(),
+            db: FontDatabase::new(),
             fonts: std::collections::HashMap::new(),
             shaper: shaper::default_shaper(),
-            current_font: None,
-            hyphenation: HyphenationDictionary::new(),
-            language: "en".to_string(),
-            current_color: None,
-            direction: Direction::LTR,
-            alignment: TextAlign::Justify,
-            paragraph_runs: Vec::new(),
-            paragraph_indent: 20.0,
-            paragraph_skip: 0.0,
-            leading: 2.0,
-            space_settings: SpaceSettings::default(),
-            first_paragraph: true,
-            linebreak_settings: LinebreakSettings::default(),
-            page_break_settings: PageBreakSettings::default(),
-            vertical_queue: Vec::new(),
-            pdf_config: PdfConfig::default(),
-            bookmarks: Vec::new(),
-            page_count: 0,
         }
     }
 
-    // -- Page geometry -------------------------------------------------------
-
-    pub fn set_page_size(&mut self, paper: PaperSize) -> &mut Self {
-        self.paper = paper;
-        self
-    }
-
-    pub fn set_margins(&mut self, top: f64, right: f64, bottom: f64, left: f64) -> &mut Self {
-        self.margins = [top, right, bottom, left];
-        self
-    }
-
-    pub fn set_header_height(&mut self, height: f64, gap: f64) -> &mut Self {
-        self.header_height = height;
-        self.frame_gap = gap;
-        self
-    }
-
-    pub fn set_footer_height(&mut self, height: f64, gap: f64) -> &mut Self {
-        self.footer_height = height;
-        self.frame_gap = gap;
-        self
-    }
-
-    // -- Font management -----------------------------------------------------
-
-    pub fn load_system_fonts(&mut self) -> &mut Self {
-        self.font_db.load_system_fonts();
-        self
+    pub fn load_system_fonts(&mut self) {
+        self.db.load_system_fonts();
     }
 
     pub fn load_font_file(
@@ -198,7 +110,7 @@ impl DocumentBuilder {
         name: impl Into<String>,
         path: impl AsRef<Path>,
         spec: FontSpec,
-    ) -> Result<&mut Self, BuilderError> {
+    ) -> Result<(), BuilderError> {
         let data = std::fs::read(path.as_ref())
             .map_err(|e| FontError::Io(e.to_string()))?;
         self.load_font_data(name, data, spec)
@@ -209,294 +121,186 @@ impl DocumentBuilder {
         name: impl Into<String>,
         data: Vec<u8>,
         spec: FontSpec,
-    ) -> Result<&mut Self, BuilderError> {
+    ) -> Result<(), BuilderError> {
         let face = Arc::new(FontFace::from_bytes(data, 0)?);
         let name = name.into();
         self.fonts.insert(name, RegisteredFont { spec, face });
-        Ok(self)
+        Ok(())
     }
 
     pub fn load_font_by_family(
         &mut self,
         name: impl Into<String>,
         spec: FontSpec,
-    ) -> Result<&mut Self, BuilderError> {
-        let face = self.font_db.resolve(&spec)?;
+    ) -> Result<(), BuilderError> {
+        let face = self.db.resolve(&spec)?;
         let name = name.into();
         self.fonts.insert(name, RegisteredFont { spec, face });
-        Ok(self)
+        Ok(())
     }
 
-    pub fn set_font(&mut self, name: impl Into<String>) -> &mut Self {
-        self.current_font = Some(name.into());
-        self
+    fn get(&self, name: &str) -> Option<&RegisteredFont> {
+        self.fonts.get(name)
     }
 
-    pub fn set_font_size(&mut self, size: f64) -> &mut Self {
-        if let Some(ref name) = self.current_font.clone()
-            && let Some(entry) = self.fonts.get_mut(name) {
-                entry.spec.size = size;
-            }
-        self
+    fn get_mut(&mut self, name: &str) -> Option<&mut RegisteredFont> {
+        self.fonts.get_mut(name)
     }
+}
 
-    // -- Language and hyphenation --------------------------------------------
+// ---------------------------------------------------------------------------
+// LayoutConfig
+// ---------------------------------------------------------------------------
 
-    pub fn set_language(&mut self, lang: impl Into<String>) -> &mut Self {
-        self.language = lang.into();
-        self.hyphenation.load_language(&self.language);
-        self
-    }
+pub struct LayoutConfig {
+    pub paper: PaperSize,
+    pub margins: [f64; 4], // top, right, bottom, left
+    pub header_height: f64,
+    pub footer_height: f64,
+    pub frame_gap: f64,
+}
 
-    // -- Style ---------------------------------------------------------------
-
-    pub fn set_color(&mut self, color: Color) -> &mut Self {
-        self.current_color = Some(color);
-        self
-    }
-
-    pub fn clear_color(&mut self) -> &mut Self {
-        self.current_color = None;
-        self
-    }
-
-    // -- Paragraph settings --------------------------------------------------
-
-    pub fn set_paragraph_indent(&mut self, indent: f64) -> &mut Self {
-        self.paragraph_indent = indent;
-        self
-    }
-
-    pub fn set_paragraph_skip(&mut self, skip: f64) -> &mut Self {
-        self.paragraph_skip = skip;
-        self
-    }
-
-    pub fn set_leading(&mut self, leading: f64) -> &mut Self {
-        self.leading = leading;
-        self
-    }
-
-    pub fn set_direction(&mut self, direction: Direction) -> &mut Self {
-        self.direction = direction;
-        self
-    }
-
-    pub fn set_alignment(&mut self, alignment: TextAlign) -> &mut Self {
-        self.alignment = alignment;
-        self
-    }
-
-    pub fn set_space_settings(&mut self, settings: SpaceSettings) -> &mut Self {
-        self.space_settings = settings;
-        self
-    }
-
-    pub fn linebreak_settings_mut(&mut self) -> &mut LinebreakSettings {
-        &mut self.linebreak_settings
-    }
-
-    pub fn page_break_settings_mut(&mut self) -> &mut PageBreakSettings {
-        &mut self.page_break_settings
-    }
-
-    // -- Text ----------------------------------------------------------------
-
-    pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
-        let font_name = self.current_font.clone().unwrap_or_default();
-        let color = self.current_color;
-        self.paragraph_runs.push(TextRun {
-            text: text.into(),
-            font_name,
-            color,
-        });
-        self
-    }
-
-    pub fn new_paragraph(&mut self) -> Result<&mut Self, BuilderError> {
-        if self.paragraph_runs.is_empty() {
-            return Ok(self);
+impl LayoutConfig {
+    fn new(paper: PaperSize) -> Self {
+        Self {
+            paper,
+            margins: [72.0; 4],
+            header_height: 0.0,
+            footer_height: 0.0,
+            frame_gap: 0.0,
         }
+    }
 
-        let runs = std::mem::take(&mut self.paragraph_runs);
-        let nodes = self.typeset_paragraph(&runs)?;
+    fn build_layout(&self) -> Result<PageLayout, BuilderError> {
+        let [top, right, bottom, left] = self.margins;
+        let mut layout = PageLayout::new(self.paper);
+        let content_id = layout.add_frame("content");
+        let constraints = vec![
+            FrameConstraint::Left(content_id, left),
+            FrameConstraint::Top(content_id, top),
+            FrameConstraint::Right(content_id, self.paper.width - right),
+            FrameConstraint::Bottom(content_id, self.paper.height - bottom),
+        ];
+        layout
+            .solve(&constraints)
+            .map_err(|e| BuilderError::Layout(format!("constraint solver failed: {e:?}")))?;
+        Ok(layout)
+    }
+}
 
-        // Inter-paragraph skip
-        if !self.first_paragraph && self.paragraph_skip > 0.0 {
-            self.vertical_queue.push(Node::vglue(Length::new(
-                Measurement::pt(self.paragraph_skip),
-                Measurement::pt(self.paragraph_skip * 0.5),
+// ---------------------------------------------------------------------------
+// OutputConfig
+// ---------------------------------------------------------------------------
+
+pub struct OutputConfig {
+    pub pdf_config: PdfConfig,
+    pub bookmarks: Vec<Bookmark>,
+}
+
+impl OutputConfig {
+    fn new() -> Self {
+        Self {
+            pdf_config: PdfConfig::default(),
+            bookmarks: Vec::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ParagraphBuilder
+// ---------------------------------------------------------------------------
+
+pub struct ParagraphBuilder {
+    pub(crate) runs: Vec<TextRun>,
+    pub indent: f64,
+    pub skip: f64,
+    pub leading: f64,
+    pub space_settings: SpaceSettings,
+    first_paragraph: bool,
+    pub alignment: TextAlign,
+    pub direction: Direction,
+    pub linebreak_settings: LinebreakSettings,
+    pub language: String,
+    hyphenation: HyphenationDictionary,
+}
+
+impl ParagraphBuilder {
+    fn new() -> Self {
+        Self {
+            runs: Vec::new(),
+            indent: 20.0,
+            skip: 0.0,
+            leading: 2.0,
+            space_settings: SpaceSettings::default(),
+            first_paragraph: true,
+            alignment: TextAlign::Justify,
+            direction: Direction::LTR,
+            linebreak_settings: LinebreakSettings::default(),
+            language: "en".to_string(),
+            hyphenation: HyphenationDictionary::new(),
+        }
+    }
+
+    fn add_text(&mut self, text: String, font_name: String, color: Option<Color>) {
+        self.runs.push(TextRun { text, font_name, color });
+    }
+
+    fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    fn flush(
+        &mut self,
+        fonts: &FontRegistry,
+        layout: &LayoutConfig,
+    ) -> Result<Vec<Node>, BuilderError> {
+        if self.runs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let runs = std::mem::take(&mut self.runs);
+        let nodes = self.typeset(&runs, fonts, layout)?;
+
+        let mut result = Vec::new();
+        if !self.first_paragraph && self.skip > 0.0 {
+            result.push(Node::vglue(Length::new(
+                Measurement::pt(self.skip),
+                Measurement::pt(self.skip * 0.5),
                 Measurement::pt(0.0),
             )));
-            self.vertical_queue.push(Node::penalty(0));
+            result.push(Node::penalty(0));
         }
-
-        self.vertical_queue.extend(nodes);
+        result.extend(nodes);
         self.first_paragraph = false;
-        Ok(self)
+        Ok(result)
     }
 
-    // -- Vertical material ---------------------------------------------------
-
-    pub fn add_vskip(&mut self, amount: f64) -> &mut Self {
-        self.vertical_queue.push(Node::vglue(Length::pt(amount)));
-        self
-    }
-
-    pub fn add_page_break(&mut self) -> &mut Self {
-        self.vertical_queue.push(Node::penalty(-10_000));
-        self
-    }
-
-    pub fn add_rule(&mut self, width: f64, height: f64) -> &mut Self {
-        // A rule is an HBox with dimensions
-        let vbox = VBox {
-            width: Length::pt(width),
-            height: Length::pt(height),
-            depth: Length::zero(),
-            nodes: vec![Node::hbox(width, height, 0.0)],
-            ratio: 0.0,
-            misfit: false,
-            explicit: false,
-        };
-        self.vertical_queue.push(Node::VBox(vbox));
-        self
-    }
-
-    // -- Bookmarks and links ------------------------------------------------
-
-    pub fn add_bookmark(&mut self, title: impl Into<String>, level: u32) -> &mut Self {
-        self.bookmarks.push(Bookmark {
-            title: title.into(),
-            page_index: self.page_count,
-            level,
-            y_position: self.margins[0],
-        });
-        self
-    }
-
-    // -- PDF config ----------------------------------------------------------
-
-    pub fn set_title(&mut self, title: impl Into<String>) -> &mut Self {
-        self.pdf_config.title = Some(title.into());
-        self
-    }
-
-    pub fn set_author(&mut self, author: impl Into<String>) -> &mut Self {
-        self.pdf_config.author = Some(author.into());
-        self
-    }
-
-    pub fn set_subject(&mut self, subject: impl Into<String>) -> &mut Self {
-        self.pdf_config.subject = Some(subject.into());
-        self
-    }
-
-    pub fn set_compress(&mut self, compress: bool) -> &mut Self {
-        self.pdf_config.compress = compress;
-        self
-    }
-
-    // -- Render --------------------------------------------------------------
-
-    pub fn render(mut self) -> Result<Vec<u8>, BuilderError> {
-        // Flush any pending paragraph
-        if !self.paragraph_runs.is_empty() {
-            // We need to move self to call new_paragraph, which takes &mut self
-            let runs = std::mem::take(&mut self.paragraph_runs);
-            let nodes = self.typeset_paragraph(&runs)?;
-            if !self.first_paragraph && self.paragraph_skip > 0.0 {
-                self.vertical_queue.push(Node::vglue(Length::new(
-                    Measurement::pt(self.paragraph_skip),
-                    Measurement::pt(self.paragraph_skip * 0.5),
-                    Measurement::pt(0.0),
-                )));
-                self.vertical_queue.push(Node::penalty(0));
-            }
-            self.vertical_queue.extend(nodes);
-        }
-
-        // Add final eject penalty
-        self.vertical_queue.push(Node::penalty(-10_000));
-
-        // Build page layout
-        let layout = if self.header_height > 0.0 || self.footer_height > 0.0 {
-            PageLayout::with_header_footer(
-                self.paper,
-                self.margins[0].max(self.margins[1]).max(self.margins[2]).max(self.margins[3]),
-                self.header_height,
-                self.footer_height,
-                self.frame_gap,
-            )
-        } else {
-            self.build_layout()?
-        };
-
-        let content_frame_id = layout
-            .content_frame_id()
-            .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
-
-        // Inject widow/orphan penalties
-        PageBuilder::inject_penalties(&mut self.vertical_queue, &self.page_break_settings);
-
-        // Build pages
-        let mut page_builder = PageBuilder::new(self.page_break_settings);
-        page_builder.enqueue_many(self.vertical_queue);
-        let pages = page_builder.build_pages(&layout, content_frame_id);
-
-        // Render to PDF
-        let mut pdf = PdfOutputter::new(self.pdf_config);
-
-        // Register fonts
-        for (name, entry) in &self.fonts {
-            pdf.register_font(name, Arc::clone(&entry.face));
-        }
-
-        // Add bookmarks
-        for bm in self.bookmarks {
-            pdf.add_bookmark(bm);
-        }
-
-        // Render pages
-        pdf.render_pages(&pages, &layout);
-
-        Ok(pdf.finish()?)
-    }
-
-    // -- Internal: paragraph typesetting ------------------------------------
-
-    fn typeset_paragraph(
+    fn typeset(
         &mut self,
         runs: &[TextRun],
+        fonts: &FontRegistry,
+        layout: &LayoutConfig,
     ) -> Result<Vec<Node>, BuilderError> {
-        let layout = self.build_layout()?;
-        let content_frame_id = layout
+        let page_layout = layout.build_layout()?;
+        let content_frame_id = page_layout
             .content_frame_id()
             .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
-        let hsize = layout.frame(content_frame_id).width();
+        let hsize = page_layout.frame(content_frame_id).width();
 
-        // Build horizontal node list from text runs
         let mut h_nodes = Vec::new();
 
-        // Paragraph indent
-        if self.paragraph_indent > 0.0 {
-            h_nodes.push(Node::hbox(self.paragraph_indent, 0.0, 0.0));
+        if self.indent > 0.0 {
+            h_nodes.push(Node::hbox(self.indent, 0.0, 0.0));
         }
 
         for run in runs {
-            let font_entry = self.fonts.get(&run.font_name).ok_or_else(|| {
+            let font_entry = fonts.get(&run.font_name).ok_or_else(|| {
                 BuilderError::NoFont(run.font_name.clone())
             })?;
             let face = Arc::clone(&font_entry.face);
             let spec = font_entry.spec.clone();
 
-            // Shape the entire run at once so the shaping engine can apply
-            // inter-word kerning (critical for nastaliq scripts where words
-            // overlap horizontally based on their vertical positions).
-            let all_glyphs = self.shaper.shape(&run.text, &face, &spec);
+            let all_glyphs = fonts.shaper.shape(&run.text, &face, &spec);
 
-            // Split shaped output into word NNodes and space glue by
-            // classifying each glyph as space or non-space via its cluster.
             let mut segments: Vec<Node> = Vec::new();
             let mut gi = 0;
             while gi < all_glyphs.len() {
@@ -532,16 +336,13 @@ impl DocumentBuilder {
                     )));
                 } else {
                     let word = text_from_clusters(&run.text, seg_glyphs);
-                    let nnode = self.build_nnode(
-                        &word, seg_glyphs, &run.font_name, &spec, run.color,
+                    let nnode = Self::build_nnode(
+                        &word, seg_glyphs, &run.font_name, &spec, run.color, &self.language,
                     );
                     segments.push(Node::NNode(nnode));
                 }
             }
 
-            // For RTL runs the shaper returns glyphs in visual order
-            // (left-to-right); reverse to logical order so the linebreaker
-            // and build_lines (which reverses again) work consistently.
             if spec.direction == Direction::RTL {
                 segments.reverse();
             }
@@ -558,25 +359,18 @@ impl DocumentBuilder {
             return Ok(Vec::new());
         }
 
-        // Add parfillskip (infinite stretch glue to fill last line)
         h_nodes.push(Node::hfillglue(Length::zero()));
         h_nodes.push(Node::penalty(-10_000));
 
-        // Pre-hyphenate so we have a single consistent node list for both
-        // linebreaking and line building. The linebreaker's internal hyphenation
-        // pass modifies its own copy of the node list, making break positions
-        // incompatible with the original. By pre-hyphenating we avoid that.
         let mut hyph_shaper = shaper::default_shaper();
         let h_nodes = hyphenate_nodes(
             &h_nodes,
             &self.language,
             &mut self.hyphenation,
             hyph_shaper.as_mut(),
-            &self.fonts,
+            &fonts.fonts,
         );
 
-        // For ragged (non-justify) modes, add infinite stretch to right_skip
-        // so the linebreaker allows short lines instead of forcing tight fits.
         let mut lb_settings = self.linebreak_settings.clone();
         if self.alignment != TextAlign::Justify {
             lb_settings.right_skip = Length::new(
@@ -593,18 +387,17 @@ impl DocumentBuilder {
             None,
         );
 
-        // Package lines into VBoxes
         let v_nodes = self.build_lines(&h_nodes, &breaks, hsize, self.direction);
         Ok(v_nodes)
     }
 
     fn build_nnode(
-        &self,
         text: &str,
         glyphs: &[GlyphItem],
         font_name: &str,
         spec: &FontSpec,
         color: Option<Color>,
+        language: &str,
     ) -> NNode {
         let mut width = 0.0;
         let mut height = 0.0_f64;
@@ -626,7 +419,7 @@ impl DocumentBuilder {
 
         let mut nnode = NNode::with_glyphs(text, glyph_data, font_name, spec.size, width, height, depth);
         nnode.color = color;
-        nnode.language = self.language.clone();
+        nnode.language = language.to_string();
         nnode
     }
 
@@ -641,61 +434,47 @@ impl DocumentBuilder {
         let mut start = 0;
 
         for (line_idx, br) in breaks.iter().enumerate() {
-            // Collect nodes for this line
             let end = br.position.min(h_nodes.len());
             let mut line_nodes: Vec<Node> = Vec::new();
 
-            // Left indent (LTR only; RTL handles alignment below)
             if br.left > 0.0 && direction == Direction::LTR {
                 line_nodes.push(Node::hbox(br.left, 0.0, 0.0));
             }
 
-            // Copy nodes from start..end, skipping leading discardables
             let mut started = false;
             for node in &h_nodes[start..end] {
                 if !started && node.is_discardable() {
                     continue;
                 }
                 started = true;
-                // Skip hfillglue — we handle alignment explicitly
                 if matches!(node, Node::HFillGlue(_)) {
                     continue;
                 }
                 line_nodes.push(node.clone());
             }
 
-            // Trim trailing discardables
             while line_nodes.last().is_some_and(|n| n.is_discardable()) {
                 line_nodes.pop();
             }
 
-            // Handle discretionary at break point
             if end < h_nodes.len()
                 && let Node::Discretionary(d) = &h_nodes[end] {
                     line_nodes.extend(d.prebreak.clone());
                 }
 
-            // Right indent (LTR only)
             if br.right > 0.0 && direction == Direction::LTR {
                 line_nodes.push(Node::hbox(br.right, 0.0, 0.0));
             }
 
-            // For RTL paragraphs, reverse node order so the first word
-            // in logical order appears at the right edge.
             if direction == Direction::RTL {
                 line_nodes.reverse();
             }
 
-            // Compute alignment ratio and padding.
-            // For Justify, the ratio comes from the linebreaker and the PDF
-            // renderer scales glue stretch/shrink accordingly.
-            // For ragged modes, ratio is 0 and we insert padding hboxes.
             let line_ratio = match self.alignment {
                 TextAlign::Justify => br.ratio.max(-1.0),
                 _ => 0.0,
             };
 
-            // For non-justify modes, compute slack and insert padding
             if self.alignment != TextAlign::Justify {
                 let content_width: f64 = line_nodes
                     .iter()
@@ -703,7 +482,6 @@ impl DocumentBuilder {
                     .sum();
                 let slack = (hsize - content_width).max(0.0);
 
-                // For RTL: Left=right-aligned, Right=left-aligned
                 let effective_align = if direction == Direction::RTL {
                     match self.alignment {
                         TextAlign::Left => TextAlign::Right,
@@ -726,13 +504,9 @@ impl DocumentBuilder {
                             line_nodes.insert(0, Node::hbox(half, 0.0, 0.0));
                         }
                     }
-                    _ => {} // Left: no padding needed
+                    _ => {}
                 }
             } else if direction == Direction::RTL {
-                // Justify + RTL: still need right-alignment for the last line
-                // (which has parfillskip absorbing slack). The ratio handles
-                // full lines; for short lines ratio is large but capped, so
-                // we pad them instead.
                 let content_width: f64 = line_nodes
                     .iter()
                     .map(|n| n.width().length.to_pt().unwrap_or(0.0))
@@ -743,7 +517,6 @@ impl DocumentBuilder {
                 }
             }
 
-            // Compute line dimensions
             let line_height = node::max_node_dim(&line_nodes, node::Dim::Height);
             let line_depth = node::max_node_dim(&line_nodes, node::Dim::Depth);
 
@@ -757,7 +530,6 @@ impl DocumentBuilder {
                 explicit: false,
             };
 
-            // Inter-line glue (leading)
             if line_idx > 0 && self.leading > 0.0 {
                 v_nodes.push(Node::vglue(Length::new(
                     Measurement::pt(self.leading),
@@ -768,13 +540,10 @@ impl DocumentBuilder {
 
             v_nodes.push(Node::VBox(vbox));
 
-            // Advance start past the break point + any discardables
             start = end + 1;
-            // Skip discardables after break point (consumed by linebreaker)
             while start < h_nodes.len() && h_nodes[start].is_discardable() {
                 start += 1;
             }
-            // If we broke at a discretionary, skip the postbreak handling
             if end < h_nodes.len() && h_nodes[end].is_discretionary() {
                 start = end + 1;
                 while start < h_nodes.len() && h_nodes[start].is_discardable() {
@@ -785,21 +554,298 @@ impl DocumentBuilder {
 
         v_nodes
     }
+}
 
-    fn build_layout(&self) -> Result<PageLayout, BuilderError> {
-        let [top, right, bottom, left] = self.margins;
-        let mut layout = PageLayout::new(self.paper);
-        let content_id = layout.add_frame("content");
-        let constraints = vec![
-            FrameConstraint::Left(content_id, left),
-            FrameConstraint::Top(content_id, top),
-            FrameConstraint::Right(content_id, self.paper.width - right),
-            FrameConstraint::Bottom(content_id, self.paper.height - bottom),
-        ];
-        layout
-            .solve(&constraints)
-            .map_err(|e| BuilderError::Layout(format!("constraint solver failed: {e:?}")))?;
-        Ok(layout)
+// ---------------------------------------------------------------------------
+// DocumentBuilder
+// ---------------------------------------------------------------------------
+
+pub struct DocumentBuilder {
+    layout: LayoutConfig,
+    fonts: FontRegistry,
+    paragraph: ParagraphBuilder,
+    output: OutputConfig,
+    current_font: Option<String>,
+    current_color: Option<Color>,
+    vertical_queue: Vec<Node>,
+    page_break_settings: PageBreakSettings,
+    page_count: usize,
+}
+
+impl DocumentBuilder {
+    pub fn new(paper: PaperSize) -> Self {
+        Self {
+            layout: LayoutConfig::new(paper),
+            fonts: FontRegistry::new(),
+            paragraph: ParagraphBuilder::new(),
+            output: OutputConfig::new(),
+            current_font: None,
+            current_color: None,
+            vertical_queue: Vec::new(),
+            page_break_settings: PageBreakSettings::default(),
+            page_count: 0,
+        }
+    }
+
+    // -- Page geometry -------------------------------------------------------
+
+    pub fn set_page_size(&mut self, paper: PaperSize) -> &mut Self {
+        self.layout.paper = paper;
+        self
+    }
+
+    pub fn set_margins(&mut self, top: f64, right: f64, bottom: f64, left: f64) -> &mut Self {
+        self.layout.margins = [top, right, bottom, left];
+        self
+    }
+
+    pub fn set_header_height(&mut self, height: f64, gap: f64) -> &mut Self {
+        self.layout.header_height = height;
+        self.layout.frame_gap = gap;
+        self
+    }
+
+    pub fn set_footer_height(&mut self, height: f64, gap: f64) -> &mut Self {
+        self.layout.footer_height = height;
+        self.layout.frame_gap = gap;
+        self
+    }
+
+    // -- Font management -----------------------------------------------------
+
+    pub fn load_system_fonts(&mut self) -> &mut Self {
+        self.fonts.load_system_fonts();
+        self
+    }
+
+    pub fn load_font_file(
+        &mut self,
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+        spec: FontSpec,
+    ) -> Result<&mut Self, BuilderError> {
+        self.fonts.load_font_file(name, path, spec)?;
+        Ok(self)
+    }
+
+    pub fn load_font_data(
+        &mut self,
+        name: impl Into<String>,
+        data: Vec<u8>,
+        spec: FontSpec,
+    ) -> Result<&mut Self, BuilderError> {
+        self.fonts.load_font_data(name, data, spec)?;
+        Ok(self)
+    }
+
+    pub fn load_font_by_family(
+        &mut self,
+        name: impl Into<String>,
+        spec: FontSpec,
+    ) -> Result<&mut Self, BuilderError> {
+        self.fonts.load_font_by_family(name, spec)?;
+        Ok(self)
+    }
+
+    pub fn set_font(&mut self, name: impl Into<String>) -> &mut Self {
+        self.current_font = Some(name.into());
+        self
+    }
+
+    pub fn set_font_size(&mut self, size: f64) -> &mut Self {
+        if let Some(ref name) = self.current_font.clone()
+            && let Some(entry) = self.fonts.get_mut(name) {
+                entry.spec.size = size;
+            }
+        self
+    }
+
+    // -- Language and hyphenation --------------------------------------------
+
+    pub fn set_language(&mut self, lang: impl Into<String>) -> &mut Self {
+        self.paragraph.language = lang.into();
+        self.paragraph.hyphenation.load_language(&self.paragraph.language);
+        self
+    }
+
+    // -- Style ---------------------------------------------------------------
+
+    pub fn set_color(&mut self, color: Color) -> &mut Self {
+        self.current_color = Some(color);
+        self
+    }
+
+    pub fn clear_color(&mut self) -> &mut Self {
+        self.current_color = None;
+        self
+    }
+
+    // -- Paragraph settings --------------------------------------------------
+
+    pub fn set_paragraph_indent(&mut self, indent: f64) -> &mut Self {
+        self.paragraph.indent = indent;
+        self
+    }
+
+    pub fn set_paragraph_skip(&mut self, skip: f64) -> &mut Self {
+        self.paragraph.skip = skip;
+        self
+    }
+
+    pub fn set_leading(&mut self, leading: f64) -> &mut Self {
+        self.paragraph.leading = leading;
+        self
+    }
+
+    pub fn set_direction(&mut self, direction: Direction) -> &mut Self {
+        self.paragraph.direction = direction;
+        self
+    }
+
+    pub fn set_alignment(&mut self, alignment: TextAlign) -> &mut Self {
+        self.paragraph.alignment = alignment;
+        self
+    }
+
+    pub fn set_space_settings(&mut self, settings: SpaceSettings) -> &mut Self {
+        self.paragraph.space_settings = settings;
+        self
+    }
+
+    pub fn linebreak_settings_mut(&mut self) -> &mut LinebreakSettings {
+        &mut self.paragraph.linebreak_settings
+    }
+
+    pub fn page_break_settings_mut(&mut self) -> &mut PageBreakSettings {
+        &mut self.page_break_settings
+    }
+
+    // -- Text ----------------------------------------------------------------
+
+    pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
+        let font_name = self.current_font.clone().unwrap_or_default();
+        let color = self.current_color;
+        self.paragraph.add_text(text.into(), font_name, color);
+        self
+    }
+
+    pub fn new_paragraph(&mut self) -> Result<&mut Self, BuilderError> {
+        let nodes = self.paragraph.flush(&self.fonts, &self.layout)?;
+        self.vertical_queue.extend(nodes);
+        Ok(self)
+    }
+
+    // -- Vertical material ---------------------------------------------------
+
+    pub fn add_vskip(&mut self, amount: f64) -> &mut Self {
+        self.vertical_queue.push(Node::vglue(Length::pt(amount)));
+        self
+    }
+
+    pub fn add_page_break(&mut self) -> &mut Self {
+        self.vertical_queue.push(Node::penalty(-10_000));
+        self
+    }
+
+    pub fn add_rule(&mut self, width: f64, height: f64) -> &mut Self {
+        let vbox = VBox {
+            width: Length::pt(width),
+            height: Length::pt(height),
+            depth: Length::zero(),
+            nodes: vec![Node::hbox(width, height, 0.0)],
+            ratio: 0.0,
+            misfit: false,
+            explicit: false,
+        };
+        self.vertical_queue.push(Node::VBox(vbox));
+        self
+    }
+
+    // -- Bookmarks and links ------------------------------------------------
+
+    pub fn add_bookmark(&mut self, title: impl Into<String>, level: u32) -> &mut Self {
+        self.output.bookmarks.push(Bookmark {
+            title: title.into(),
+            page_index: self.page_count,
+            level,
+            y_position: self.layout.margins[0],
+        });
+        self
+    }
+
+    // -- PDF config ----------------------------------------------------------
+
+    pub fn set_title(&mut self, title: impl Into<String>) -> &mut Self {
+        self.output.pdf_config.title = Some(title.into());
+        self
+    }
+
+    pub fn set_author(&mut self, author: impl Into<String>) -> &mut Self {
+        self.output.pdf_config.author = Some(author.into());
+        self
+    }
+
+    pub fn set_subject(&mut self, subject: impl Into<String>) -> &mut Self {
+        self.output.pdf_config.subject = Some(subject.into());
+        self
+    }
+
+    pub fn set_compress(&mut self, compress: bool) -> &mut Self {
+        self.output.pdf_config.compress = compress;
+        self
+    }
+
+    // -- Render --------------------------------------------------------------
+
+    pub fn render(mut self) -> Result<Vec<u8>, BuilderError> {
+        // Flush any pending paragraph
+        if !self.paragraph.is_empty() {
+            let nodes = self.paragraph.flush(&self.fonts, &self.layout)?;
+            self.vertical_queue.extend(nodes);
+        }
+
+        // Add final eject penalty
+        self.vertical_queue.push(Node::penalty(-10_000));
+
+        // Build page layout
+        let page_layout = if self.layout.header_height > 0.0 || self.layout.footer_height > 0.0 {
+            PageLayout::with_header_footer(
+                self.layout.paper,
+                self.layout.margins[0].max(self.layout.margins[1]).max(self.layout.margins[2]).max(self.layout.margins[3]),
+                self.layout.header_height,
+                self.layout.footer_height,
+                self.layout.frame_gap,
+            )
+        } else {
+            self.layout.build_layout()?
+        };
+
+        let content_frame_id = page_layout
+            .content_frame_id()
+            .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
+
+        // Inject widow/orphan penalties
+        PageBuilder::inject_penalties(&mut self.vertical_queue, &self.page_break_settings);
+
+        // Build pages
+        let mut page_builder = PageBuilder::new(self.page_break_settings);
+        page_builder.enqueue_many(self.vertical_queue);
+        let pages = page_builder.build_pages(&page_layout, content_frame_id);
+
+        // Render to PDF
+        let mut pdf = PdfOutputter::new(self.output.pdf_config);
+
+        for (name, entry) in &self.fonts.fonts {
+            pdf.register_font(name, Arc::clone(&entry.face));
+        }
+
+        for bm in self.output.bookmarks {
+            pdf.add_bookmark(bm);
+        }
+
+        pdf.render_pages(&pages, &page_layout);
+
+        Ok(pdf.finish()?)
     }
 }
 
@@ -1010,21 +1056,21 @@ mod tests {
     #[test]
     fn new_builder() {
         let doc = DocumentBuilder::new(PaperSize::A4);
-        assert!((doc.paper.width - 595.276).abs() < 0.01);
+        assert!((doc.layout.paper.width - 595.276).abs() < 0.01);
     }
 
     #[test]
     fn set_margins() {
         let mut doc = DocumentBuilder::new(PaperSize::A4);
         doc.set_margins(50.0, 60.0, 70.0, 80.0);
-        assert_eq!(doc.margins, [50.0, 60.0, 70.0, 80.0]);
+        assert_eq!(doc.layout.margins, [50.0, 60.0, 70.0, 80.0]);
     }
 
     #[test]
     fn set_page_size() {
         let mut doc = DocumentBuilder::new(PaperSize::A4);
         doc.set_page_size(PaperSize::LETTER);
-        assert!((doc.paper.width - 612.0).abs() < 0.01);
+        assert!((doc.layout.paper.width - 612.0).abs() < 0.01);
     }
 
     // -- Font loading --------------------------------------------------------
@@ -1042,7 +1088,7 @@ mod tests {
             ..Default::default()
         };
         assert!(doc.load_font_data("body", data, spec).is_ok());
-        assert!(doc.fonts.contains_key("body"));
+        assert!(doc.fonts.get("body").is_some());
     }
 
     #[test]
@@ -1052,7 +1098,7 @@ mod tests {
             None => return,
         };
         doc.set_font_size(24.0);
-        assert_eq!(doc.fonts["body"].spec.size, 24.0);
+        assert_eq!(doc.fonts.get("body").unwrap().spec.size, 24.0);
     }
 
     // -- Text and paragraph --------------------------------------------------
@@ -1064,8 +1110,8 @@ mod tests {
             None => return,
         };
         doc.add_text("Hello");
-        assert_eq!(doc.paragraph_runs.len(), 1);
-        assert_eq!(doc.paragraph_runs[0].text, "Hello");
+        assert_eq!(doc.paragraph.runs.len(), 1);
+        assert_eq!(doc.paragraph.runs[0].text, "Hello");
     }
 
     #[test]
@@ -1076,7 +1122,7 @@ mod tests {
         };
         doc.add_text("Hello, world.");
         assert!(doc.new_paragraph().is_ok());
-        assert!(doc.paragraph_runs.is_empty());
+        assert!(doc.paragraph.runs.is_empty());
         assert!(!doc.vertical_queue.is_empty());
     }
 
