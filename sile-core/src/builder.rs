@@ -83,6 +83,46 @@ struct TextRun {
 }
 
 // ---------------------------------------------------------------------------
+// RunningText — a header or footer line, typeset afresh on every page
+// ---------------------------------------------------------------------------
+
+/// One line of running text for the header or footer frame. Each run is
+/// `(registered font name, text)`; the placeholders `{page}` and `{pages}`
+/// are replaced per page. The line is set in its own direction and
+/// alignment, independent of the body's.
+#[derive(Debug, Clone)]
+pub struct RunningText {
+    pub runs: Vec<(String, String)>,
+    pub align: TextAlign,
+    pub direction: Direction,
+    pub color: Option<Color>,
+}
+
+impl RunningText {
+    pub fn new(font: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            runs: vec![(font.into(), text.into())],
+            align: TextAlign::Left,
+            direction: Direction::LTR,
+            color: None,
+        }
+    }
+
+    fn resolved(&self, page: usize, pages: usize) -> Vec<TextRun> {
+        self.runs
+            .iter()
+            .map(|(font, text)| TextRun {
+                text: text
+                    .replace("{page}", &page.to_string())
+                    .replace("{pages}", &pages.to_string()),
+                font_name: font.clone(),
+                color: self.color,
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DocumentBuilder
 // ---------------------------------------------------------------------------
 
@@ -124,6 +164,10 @@ pub struct DocumentBuilder {
     // Accumulated vertical content
     vertical_queue: Vec<Node>,
 
+    // Running header/footer (need header_height / footer_height > 0)
+    header: Option<RunningText>,
+    footer: Option<RunningText>,
+
     // PDF config
     pdf_config: PdfConfig,
     bookmarks: Vec<Bookmark>,
@@ -156,6 +200,8 @@ impl DocumentBuilder {
             linebreak_settings: LinebreakSettings::default(),
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
+            header: None,
+            footer: None,
             pdf_config: PdfConfig::default(),
             bookmarks: Vec::new(),
             page_count: 0,
@@ -183,6 +229,19 @@ impl DocumentBuilder {
     pub fn set_footer_height(&mut self, height: f64, gap: f64) -> &mut Self {
         self.footer_height = height;
         self.frame_gap = gap;
+        self
+    }
+
+    /// The running header, set once per page into the header frame
+    /// (`set_header_height` must reserve room for it).
+    pub fn set_header(&mut self, header: RunningText) -> &mut Self {
+        self.header = Some(header);
+        self
+    }
+
+    /// The running footer (see `set_header`).
+    pub fn set_footer(&mut self, footer: RunningText) -> &mut Self {
+        self.footer = Some(footer);
         self
     }
 
@@ -419,18 +478,8 @@ impl DocumentBuilder {
         // Add final eject penalty
         self.vertical_queue.push(Node::penalty(-10_000));
 
-        // Build page layout
-        let layout = if self.header_height > 0.0 || self.footer_height > 0.0 {
-            PageLayout::with_header_footer(
-                self.paper,
-                self.margins[0].max(self.margins[1]).max(self.margins[2]).max(self.margins[3]),
-                self.header_height,
-                self.footer_height,
-                self.frame_gap,
-            )
-        } else {
-            self.build_layout()?
-        };
+        // Build page layout (header/footer frames included when reserved)
+        let layout = self.build_layout()?;
 
         let content_frame_id = layout
             .content_frame_id()
@@ -440,9 +489,24 @@ impl DocumentBuilder {
         PageBuilder::inject_penalties(&mut self.vertical_queue, &self.page_break_settings);
 
         // Build pages
-        let mut page_builder = PageBuilder::new(self.page_break_settings);
-        page_builder.enqueue_many(self.vertical_queue);
-        let pages = page_builder.build_pages(&layout, content_frame_id);
+        let mut page_builder = PageBuilder::new(self.page_break_settings.clone());
+        page_builder.enqueue_many(std::mem::take(&mut self.vertical_queue));
+        let mut pages = page_builder.build_pages(&layout, content_frame_id);
+
+        // Running header/footer: typeset per page (page numbers differ)
+        let total = pages.len();
+        for (name, running) in [("header", self.header.clone()), ("footer", self.footer.clone())] {
+            let (Some(running), Some(frame_id)) = (running, layout.frame_id_by_name(name)) else {
+                continue;
+            };
+            let hsize = layout.frame(frame_id).width();
+            for page in pages.iter_mut() {
+                let runs = running.resolved(page.number, total);
+                let nodes =
+                    self.typeset_runs(&runs, hsize, running.direction, running.align, 0.0)?;
+                page.add_frame_content(frame_id, nodes);
+            }
+        }
 
         // Render to PDF
         let mut pdf = PdfOutputter::new(self.pdf_config);
@@ -474,13 +538,25 @@ impl DocumentBuilder {
             .content_frame_id()
             .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
         let hsize = layout.frame(content_frame_id).width();
+        let (direction, alignment, indent) = (self.direction, self.alignment, self.paragraph_indent);
+        self.typeset_runs(runs, hsize, direction, alignment, indent)
+    }
 
+    /// Shape, break and package `runs` into lines of width `hsize`.
+    fn typeset_runs(
+        &mut self,
+        runs: &[TextRun],
+        hsize: f64,
+        direction: Direction,
+        alignment: TextAlign,
+        indent: f64,
+    ) -> Result<Vec<Node>, BuilderError> {
         // Build horizontal node list from text runs
         let mut h_nodes = Vec::new();
 
         // Paragraph indent
-        if self.paragraph_indent > 0.0 {
-            h_nodes.push(Node::hbox(self.paragraph_indent, 0.0, 0.0));
+        if indent > 0.0 {
+            h_nodes.push(Node::hbox(indent, 0.0, 0.0));
         }
 
         for run in runs {
@@ -578,7 +654,7 @@ impl DocumentBuilder {
         // For ragged (non-justify) modes, add infinite stretch to right_skip
         // so the linebreaker allows short lines instead of forcing tight fits.
         let mut lb_settings = self.linebreak_settings.clone();
-        if self.alignment != TextAlign::Justify {
+        if alignment != TextAlign::Justify {
             lb_settings.right_skip = Length::new(
                 Measurement::pt(0.0),
                 Measurement::pt(1e13),
@@ -594,7 +670,7 @@ impl DocumentBuilder {
         );
 
         // Package lines into VBoxes
-        let v_nodes = self.build_lines(&h_nodes, &breaks, hsize, self.direction);
+        let v_nodes = self.build_lines(&h_nodes, &breaks, hsize, direction, alignment);
         Ok(v_nodes)
     }
 
@@ -636,6 +712,7 @@ impl DocumentBuilder {
         breaks: &[BreakResult],
         hsize: f64,
         direction: Direction,
+        alignment: TextAlign,
     ) -> Vec<Node> {
         let mut v_nodes = Vec::new();
         let mut start = 0;
@@ -690,13 +767,13 @@ impl DocumentBuilder {
             // For Justify, the ratio comes from the linebreaker and the PDF
             // renderer scales glue stretch/shrink accordingly.
             // For ragged modes, ratio is 0 and we insert padding hboxes.
-            let line_ratio = match self.alignment {
+            let line_ratio = match alignment {
                 TextAlign::Justify => br.ratio.max(-1.0),
                 _ => 0.0,
             };
 
             // For non-justify modes, compute slack and insert padding
-            if self.alignment != TextAlign::Justify {
+            if alignment != TextAlign::Justify {
                 let content_width: f64 = line_nodes
                     .iter()
                     .map(|n| n.width().length.to_pt().unwrap_or(0.0))
@@ -705,13 +782,13 @@ impl DocumentBuilder {
 
                 // For RTL: Left=right-aligned, Right=left-aligned
                 let effective_align = if direction == Direction::RTL {
-                    match self.alignment {
+                    match alignment {
                         TextAlign::Left => TextAlign::Right,
                         TextAlign::Right => TextAlign::Left,
                         other => other,
                     }
                 } else {
-                    self.alignment
+                    alignment
                 };
 
                 match effective_align {
@@ -786,16 +863,43 @@ impl DocumentBuilder {
         v_nodes
     }
 
+    /// The page layout from the margins: a content frame, plus a header
+    /// frame inside the top margin area and/or a footer frame inside the
+    /// bottom one when heights were reserved (each pushes the content frame
+    /// inward by its height plus the gap).
     fn build_layout(&self) -> Result<PageLayout, BuilderError> {
         let [top, right, bottom, left] = self.margins;
         let mut layout = PageLayout::new(self.paper);
+        let mut constraints = Vec::new();
+        let mut body_top = top;
+        let mut body_bottom = self.paper.height - bottom;
+        if self.header_height > 0.0 {
+            let header = layout.add_frame("header");
+            constraints.extend([
+                FrameConstraint::Left(header, left),
+                FrameConstraint::Top(header, top),
+                FrameConstraint::Right(header, self.paper.width - right),
+                FrameConstraint::Height(header, self.header_height),
+            ]);
+            body_top += self.header_height + self.frame_gap;
+        }
+        if self.footer_height > 0.0 {
+            let footer = layout.add_frame("footer");
+            constraints.extend([
+                FrameConstraint::Left(footer, left),
+                FrameConstraint::Bottom(footer, self.paper.height - bottom),
+                FrameConstraint::Right(footer, self.paper.width - right),
+                FrameConstraint::Height(footer, self.footer_height),
+            ]);
+            body_bottom -= self.footer_height + self.frame_gap;
+        }
         let content_id = layout.add_frame("content");
-        let constraints = vec![
+        constraints.extend([
             FrameConstraint::Left(content_id, left),
-            FrameConstraint::Top(content_id, top),
+            FrameConstraint::Top(content_id, body_top),
             FrameConstraint::Right(content_id, self.paper.width - right),
-            FrameConstraint::Bottom(content_id, self.paper.height - bottom),
-        ];
+            FrameConstraint::Bottom(content_id, body_bottom),
+        ]);
         layout
             .solve(&constraints)
             .map_err(|e| BuilderError::Layout(format!("constraint solver failed: {e:?}")))?;

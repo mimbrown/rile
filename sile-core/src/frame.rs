@@ -540,10 +540,11 @@ impl PageLayout {
     }
 
     pub fn content_frame_id(&self) -> Option<FrameId> {
-        self.frames
-            .values()
-            .find(|f| f.name == "content")
-            .map(|f| f.id)
+        self.frame_id_by_name("content")
+    }
+
+    pub fn frame_id_by_name(&self, name: &str) -> Option<FrameId> {
+        self.frames.values().find(|f| f.name == name).map(|f| f.id)
     }
 }
 

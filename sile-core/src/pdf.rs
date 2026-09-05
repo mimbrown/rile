@@ -495,9 +495,9 @@ impl PdfOutputter {
             return;
         }
 
-        if let Some(color) = nnode.color {
-            self.set_color(color);
-        }
+        // An uncoloured node is black; without the reset, a coloured node
+        // earlier on the page would bleed into everything after it.
+        self.set_color(nnode.color.unwrap_or(Color::Grayscale { l: 0.0 }));
 
         // Track glyph usage
         for glyph in &nnode.glyphs {
@@ -757,12 +757,14 @@ fn write_font(
     let base_name = format!("SILE+Font{}", entry.pdf_name);
 
     // Try subsetting — get both the subsetted data and the GID remapping
-    let gids: Vec<u16> = entry.used_glyphs.iter().copied().collect();
-    let subset_result = if !gids.is_empty() {
-        try_subset(raw_data, face_index, &gids)
-    } else {
-        None
-    };
+    // A registered font that no glyph ended up using still gets referenced
+    // by every page's resources; subset it to .notdef alone rather than
+    // embedding the whole file.
+    let mut gids: Vec<u16> = entry.used_glyphs.iter().copied().collect();
+    if gids.is_empty() {
+        gids.push(0);
+    }
+    let subset_result = try_subset(raw_data, face_index, &gids);
     let (font_data, gid_map) = match &subset_result {
         Some(result) => (result.data.as_slice(), Some(&result.gid_map)),
         None => (raw_data, None),
