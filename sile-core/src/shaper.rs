@@ -40,9 +40,13 @@ pub struct CharMetrics {
 // SpaceSettings
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpaceSettings {
+    /// Size spaces from the shaped space glyph, stretchably; otherwise
+    /// every space is `skip` or the font's space width, fixed.
     pub variable_spaces: bool,
+    /// SILE's `document.spaceskip`.
+    pub skip: Option<crate::length::Length>,
     pub enlargement_factor: f64,
     pub stretch_factor: f64,
     pub shrink_factor: f64,
@@ -52,6 +56,7 @@ impl Default for SpaceSettings {
     fn default() -> Self {
         Self {
             variable_spaces: true,
+            skip: None,
             enlargement_factor: 1.0,
             stretch_factor: 0.5,
             shrink_factor: 1.0 / 3.0,
@@ -62,11 +67,26 @@ impl Default for SpaceSettings {
 impl SpaceSettings {
     /// Glue for a space glyph of advance `width` (SILE's `shapespace`).
     pub fn space(&self, width: f64) -> crate::length::Length {
+        if !self.variable_spaces {
+            return crate::length::Length::pt(width.abs());
+        }
         crate::length::Length::new(
             crate::measurement::Measurement::pt(width * self.enlargement_factor),
-            crate::measurement::Measurement::pt(width * self.stretch_factor),
-            crate::measurement::Measurement::pt(width * self.shrink_factor),
+            crate::measurement::Measurement::pt(width.abs() * self.stretch_factor),
+            crate::measurement::Measurement::pt(width.abs() * self.shrink_factor),
         )
+    }
+
+    /// A space between words, from the shaped space glyph's advance or,
+    /// when spaces are not variable, from `measure` (SILE's
+    /// `makeSpaceNode`).
+    pub fn word_space(&self, width: f64, measure: impl FnOnce() -> f64) -> crate::length::Length {
+        if self.variable_spaces { self.space(width) } else { self.measured(measure) }
+    }
+
+    /// `skip`, or a space the width `measure` gives (SILE's `measureSpace`).
+    pub fn measured(&self, measure: impl FnOnce() -> f64) -> crate::length::Length {
+        self.skip.unwrap_or_else(|| self.space(measure()))
     }
 }
 
@@ -196,7 +216,7 @@ impl Shaper for RustyBuzzShaper {
                 depth,
                 x_offset: positions[i].x_offset as f64 * scale,
                 y_offset: positions[i].y_offset as f64 * scale,
-                x_advance: positions[i].x_advance as f64 * scale,
+                x_advance: rb_face.glyph_hor_advance(rustybuzz::ttf_parser::GlyphId(gid)).map_or(0.0, |a| a as f64 * scale),
                 y_advance: positions[i].y_advance as f64 * scale,
                 font_index: 0,
             });

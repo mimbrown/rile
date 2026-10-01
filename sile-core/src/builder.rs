@@ -82,7 +82,7 @@ struct RegisteredFont {
 // TextRun (internal)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct TextRun {
     text: String,
     font_name: String,
@@ -306,6 +306,7 @@ struct SavedTypesetter {
     previous_depth: Option<f64>,
     queue: Vec<Node>,
     captures: Vec<Capture>,
+    lists: Vec<crate::lists::ListLevel>,
     frame: String,
 }
 
@@ -353,6 +354,7 @@ pub struct DocumentBuilder {
 
     // Page building
     vertical_queue: Vec<Node>,
+    pub(crate) lists: crate::lists::Lists,
     page: Option<PageState>,
     pages: Vec<Page>,
     last_penalty: i32,
@@ -396,6 +398,7 @@ impl DocumentBuilder {
             captures: Vec::new(),
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
+            lists: Default::default(),
             page: None,
             pages: Vec::new(),
             last_penalty: 0,
@@ -608,6 +611,10 @@ impl DocumentBuilder {
         self
     }
 
+    pub fn paragraph_indent(&self) -> f64 {
+        self.settings.paragraph_indent
+    }
+
     /// Indent for the next paragraph only (SILE's `current.parindent`);
     /// `Some(0.0)` is `\noindent`.
     pub fn set_current_indent(&mut self, indent: Option<f64>) -> &mut Self {
@@ -687,6 +694,26 @@ impl DocumentBuilder {
             }
         }
         let run = self.text_run(text);
+        self.push_inline(Inline::Text(run));
+        self
+    }
+
+    /// Add a character to the text just added when it is in the same
+    /// style, so that combining marks shape with their base (SILE's
+    /// `\unichar`).
+    pub fn add_char(&mut self, c: char) -> &mut Self {
+        let run = self.text_run(c.to_string());
+        let list = match self.open_boxes.last_mut() {
+            Some((_, list)) => list,
+            None => &mut self.paragraph,
+        };
+        if list.len() > 1
+            && let Some(Inline::Text(last)) = list.last_mut()
+            && (TextRun { text: run.text.clone(), ..last.clone() }) == run
+        {
+            last.text.push(c);
+            return self;
+        }
         self.push_inline(Inline::Text(run));
         self
     }
@@ -773,6 +800,19 @@ impl DocumentBuilder {
         if let Some((group, content)) = self.open_boxes.pop() {
             self.push_inline(Inline::Box(group, content));
         }
+        self
+    }
+
+    /// Close the innermost `start_hbox` and set its material now, handing
+    /// the box back instead of adding it (SILE's `makeHbox`).
+    pub fn make_hbox(&mut self) -> Result<node::HBox, BuilderError> {
+        let content = self.open_boxes.pop().map(|(_, content)| content).unwrap_or_default();
+        Ok(natural_hbox(self.shape_inlines(&content)?))
+    }
+
+    /// Add a ready-made box to the paragraph.
+    pub fn add_box(&mut self, hbox: node::HBox) -> &mut Self {
+        self.push_inline(Inline::Node(Box::new(Node::HBox(hbox))));
         self
     }
 
@@ -906,6 +946,40 @@ impl DocumentBuilder {
         match self.captures.last_mut() {
             Some(capture) => capture.items.push(Captured::Vertical(Box::new(node))),
             None => self.vertical_queue.push(node),
+        }
+    }
+
+    pub(crate) fn add_vertical(&mut self, node: Node) {
+        self.push_vertical(node);
+    }
+
+    /// Vertical glue added straight to the vertical list, ahead of the
+    /// lines of any paragraph still in progress (SILE's `pushVglue`).
+    pub fn push_vglue(&mut self, height: impl Into<Length>) -> &mut Self {
+        self.push_vertical(Node::vglue(height.into()));
+        self
+    }
+
+    /// Length of the vertical list material is going to.
+    pub(crate) fn vertical_len(&self) -> usize {
+        match self.captures.last() {
+            Some(capture) => capture.items.len(),
+            None => self.vertical_queue.len(),
+        }
+    }
+
+    /// Remove the `i`th item of the vertical list if it is a node `is`
+    /// accepts.
+    pub(crate) fn remove_vertical(&mut self, i: usize, is: impl Fn(&Node) -> bool) -> Option<Node> {
+        match self.captures.last_mut() {
+            Some(capture) => match capture.items.get(i) {
+                Some(Captured::Vertical(node)) if is(node) => match capture.items.remove(i) {
+                    Captured::Vertical(node) => Some(*node),
+                    _ => None,
+                },
+                _ => None,
+            },
+            None => self.vertical_queue.get(i).is_some_and(&is).then(|| self.vertical_queue.remove(i)),
         }
     }
 
@@ -1425,6 +1499,7 @@ impl DocumentBuilder {
             previous_depth: self.previous_depth.take(),
             queue: std::mem::take(&mut self.vertical_queue),
             captures: std::mem::take(&mut self.captures),
+            lists: std::mem::take(&mut self.lists.levels),
             frame: flow,
         });
         Ok(self)
@@ -1447,6 +1522,7 @@ impl DocumentBuilder {
         self.current_indent = saved.current_indent;
         self.previous_depth = saved.previous_depth;
         self.captures = saved.captures;
+        self.lists.levels = saved.lists;
         result?;
         Ok(nodes)
     }
@@ -1822,11 +1898,8 @@ impl DocumentBuilder {
                         nnode.language = run.language.clone();
                         nodes.push(Node::NNode(nnode));
                     }
-                    Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.space(glyphs[i + lo].width))),
-                    Token::NonBreakingSpace => {
-                        let width = space();
-                        nodes.push(Node::kern(self.settings.space_settings.space(width)));
-                    }
+                    Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.word_space(glyphs[i + lo].width, space))),
+                    Token::NonBreakingSpace => nodes.push(Node::kern(self.settings.space_settings.measured(space))),
                     Token::Penalty(p) => nodes.push(Node::penalty(p)),
                     Token::RepeatedHyphen => {
                         let hyphen = self.shaper.shape("-", &face, &spec);
@@ -2489,6 +2562,27 @@ mod tests {
         let tracked = doc.render_debug().unwrap();
         assert!(plain.contains(" w="), "{plain}");
         assert!(tracked.contains(" a="), "{tracked}");
+    }
+
+    #[test]
+    fn list_items_hang_their_labels_in_the_margin() {
+        use crate::lists::{ListKind, ListOptions};
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.set_paragraph_indent(0.0);
+        doc.begin_list(ListKind::Enumerate, &ListOptions::default()).unwrap();
+        for text in ["one", "two"] {
+            doc.begin_item(None).unwrap().add_text(text);
+            doc.end_item().unwrap();
+        }
+        doc.end_list().unwrap();
+        let trace = doc.render_debug().unwrap();
+        let x = |label: &str| {
+            let at = trace.find(&format!("({label})")).unwrap();
+            let mx = trace[..at].rfind("Mx \t").unwrap();
+            trace[mx + 4..].lines().next().unwrap().parse::<f64>().unwrap()
+        };
+        assert!((x("1") - x("2")).abs() < 1e-6, "{trace}");
+        assert!((x("one") - x("1") - 18.0).abs() < 1e-6, "{trace}");
     }
 
     #[test]

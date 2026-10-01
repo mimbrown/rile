@@ -80,7 +80,7 @@ impl Shaper for HarfBuzzShaper {
                 depth,
                 x_offset: positions[i].x_offset as f64 * scale,
                 y_offset: positions[i].y_offset as f64 * scale,
-                x_advance: positions[i].x_advance as f64 * scale,
+                x_advance: font.glyph_h_advance(infos[i].codepoint) as f64 * scale,
                 y_advance: positions[i].y_advance as f64 * scale,
                 font_index: 0,
             });
