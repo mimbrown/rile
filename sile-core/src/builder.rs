@@ -478,6 +478,13 @@ impl DocumentBuilder {
         self
     }
 
+    /// Words whose hyphenation points are given by `-`, overriding the
+    /// language's patterns.
+    pub fn add_hyphenation_exceptions<'a>(&mut self, lang: &str, words: impl IntoIterator<Item = &'a str>) -> &mut Self {
+        self.hyphenation.add_exceptions(lang, words);
+        self
+    }
+
     /// Keep every space as its own glue, including leading ones.
     pub fn set_obey_spaces(&mut self, obey: bool) -> &mut Self {
         self.settings.obey_spaces = obey;
@@ -1309,16 +1316,10 @@ impl DocumentBuilder {
         h_nodes.push(par_fill);
         h_nodes.push(Node::penalty(-10_000));
 
-        // Pre-hyphenate so we have a single consistent node list for both
-        // linebreaking and line building. The linebreaker's internal hyphenation
-        // pass modifies its own copy of the node list, making break positions
-        // incompatible with the original. By pre-hyphenating we avoid that.
-        let h_nodes = self.hyphenate(h_nodes);
-
         let mut lb_settings = self.settings.linebreak_settings.clone();
         lb_settings.left_skip = skips.left;
         lb_settings.right_skip = skips.right;
-        let breaks = linebreak::do_break(&h_nodes, hsize, &lb_settings, None);
+        let (h_nodes, breaks) = linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes));
         Ok(self.build_lines(&h_nodes, &breaks, direction, skips, previous_depth))
     }
 
@@ -1427,13 +1428,7 @@ impl DocumentBuilder {
                 continue;
             };
             let lang = if word.language.is_empty() { self.settings.language.clone() } else { word.language.clone() };
-            let mut segments = if word.text.chars().count() < self.hyphenation.min_word
-                || !word.text.chars().any(char::is_alphabetic)
-            {
-                Vec::new()
-            } else {
-                self.hyphenation.hyphenate_word(&word.text, &lang)
-            };
+            let mut segments = self.hyphenation.hyphenate_word(&word.text, &lang);
             if segments.len() <= 1 || !self.fonts.contains_key(&word.font_key) {
                 out.push(node);
                 continue;

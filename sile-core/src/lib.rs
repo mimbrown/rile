@@ -6,6 +6,7 @@ pub mod font;
 pub mod frame;
 pub mod framespec;
 pub mod hyphenation;
+mod hyphenation_data;
 pub mod insertion;
 pub mod length;
 pub mod linebreak;

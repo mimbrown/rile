@@ -12,6 +12,10 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 
 * Default builds are pure Rust (rustybuzz). `--features harfbuzz` links system HarfBuzz, needed for Graphite fonts.
 
+## Hyphenation
+
+Patterns are SILE's own, converted to `sile-core/languages/*.pat` and embedded via `sile-core/src/hyphenation_data.rs`. Regenerate both with `scripts/import-sile-hyphenation.py <sile checkout>`.
+
 ## SILE parity
 
 ```sh
