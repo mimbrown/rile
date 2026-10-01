@@ -2,8 +2,6 @@ use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::Node;
 
-pub type HyphenateFn<'a> = &'a mut dyn FnMut(&[Node]) -> Vec<Node>;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -765,6 +763,22 @@ impl<'a> LineBreaker<'a> {
         }
     }
 
+    /// Run one pass over the paragraph; true when it found breaks.
+    fn try_pass(&mut self) -> bool {
+        if self.threshold > INF_BAD {
+            self.threshold = INF_BAD;
+        }
+        self.setup_active_list();
+        self.active_width = self.background;
+        let mut place = 0;
+        while place < self.nodes.len() && self.next_of(self.head) != self.head {
+            self.place = place;
+            self.check_for_legal_break(place);
+            place += 1;
+        }
+        place >= self.nodes.len() && self.try_final_break()
+    }
+
     fn try_final_break(&mut self) -> bool {
         // TeX §899 calls try_break here; SILE deliberately does not, because
         // the paragraph already ends with an eject penalty. Calling it adds a
@@ -886,16 +900,10 @@ impl<'a> LineBreaker<'a> {
 // Public API
 // ---------------------------------------------------------------------------
 
-pub fn do_break(
-    nodes: &[Node],
-    hsize: f64,
-    settings: &LinebreakSettings,
-    mut hyphenate: Option<HyphenateFn<'_>>,
-) -> Vec<BreakResult> {
+pub fn do_break(nodes: &[Node], hsize: f64, settings: &LinebreakSettings) -> Vec<BreakResult> {
     let mut lb = LineBreaker::new(nodes, hsize, settings);
     lb.init();
 
-    // Determine starting pass
     match settings.pretolerance {
         Some(pt) if pt >= 0 => {
             lb.threshold = pt;
@@ -909,32 +917,7 @@ pub fn do_break(
         }
     }
 
-    loop {
-        if lb.threshold > INF_BAD {
-            lb.threshold = INF_BAD;
-        }
-
-        if lb.pass == Pass::Second
-            && let Some(ref mut hyph_fn) = hyphenate {
-                lb.nodes = hyph_fn(&lb.nodes);
-                // Re-trim after hyphenation
-                lb.trim_glue();
-            }
-
-        lb.setup_active_list();
-        lb.active_width = lb.background;
-
-        let mut place = 0;
-        while place < lb.nodes.len() && lb.next_of(lb.head) != lb.head {
-            lb.place = place;
-            lb.check_for_legal_break(place);
-            place += 1;
-        }
-
-        if place >= lb.nodes.len() && lb.try_final_break() {
-            break;
-        }
-
+    while !lb.try_pass() {
         match lb.pass {
             Pass::First => {
                 lb.pass = Pass::Second;
@@ -950,6 +933,32 @@ pub fn do_break(
     }
 
     lb.post_line_break()
+}
+
+/// Break a paragraph the way SILE does: a first pass without hyphenation,
+/// then, if no breaks fit `pretolerance`, `hyphenate` the nodes and break
+/// them again. Returns the nodes the breaks refer to.
+pub fn break_paragraph(
+    nodes: Vec<Node>,
+    hsize: f64,
+    settings: &LinebreakSettings,
+    hyphenate: impl FnOnce(Vec<Node>) -> Vec<Node>,
+) -> (Vec<Node>, Vec<BreakResult>) {
+    if let Some(pt) = settings.pretolerance.filter(|&pt| pt >= 0) {
+        let mut lb = LineBreaker::new(&nodes, hsize, settings);
+        lb.init();
+        lb.threshold = pt;
+        lb.pass = Pass::First;
+        lb.final_pass = false;
+        if lb.try_pass() {
+            let breaks = lb.post_line_break();
+            return (nodes, breaks);
+        }
+    }
+    let nodes = hyphenate(nodes);
+    let settings = LinebreakSettings { pretolerance: None, ..settings.clone() };
+    let breaks = do_break(&nodes, hsize, &settings);
+    (nodes, breaks)
 }
 
 // ===========================================================================
@@ -1053,7 +1062,7 @@ mod tests {
 
     #[test]
     fn break_empty_input() {
-        let result = do_break(&[], 100.0, &LinebreakSettings::default(), None);
+        let result = do_break(&[], 100.0, &LinebreakSettings::default());
         // Empty after trimming: just the added penalty
         assert!(result.len() <= 1);
     }
@@ -1061,7 +1070,7 @@ mod tests {
     #[test]
     fn break_single_word() {
         let nodes = vec![nnode("Hello", 30.0, 7.0, 0.0)];
-        let result = do_break(&nodes, 100.0, &LinebreakSettings::default(), None);
+        let result = do_break(&nodes, 100.0, &LinebreakSettings::default());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].width, 100.0);
     }
@@ -1074,7 +1083,7 @@ mod tests {
             glue(5.0, 2.0, 1.0),
             nnode("World", 60.0, 7.0, 0.0),
         ];
-        let result = do_break(&nodes, 80.0, &LinebreakSettings::default(), None);
+        let result = do_break(&nodes, 80.0, &LinebreakSettings::default());
         assert_eq!(result.len(), 2, "should break into 2 lines");
     }
 
@@ -1085,7 +1094,7 @@ mod tests {
             Node::penalty(EJECT_PENALTY),
             nnode("B", 20.0, 7.0, 0.0),
         ];
-        let result = do_break(&nodes, 200.0, &LinebreakSettings::default(), None);
+        let result = do_break(&nodes, 200.0, &LinebreakSettings::default());
         assert!(result.len() >= 2, "eject penalty should force a break");
     }
 
@@ -1097,7 +1106,7 @@ mod tests {
             Node::penalty(INF_BAD as i32),
             nnode("B", 20.0, 7.0, 0.0),
         ];
-        let result = do_break(&nodes, 200.0, &LinebreakSettings::default(), None);
+        let result = do_break(&nodes, 200.0, &LinebreakSettings::default());
         assert_eq!(result.len(), 1, "inf_bad penalty should prevent break");
     }
 
@@ -1111,7 +1120,7 @@ mod tests {
         ];
         let mut settings = LinebreakSettings::default();
         settings.emergency_stretch = 100.0;
-        let result = do_break(&nodes, 100.0, &settings, None);
+        let result = do_break(&nodes, 100.0, &settings);
         assert!(
             !result.is_empty(),
             "emergency stretch should allow breaking"
@@ -1126,7 +1135,7 @@ mod tests {
         // Standard TeX \hsize = 4in at 72.27pt/in
         let hsize = 289.07625;
         let settings = LinebreakSettings::default();
-        let result = do_break(&nodes, hsize, &settings, None);
+        let result = do_break(&nodes, hsize, &settings);
 
         assert!(
             !result.is_empty(),
@@ -1155,7 +1164,7 @@ mod tests {
         let nodes = sherlock_nodes();
         // Narrow: 150pt, should produce more lines (~700pt / 150pt ≈ 5)
         let settings = LinebreakSettings::default();
-        let result = do_break(&nodes, 150.0, &settings, None);
+        let result = do_break(&nodes, 150.0, &settings);
         assert!(
             result.len() >= 4,
             "narrow hsize should produce at least 4 lines, got {}",
@@ -1243,7 +1252,7 @@ mod tests {
         let mut settings = LinebreakSettings::default();
         settings.hang_after = 2;
         settings.hang_indent = 40.0;
-        let result = do_break(&nodes, 200.0, &settings, None);
+        let result = do_break(&nodes, 200.0, &settings);
         assert!(result.len() >= 3, "should produce at least 3 lines");
     }
 
@@ -1265,7 +1274,7 @@ mod tests {
             glue(5.0, 2.0, 1.0),
             nnode("word", 40.0, 7.0, 0.0),
         ];
-        let result = do_break(&nodes, 60.0, &LinebreakSettings::default(), None);
+        let result = do_break(&nodes, 60.0, &LinebreakSettings::default());
         assert!(
             result.len() >= 2,
             "should break at discretionary, got {} lines",

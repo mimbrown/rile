@@ -1,12 +1,136 @@
+//! Liang hyphenation with SILE's pattern files (SILE's `hyphenator-liang`).
+
 use std::collections::HashMap;
 
-use hyphenation::{Hyphenator, Language, Load, Standard};
+use crate::hyphenation_data;
+
+#[derive(Default)]
+struct TrieNode {
+    children: HashMap<char, usize>,
+    points: Option<Vec<u8>>,
+}
+
+struct Patterns {
+    trie: Vec<TrieNode>,
+    exceptions: HashMap<String, Vec<bool>>,
+    left_min: usize,
+    right_min: usize,
+}
+
+impl Patterns {
+    fn empty() -> Self {
+        Self { trie: vec![TrieNode::default()], exceptions: HashMap::new(), left_min: 2, right_min: 2 }
+    }
+
+    fn load(lang: &str) -> Option<Self> {
+        let source = hyphenation_data::source(lang)?;
+        let mut patterns = Self::empty();
+        let mut section = "";
+        for line in source.lines() {
+            match line.split_once(' ') {
+                Some(("from", base)) => patterns = Self::load(base)?,
+                Some(("hyphenmins", mins)) => {
+                    let mut mins = mins.split(' ').filter_map(|m| m.parse().ok());
+                    patterns.left_min = mins.next().unwrap_or(2);
+                    patterns.right_min = mins.next().unwrap_or(2);
+                }
+                _ if line == "patterns" || line == "exceptions" => section = line,
+                _ if section == "patterns" => patterns.add_pattern(line),
+                _ if section == "exceptions" => patterns.add_exception(line),
+                _ => {}
+            }
+        }
+        Some(patterns)
+    }
+
+    fn add_pattern(&mut self, pattern: &str) {
+        let mut node = 0;
+        for c in pattern.chars().filter(|c| !c.is_ascii_digit()) {
+            node = match self.trie[node].children.get(&c) {
+                Some(&next) => next,
+                None => {
+                    self.trie.push(TrieNode::default());
+                    let next = self.trie.len() - 1;
+                    self.trie[node].children.insert(c, next);
+                    next
+                }
+            };
+        }
+        let mut points = Vec::new();
+        let mut last_was_digit = false;
+        for c in pattern.chars() {
+            if let Some(d) = c.to_digit(10) {
+                last_was_digit = true;
+                points.push(d as u8);
+            } else if last_was_digit {
+                last_was_digit = false;
+            } else {
+                points.push(0);
+            }
+        }
+        self.trie[node].points = Some(points);
+    }
+
+    fn add_exception(&mut self, exception: &str) {
+        let mut breaks = Vec::new();
+        for c in exception.chars() {
+            if c == '-' {
+                if let Some(last) = breaks.last_mut() {
+                    *last = true;
+                }
+            } else {
+                breaks.push(false);
+            }
+        }
+        self.exceptions.insert(lowercase(&exception.replace('-', "")), breaks);
+    }
+
+    /// Whether to break after each character of `word`.
+    fn breaks(&self, word: &[char]) -> Vec<bool> {
+        if let Some(breaks) = self.exceptions.get(&word.iter().copied().map(lower).collect::<String>()) {
+            return breaks.clone();
+        }
+        let mut work = Vec::with_capacity(word.len() + 2);
+        work.push('.');
+        work.extend(word.iter().copied().map(lower));
+        work.push('.');
+        // points[m] is the value before character m (1-based), points[n + 1] after the last.
+        let mut points = vec![0u8; word.len() + 1];
+        for i in 0..work.len() {
+            let mut node = 0;
+            for &c in &work[i..] {
+                let Some(&next) = self.trie[node].children.get(&c) else { break };
+                node = next;
+                if let Some(p) = &self.trie[node].points {
+                    for (k, &value) in p.iter().enumerate() {
+                        if let Some(slot) = (i + k).checked_sub(1).and_then(|idx| points.get_mut(idx))
+                            && *slot < value
+                        {
+                            *slot = value;
+                        }
+                    }
+                }
+            }
+        }
+        let len = points.len();
+        points[..self.left_min.min(len)].fill(0);
+        points[len.saturating_sub(self.right_min)..].fill(0);
+        (1..=word.len()).map(|i| points.get(i).is_some_and(|p| p % 2 == 1)).collect()
+    }
+}
+
+fn lower(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
+fn lowercase(s: &str) -> String {
+    s.chars().map(lower).collect()
+}
 
 pub struct HyphenationDictionary {
-    dictionaries: HashMap<String, Standard>,
+    languages: HashMap<String, Patterns>,
+    /// Words shorter than this, in characters, are never hyphenated.
     pub min_word: usize,
-    pub left_min: usize,
-    pub right_min: usize,
 }
 
 impl Default for HyphenationDictionary {
@@ -17,194 +141,114 @@ impl Default for HyphenationDictionary {
 
 impl HyphenationDictionary {
     pub fn new() -> Self {
-        Self {
-            dictionaries: HashMap::new(),
-            min_word: 5,
-            left_min: 2,
-            right_min: 2,
-        }
+        Self { languages: HashMap::new(), min_word: 5 }
     }
 
+    /// Load the patterns for `lang`, falling back to its primary subtag
+    /// (`en-US` uses `en`). Returns whether any were found.
     pub fn load_language(&mut self, lang: &str) -> bool {
-        if self.dictionaries.contains_key(lang) {
-            return true;
-        }
-        if let Some(language) = language_from_code(lang)
-            && let Ok(dict) = Standard::from_embedded(language) {
-                self.dictionaries.insert(lang.to_string(), dict);
-                return true;
-            }
-        false
+        self.patterns(lang);
+        self.languages.get(lang).is_some_and(|p| p.trie.len() > 1 || !p.exceptions.is_empty())
     }
 
+    fn patterns(&mut self, lang: &str) -> &mut Patterns {
+        self.languages.entry(lang.to_string()).or_insert_with(|| {
+            let normalized = lang.to_lowercase().replace('_', "-");
+            Patterns::load(&normalized)
+                .or_else(|| Patterns::load(normalized.split('-').next().unwrap_or_default()))
+                .unwrap_or_else(Patterns::empty)
+        })
+    }
+
+    /// Add words with their hyphenation points marked by `-` (SILE's
+    /// `hyphenator:add-exceptions`).
+    pub fn add_exceptions<'a>(&mut self, lang: &str, words: impl IntoIterator<Item = &'a str>) {
+        let patterns = self.patterns(lang);
+        for word in words {
+            patterns.add_exception(word);
+        }
+    }
+
+    /// Split `word` at its hyphenation points.
     pub fn hyphenate_word(&mut self, word: &str, lang: &str) -> Vec<String> {
-        let char_count = word.chars().count();
-        if char_count < self.min_word {
+        let chars: Vec<char> = word.chars().collect();
+        if chars.len() < self.min_word {
             return vec![word.to_string()];
         }
-
-        if !self.load_language(lang) {
-            return vec![word.to_string()];
-        }
-
-        let dict = &self.dictionaries[lang];
-        let hyphenated = dict.hyphenate(word);
-        let breaks = &hyphenated.breaks;
-
-        if breaks.is_empty() {
-            return vec![word.to_string()];
-        }
-
-        // Split word at break byte offsets
-        let mut segments = Vec::with_capacity(breaks.len() + 1);
-        let mut start = 0;
-        for &brk in breaks {
-            segments.push(word[start..brk].to_string());
-            start = brk;
-        }
-        segments.push(word[start..].to_string());
-
-        // Enforce left_min / right_min: merge segments that are too close to edges
-        let mut result = Vec::new();
-        let mut left_chars = 0usize;
-        let mut buffer = String::new();
-        let total_chars = char_count;
-
-        for (i, seg) in segments.iter().enumerate() {
-            let seg_chars = seg.chars().count();
-            left_chars += seg_chars;
-
-            buffer.push_str(seg);
-
-            if i < segments.len() - 1 {
-                let right_chars = total_chars - left_chars;
-                if left_chars >= self.left_min && right_chars >= self.right_min {
-                    result.push(std::mem::take(&mut buffer));
-                }
+        let breaks = self.patterns(lang).breaks(&chars);
+        let mut pieces = vec![String::new()];
+        for (i, &c) in chars.iter().enumerate() {
+            pieces.last_mut().unwrap().push(c);
+            if breaks.get(i).copied().unwrap_or(false) && i + 1 < chars.len() {
+                pieces.push(String::new());
             }
         }
-        if !buffer.is_empty() {
-            result.push(buffer);
-        }
-
-        if result.is_empty() {
-            vec![word.to_string()]
-        } else {
-            result
-        }
+        pieces
     }
 }
-
-fn language_from_code(lang: &str) -> Option<Language> {
-    let normalized = lang.to_lowercase().replace('_', "-");
-    match normalized.as_str() {
-        "en" | "en-us" => Some(Language::EnglishUS),
-        "en-gb" => Some(Language::EnglishGB),
-        "de" | "de-de" => Some(Language::German1996),
-        "de-1901" => Some(Language::German1901),
-        "fr" | "fr-fr" => Some(Language::French),
-        "es" | "es-es" => Some(Language::Spanish),
-        "it" | "it-it" => Some(Language::Italian),
-        "pt" | "pt-pt" => Some(Language::Portuguese),
-        "pt-br" => Some(Language::Portuguese),
-        "nl" | "nl-nl" => Some(Language::Dutch),
-        "ru" | "ru-ru" => Some(Language::Russian),
-        "uk" | "uk-ua" => Some(Language::Ukrainian),
-        "pl" | "pl-pl" => Some(Language::Polish),
-        "cs" | "cs-cz" => Some(Language::Czech),
-        "sk" | "sk-sk" => Some(Language::Slovak),
-        "sv" | "sv-se" => Some(Language::Swedish),
-        "da" | "da-dk" => Some(Language::Danish),
-        "nb" | "nn" | "no" => Some(Language::NorwegianBokmal),
-        "fi" | "fi-fi" => Some(Language::Finnish),
-        "hu" | "hu-hu" => Some(Language::Hungarian),
-        "tr" | "tr-tr" => Some(Language::Turkish),
-        "el" | "el-gr" => Some(Language::GreekMono),
-        "bg" | "bg-bg" => Some(Language::Bulgarian),
-        "hr" | "hr-hr" => Some(Language::Croatian),
-        "sr" | "sr-rs" => Some(Language::SerbianCyrillic),
-        "ca" | "ca-es" => Some(Language::Catalan),
-        "ro" | "ro-ro" => Some(Language::Romanian),
-        "la" => Some(Language::Latin),
-        _ => None,
-    }
-}
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn hyphenate_long_word() {
-        let mut dict = HyphenationDictionary::new();
-        let segments = dict.hyphenate_word("hyphenation", "en");
-        assert!(
-            segments.len() >= 2,
-            "expected multiple segments, got {segments:?}"
-        );
-        let rejoined: String = segments.concat();
-        assert_eq!(rejoined, "hyphenation");
+    fn show(word: &str, lang: &str) -> String {
+        HyphenationDictionary::new().hyphenate_word(word, lang).join("-")
     }
 
     #[test]
-    fn hyphenate_short_word_unchanged() {
-        let mut dict = HyphenationDictionary::new();
-        let segments = dict.hyphenate_word("the", "en");
-        assert_eq!(segments, vec!["the"]);
+    fn english_follows_sile() {
+        assert_eq!(show("hyphenation", "en"), "hy-phen-ation");
+        assert_eq!(show("labore", "en"), "la-bore");
+        assert_eq!(show("sadipscing", "en"), "sadip-sc-ing");
+        assert_eq!(show("table", "en"), "ta-ble");
+        assert_eq!(show("Table", "en"), "Ta-ble");
+        assert_eq!(show("the", "en"), "the");
     }
 
     #[test]
-    fn hyphenate_unknown_language() {
+    fn minima_come_from_the_pattern_file() {
         let mut dict = HyphenationDictionary::new();
-        let segments = dict.hyphenate_word("something", "xx-unknown");
-        assert_eq!(segments, vec!["something"]);
+        let mins = |p: &Patterns| (p.left_min, p.right_min);
+        assert_eq!(mins(dict.patterns("en")), (2, 3));
+        assert_eq!(mins(dict.patterns("de")), (2, 2));
+        assert_eq!(show("Donaudampfschifffahrt", "de"), "Do-nau-dampf-schiff-fahrt");
     }
 
     #[test]
-    fn hyphenate_preserves_text() {
-        let mut dict = HyphenationDictionary::new();
-        for word in &["international", "extraordinary", "communication", "responsibility"] {
-            let segments = dict.hyphenate_word(word, "en");
-            let rejoined: String = segments.concat();
-            assert_eq!(&rejoined, word, "rejoined segments must match original");
-        }
+    fn region_subtags_fall_back_to_the_language() {
+        assert_eq!(show("hyphenation", "en-US"), "hy-phen-ation");
+        assert_eq!(show("something", "xx-unknown"), "something");
     }
 
     #[test]
-    fn hyphenate_german() {
+    fn norwegian_variants_share_patterns() {
         let mut dict = HyphenationDictionary::new();
-        let segments = dict.hyphenate_word("Donaudampfschifffahrt", "de");
-        assert!(segments.len() >= 2, "expected multiple segments for long German word");
-        let rejoined: String = segments.concat();
-        assert_eq!(rejoined, "Donaudampfschifffahrt");
+        assert!(dict.load_language("nb"));
+        assert!(dict.load_language("nn"));
+        assert_eq!(dict.hyphenate_word("attende", "nn").join("-"), "att-en-de");
     }
 
     #[test]
-    fn load_language_caches() {
+    fn french_from_sile_spec() {
+        assert_eq!(show("série", "fr"), "sé-rie");
+        assert_eq!(show("Légèrement", "fr"), "Lé-gè-re-ment");
         let mut dict = HyphenationDictionary::new();
-        assert!(dict.load_language("en"));
-        assert!(dict.load_language("en")); // second call uses cache
-        assert!(dict.dictionaries.contains_key("en"));
+        dict.add_exceptions("fr", ["légè-rement"]);
+        assert_eq!(dict.hyphenate_word("Légèrement", "fr").join("-"), "Légè-rement");
     }
 
     #[test]
-    fn left_right_min_enforcement() {
+    fn exceptions_override_patterns() {
         let mut dict = HyphenationDictionary::new();
-        dict.left_min = 3;
-        dict.right_min = 3;
-        let segments = dict.hyphenate_word("hyphenation", "en");
-        for (i, seg) in segments.iter().enumerate() {
-            let chars = seg.chars().count();
-            if i == 0 {
-                assert!(chars >= 3, "first segment too short: {seg}");
-            }
-            if i == segments.len() - 1 {
-                assert!(chars >= 3, "last segment too short: {seg}");
-            }
+        dict.add_exceptions("en", ["hy-phenation"]);
+        assert_eq!(dict.hyphenate_word("Hyphenation", "en").join("-"), "Hy-phenation");
+    }
+
+    #[test]
+    fn segments_rejoin_to_the_word() {
+        let mut dict = HyphenationDictionary::new();
+        for word in ["international", "extraordinary", "communication", "responsibility"] {
+            assert_eq!(dict.hyphenate_word(word, "en").concat(), word);
         }
     }
 }

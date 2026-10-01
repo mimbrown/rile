@@ -12,7 +12,6 @@ ttf-parser = "0.25"
 fontdb = "0.22"
 rustybuzz = "0.20"
 unicode-bidi = "0.3"
-hyphenation = { version = "0.8", features = ["embed_all"] }
 cassowary = "0.3"
 pdf-writer = "0.12"
 subsetter = "0.2"

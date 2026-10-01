@@ -126,6 +126,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "footnote:options",
     "raise",
     "lower",
+    "hyphenator:add-exceptions",
     " ",
 ];
 
@@ -779,7 +780,10 @@ impl<'a> Driver<'a> {
                     .and_then(|w| w.parse().ok())
                     .unwrap_or(50);
                 let text = lorem(self.corpus.lorem, words);
-                self.add_text(&text)?;
+                self.scoped(|d| {
+                    d.settings.language = "la".to_string();
+                    d.text(&text)
+                })?;
             }
             "raise" | "lower" => {
                 let height = self.dimen(opt("height")?)?;
@@ -787,6 +791,17 @@ impl<'a> Driver<'a> {
                 self.doc.add_baseline_shift(height);
                 self.process(content)?;
                 self.doc.add_baseline_shift(-height);
+            }
+            "hyphenator:add-exceptions" => {
+                let lang = cmd.option("lang").map_or_else(|| self.settings.language.clone(), str::to_string);
+                let words: String = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        Content::Text(t) => Some(t.as_str()),
+                        Content::Command(_) => None,
+                    })
+                    .collect();
+                self.doc.add_hyphenation_exceptions(&lang, words.split_whitespace());
             }
             "footnote" => self.footnote(content)?,
             "footnote:separator" => {
@@ -1014,16 +1029,16 @@ fn split_paragraphs(text: &str) -> Vec<String> {
 }
 
 fn lorem(source: &str, words: usize) -> String {
-    let all: Vec<&str> = source.split_whitespace().collect();
-    if all.is_empty() {
+    let ends: Vec<usize> = source
+        .split_whitespace()
+        .map(|w| w.as_ptr() as usize - source.as_ptr() as usize + w.len())
+        .collect();
+    if ends.is_empty() {
         return String::new();
     }
-    all.iter()
-        .cycle()
-        .take(words)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let rest = words % ends.len();
+    let tail = if rest == 0 { "" } else { &source[..ends[rest - 1]] };
+    source.repeat(words / ends.len()) + tail
 }
 
 /// The lorem ipsum text from SILE's `packages/lorem/init.lua`.
@@ -1031,7 +1046,7 @@ pub fn lorem_source(init_lua: &str) -> String {
     init_lua
         .split_once("local lorem = [[")
         .and_then(|(_, rest)| rest.split_once("]]"))
-        .map(|(text, _)| text.to_string())
+        .map(|(text, _)| text.strip_prefix('\n').unwrap_or(text).to_string())
         .unwrap_or_default()
 }
 
