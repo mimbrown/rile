@@ -18,6 +18,7 @@ use sile_core::node::INFINITY;
 use sile_core::shaper::SpaceSettings;
 
 use crate::fonts::Fonts;
+use crate::ports::{self, Port};
 use crate::sil::{self, Command, Content};
 
 #[derive(Debug)]
@@ -51,18 +52,20 @@ impl Format {
 }
 
 /// Typeset a SIL or XML document and return its trace in SILE's debug format.
-pub fn run(src: &str, format: Format, corpus: &Corpus) -> Result<String, Failure> {
+pub fn run(name: &str, src: &str, format: Format, corpus: &Corpus) -> Result<String, Failure> {
     let tree = match format {
         Format::Sil => sil::parse(src),
         Format::Xml => crate::xml::parse(src),
     }
     .map_err(|e| Failure::Error(format!("parse: {}", e.0)))?;
     let mut missing = BTreeSet::new();
-    check(&tree, corpus, &mut BTreeSet::new(), &mut missing);
+    let port = ports::port(name);
+    check(&tree, corpus, port.as_ref(), &mut BTreeSet::new(), &mut missing);
     if !missing.is_empty() {
         return Err(Failure::Unsupported(missing));
     }
     let mut d = Driver::new(corpus).map_err(Failure::Error)?;
+    d.port = port;
     d.process(&tree).map_err(Failure::Error)?;
     d.finish().map_err(Failure::Error)
 }
@@ -166,6 +169,7 @@ const SETTINGS: &[&str] = &[
 fn check(
     content: &[Content],
     corpus: &Corpus,
+    port: Option<&Port>,
     defined: &mut BTreeSet<String>,
     missing: &mut BTreeSet<String>,
 ) {
@@ -223,6 +227,8 @@ fn check(
                     missing.insert("define".into());
                 }
             },
+            "lua" | "script" if port.is_some() => {}
+            name if port.is_some_and(|p| p.command(name).is_some()) => {}
             name if SIMPLE_COMMANDS.contains(&name) || defined.contains(name) => {}
             name if cmd.raw.is_some() => {
                 missing.insert(format!("\\begin{{{name}}}"));
@@ -232,7 +238,7 @@ fn check(
             }
         }
         if let Some(inner) = &cmd.content {
-            check(inner, corpus, defined, missing);
+            check(inner, corpus, port, defined, missing);
         }
     }
 }
@@ -280,9 +286,13 @@ impl From<BuilderError> for Failed {
     }
 }
 
-struct Driver<'a> {
+pub(crate) struct Driver<'a> {
     corpus: &'a Corpus<'a>,
-    doc: DocumentBuilder,
+    pub(crate) doc: DocumentBuilder,
+    /// Rust standing in for the test's Lua, and how many of its Lua chunks
+    /// have run.
+    port: Option<Port>,
+    lua_chunks: usize,
     paper: PaperSize,
     settings: Settings,
     synced: Option<Synced>,
@@ -314,6 +324,8 @@ impl<'a> Driver<'a> {
         Ok(Self {
             corpus,
             doc,
+            port: None,
+            lua_chunks: 0,
             paper: PaperSize::A4,
             settings: Settings {
                 language: "en".into(),
@@ -412,7 +424,7 @@ impl<'a> Driver<'a> {
     }
 
     /// Hand the current settings to the builder before it uses them.
-    fn sync(&mut self) -> Result<(), String> {
+    pub(crate) fn sync(&mut self) -> Result<(), String> {
         let bls = self.settings.baselineskip.clone();
         let lineskip = self.settings.lineskip.clone();
         let parindent = self.settings.parindent.clone();
@@ -458,13 +470,13 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
-    fn par(&mut self) -> Result<(), String> {
+    pub(crate) fn par(&mut self) -> Result<(), String> {
         self.sync()?;
         self.doc.new_paragraph().map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    fn process(&mut self, content: &[Content]) -> Result<(), String> {
+    pub(crate) fn process(&mut self, content: &[Content]) -> Result<(), String> {
         for c in content {
             match c {
                 Content::Text(t) => self.text(t)?,
@@ -474,7 +486,7 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
-    fn text(&mut self, text: &str) -> Result<(), String> {
+    pub(crate) fn text(&mut self, text: &str) -> Result<(), String> {
         if matches!(text, "\n" | "\r\n") {
             return Ok(());
         }
@@ -488,17 +500,32 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
-    fn add_text(&mut self, text: &str) -> Result<(), String> {
+    pub(crate) fn add_text(&mut self, text: &str) -> Result<(), String> {
         self.sync()?;
         self.doc.add_text(text);
         Ok(())
     }
 
-    fn update_font(&mut self, f: impl FnOnce(&mut FontSpec)) -> Result<(), String> {
+    pub(crate) fn update_font(&mut self, f: impl FnOnce(&mut FontSpec)) -> Result<(), String> {
         self.doc.update_font(f).map(|_| ()).map_err(|e| e.to_string())
     }
 
-    fn scoped<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+    /// SILE's `\lorem`: dummy Latin text.
+    pub(crate) fn lorem(&mut self, words: usize) -> Result<(), String> {
+        let text = lorem(self.corpus.lorem, words);
+        self.scoped(|d| {
+            d.settings.language = "la".to_string();
+            d.text(&text)
+        })
+    }
+
+    /// Indent paragraphs by `value` from here on (SILE's
+    /// `document.parindent`).
+    pub(crate) fn set_parindent(&mut self, value: &str) {
+        self.settings.parindent = value.to_string();
+    }
+
+    pub(crate) fn scoped<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
         if self.depth == 0 {
             self.sync()?;
         }
@@ -548,6 +575,16 @@ impl<'a> Driver<'a> {
     }
 
     fn command(&mut self, cmd: &Command) -> Result<(), String> {
+        if let Some(port) = &self.port {
+            if matches!(cmd.name.as_str(), "lua" | "script") {
+                let chunk = port.chunks.get(self.lua_chunks).ok_or("no Rust port for this Lua")?;
+                self.lua_chunks += 1;
+                return chunk(self);
+            }
+            if let Some(command) = port.command(&cmd.name) {
+                return command(self, cmd);
+            }
+        }
         let content = cmd.content.as_deref().unwrap_or(&[]);
         let opt = |k: &str| {
             cmd.option(k)
@@ -795,17 +832,7 @@ impl<'a> Driver<'a> {
                 }
                 self.process(content)?;
             }
-            "lorem" => {
-                let words = cmd
-                    .option("words")
-                    .and_then(|w| w.parse().ok())
-                    .unwrap_or(50);
-                let text = lorem(self.corpus.lorem, words);
-                self.scoped(|d| {
-                    d.settings.language = "la".to_string();
-                    d.text(&text)
-                })?;
-            }
+            "lorem" => self.lorem(cmd.option("words").and_then(|w| w.parse().ok()).unwrap_or(50))?,
             "raise" | "lower" => {
                 let height = self.dimen(opt("height")?)?;
                 let height = if cmd.name == "raise" { height } else { -height };
@@ -966,7 +993,7 @@ impl<'a> Driver<'a> {
 
     /// A SILE length such as `2em plus 1em minus 0.5em`, absolutized against
     /// the current font and page.
-    fn length(&mut self, value: &str) -> Result<Length, String> {
+    pub(crate) fn length(&mut self, value: &str) -> Result<Length, String> {
         let (natural, rest) = match value.split_once(" plus ") {
             Some((n, r)) => (n, Some(r)),
             None => (value, None),
@@ -989,7 +1016,7 @@ impl<'a> Driver<'a> {
     }
 
     /// One dimension in any of SILE's units, in points.
-    fn dimen(&mut self, value: &str) -> Result<f64, String> {
+    pub(crate) fn dimen(&mut self, value: &str) -> Result<f64, String> {
         let value = value.trim();
         let split = value
             .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+')))

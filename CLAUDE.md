@@ -27,7 +27,7 @@ cargo run --release -p sile-parity --features sile-core/harfbuzz   # shape like 
 
 SILE shapes Gentium Plus with Graphite, which doesn't kern, so the pure Rust shaper's kerning shows up as glyph width differences. Run with `--features sile-core/harfbuzz` for comparable widths.
 
-Comparison is deliberately fuzzy: glyphs, line/page breaks, and positions within 0.5pt are scored separately. `sile-parity/src/driver.rs` maps the SIL subset onto `DocumentBuilder`; unsupported commands are reported, never approximated.
+Comparison is deliberately fuzzy: glyphs, line/page breaks, and positions within 0.5pt are scored separately. `sile-parity/src/driver.rs` maps the SIL subset onto `DocumentBuilder`; unsupported commands are reported, never approximated. Tests whose Lua is ported to Rust live in `sile-parity/src/ports.rs`: each port does what the Lua does through sile-core's public API, in place of the `\lua`/`\script` chunks and the commands they define.
 
 ## Codebase rules
 

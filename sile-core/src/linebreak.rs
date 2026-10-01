@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::Node;
@@ -45,6 +47,37 @@ enum BreakType {
 // Settings
 // ---------------------------------------------------------------------------
 
+/// A paragraph shape: for each line (counting from 1), its left indent,
+/// width and right indent, any of which may be left to default (SILE's
+/// `linebreak.parShape`).
+pub type LineShape = (Option<f64>, Option<f64>, Option<f64>);
+
+#[derive(Clone)]
+pub struct ParShape(Arc<dyn Fn(usize) -> LineShape + Send + Sync>);
+
+impl ParShape {
+    pub fn new(shape: impl Fn(usize) -> LineShape + Send + Sync + 'static) -> Self {
+        Self(Arc::new(shape))
+    }
+
+    /// Left indent, width and right indent of `line`, the missing parts
+    /// taking up what the others leave of `hsize`.
+    fn line(&self, line: usize, hsize: f64) -> (f64, f64, f64) {
+        let (l, w, r) = (self.0)(line);
+        let width = w.unwrap_or(hsize - l.unwrap_or(0.0) - r.unwrap_or(0.0));
+        let remaining = hsize - width;
+        let left = l.or(r.map(|r| remaining - r)).unwrap_or(0.0);
+        let right = r.or(l.map(|l| remaining - l)).unwrap_or(remaining);
+        (left, width, right)
+    }
+}
+
+impl std::fmt::Debug for ParShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ParShape(..)")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LinebreakSettings {
     pub pretolerance: Option<i64>,
@@ -58,6 +91,7 @@ pub struct LinebreakSettings {
     pub emergency_stretch: f64,
     pub hang_indent: f64,
     pub hang_after: i32,
+    pub par_shape: Option<ParShape>,
     pub left_skip: Length,
     pub right_skip: Length,
     pub prev_graf: i32,
@@ -77,6 +111,7 @@ impl Default for LinebreakSettings {
             emergency_stretch: 0.0,
             hang_indent: 0.0,
             hang_after: 0,
+            par_shape: None,
             left_skip: Length::zero(),
             right_skip: Length::zero(),
             prev_graf: 0,
@@ -360,6 +395,10 @@ impl<'a> LineBreaker<'a> {
     }
 
     fn setup_line_lengths(&mut self) {
+        if self.settings.par_shape.is_some() {
+            self.easy_line = None;
+            return;
+        }
         let hang_after = self.settings.hang_after;
         let hang_indent = self.settings.hang_indent;
 
@@ -419,6 +458,9 @@ impl<'a> LineBreaker<'a> {
     }
 
     fn line_width_for(&self, line_number: i32) -> f64 {
+        if let Some(shape) = &self.settings.par_shape {
+            return shape.line(line_number.max(1) as usize, self.hsize).1;
+        }
         if let Some(easy) = self.easy_line
             && line_number > easy {
                 return self.second_width;
@@ -858,6 +900,10 @@ impl<'a> LineBreaker<'a> {
     }
 
     fn compute_indent(&self, line: i32, nb_lines: i32) -> (f64, f64) {
+        if let Some(shape) = &self.settings.par_shape {
+            let (left, _, right) = shape.line((nb_lines + 1 - line) as usize, self.hsize);
+            return (left, right);
+        }
         let hang_after = self.settings.hang_after;
         let hang_indent = self.settings.hang_indent;
 
@@ -1254,6 +1300,42 @@ mod tests {
         settings.hang_indent = 40.0;
         let result = do_break(&nodes, 200.0, &settings);
         assert!(result.len() >= 3, "should produce at least 3 lines");
+    }
+
+    // -- Paragraph shape ------------------------------------------------------
+
+    #[test]
+    fn par_shape_grants_leftover_width() {
+        let shape = ParShape::new(|line| match line {
+            1 => (Some(50.0), Some(30.0), None),
+            2 => (None, Some(120.0), None),
+            3 => (None, Some(30.0), Some(40.0)),
+            _ => (None, None, None),
+        });
+        assert_eq!(shape.line(1, 200.0), (50.0, 30.0, 120.0));
+        assert_eq!(shape.line(2, 200.0), (0.0, 120.0, 80.0));
+        assert_eq!(shape.line(3, 200.0), (130.0, 30.0, 40.0));
+        assert_eq!(shape.line(4, 200.0), (0.0, 200.0, 0.0));
+    }
+
+    #[test]
+    fn par_shape_sets_line_widths() {
+        let mut nodes = Vec::new();
+        for i in 0..24 {
+            if i > 0 {
+                nodes.push(glue(5.0, 3.0, 1.0));
+            }
+            nodes.push(nnode(&format!("w{i}"), 30.0, 7.0, 0.0));
+        }
+        let settings = LinebreakSettings {
+            tolerance: 2000,
+            par_shape: Some(ParShape::new(|line| if line == 1 { (None, Some(70.0), None) } else { (None, None, None) })),
+            ..LinebreakSettings::default()
+        };
+        let result = do_break(&nodes, 400.0, &settings);
+        assert_eq!(result[0].position, 3);
+        assert_eq!((result[0].left, result[0].right), (0.0, 330.0));
+        assert!(result[1..].iter().all(|line| (line.left, line.right) == (0.0, 0.0)));
     }
 
     // -- Discretionary break --------------------------------------------------

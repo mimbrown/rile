@@ -19,6 +19,7 @@ pub mod pdf;
 pub mod render;
 pub mod shaper;
 pub mod svg;
+pub mod textcase;
 pub mod trace;
 
 #[cfg(feature = "harfbuzz")]

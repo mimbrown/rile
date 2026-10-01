@@ -328,6 +328,7 @@ pub struct DocumentBuilder {
     paragraph: Vec<Inline>,
     open_boxes: Vec<Vec<Inline>>,
     current_indent: Option<f64>,
+    hanging: Option<(i32, f64)>,
     previous_depth: Option<f64>,
     captures: Vec<Capture>,
 
@@ -372,6 +373,7 @@ impl DocumentBuilder {
             paragraph: Vec::new(),
             open_boxes: Vec::new(),
             current_indent: None,
+            hanging: None,
             previous_depth: None,
             captures: Vec::new(),
             page_break_settings: PageBreakSettings::default(),
@@ -519,6 +521,10 @@ impl DocumentBuilder {
 
     // -- Language and hyphenation --------------------------------------------
 
+    pub fn hyphenation_mut(&mut self) -> &mut HyphenationDictionary {
+        &mut self.hyphenation
+    }
+
     pub fn language(&self) -> &str {
         &self.settings.language
     }
@@ -578,6 +584,15 @@ impl DocumentBuilder {
     /// `Some(0.0)` is `\noindent`.
     pub fn set_current_indent(&mut self, indent: Option<f64>) -> &mut Self {
         self.current_indent = indent;
+        self
+    }
+
+    /// Hanging indentation for the current paragraph only: lines after the
+    /// first `after` (before the last `-after` when negative) are indented
+    /// by `indent`, from the right when negative (SILE's `current.hangAfter`
+    /// and `current.hangIndent`).
+    pub fn set_hanging(&mut self, after: i32, indent: f64) -> &mut Self {
+        self.hanging = Some((after, indent));
         self
     }
 
@@ -747,6 +762,7 @@ impl DocumentBuilder {
             self.push_vertical(Node::vglue(self.settings.paragraph_skip));
         }
         self.leave_hmode(false)?;
+        self.hanging = None;
         Ok(self)
     }
 
@@ -1382,6 +1398,9 @@ impl DocumentBuilder {
         let mut lb_settings = self.settings.linebreak_settings.clone();
         lb_settings.left_skip = skips.left;
         lb_settings.right_skip = skips.right;
+        if let Some((after, indent)) = self.hanging {
+            (lb_settings.hang_after, lb_settings.hang_indent) = (after, indent);
+        }
         let (h_nodes, breaks) = linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes));
         Ok(self.build_lines(&h_nodes, &breaks, direction, skips, previous_depth))
     }
