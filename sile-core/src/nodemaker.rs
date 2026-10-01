@@ -30,6 +30,9 @@ pub enum Token {
     LetterSpace,
     /// French space before or after punctuation and guillemets.
     PunctSpace(PunctSpace),
+    /// Space between Japanese characters in zenkaku widths: glue where the
+    /// line may break, otherwise a kern.
+    Zenkaku { breakable: bool, width: f64, stretch: f64, shrink: f64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,8 @@ pub struct NodeMakerOptions {
     pub ethiopic: bool,
     /// Space on both sides of Ethiopic separators, not just after.
     pub ethiopic_centered: bool,
+    /// Every character its own word, spaced and broken by JIS class.
+    pub japanese: bool,
 }
 
 impl NodeMakerOptions {
@@ -69,6 +74,7 @@ impl NodeMakerOptions {
             split_quotes: matches!(base, "fr" | "ca"),
             french: base == "fr",
             ethiopic: base == "am",
+            japanese: base == "ja",
             ..Self::default()
         }
     }
@@ -90,6 +96,9 @@ enum Last {
 }
 
 pub fn tokenize(items: &[Item], options: NodeMakerOptions) -> Vec<Token> {
+    if options.japanese {
+        return japanese::tokenize(items);
+    }
     // French drops typed spaces where it sets its own.
     let (mut kept, mut clean, mut text, mut removed) = (Vec::new(), Vec::new(), String::new(), 0);
     for (i, item) in items.iter().enumerate() {
@@ -407,6 +416,114 @@ impl Maker<'_> {
     }
 }
 
+/// SILE's Japanese node maker, after jlreq and JIS X 4051.
+mod japanese {
+    use super::{Item, Token};
+
+    fn class(c: i64) -> i32 {
+        if c == -1 {
+            return -1;
+        }
+        let class = match c {
+            0x2018 | 0x201C | 0x0028 | 0x3014 | 0x005B | 0x007B | 0x3008 | 0x300A | 0x300C | 0x300E | 0x3010 | 0x2985
+            | 0x3018 | 0x3016 | 0x00AB | 0x301D | 0xFF08 => 1,
+            0x2019 | 0x201D | 0x0029 | 0x3015 | 0x005D | 0x007D | 0x3009 | 0x300B | 0x300D | 0x300F | 0x3011 | 0x2986
+            | 0x3019 | 0x3017 | 0x00BB | 0x301F | 0xFF09 => 2,
+            0x2010 | 0x301C | 0x30A0 | 0x2013 => 3,
+            0x0021 | 0x003F | 0x203C | 0x2047 | 0x2048 | 0x2049 => 4,
+            0x30FB | 0x003A | 0x003B => 5,
+            0x3002 | 0x002E => 6,
+            0x3001 | 0x002C => 7,
+            0x2014 | 0x2026 | 0x2025 | 0x3033 | 0x3034 | 0x3035 => 8,
+            0x30FD | 0x30FE | 0x309D | 0x309E | 0x3005 | 0x303B => 9,
+            0x30FC => 10,
+            0x3041 | 0x3043 | 0x3045 | 0x3047 | 0x3049 | 0x30A1 | 0x30A3 | 0x30A5 | 0x30A7 | 0x30A9 | 0x3063 | 0x3083
+            | 0x3085 | 0x3087 | 0x308E | 0x3095 | 0x3096 | 0x30C3 | 0x30E3 | 0x30E5 | 0x30E7 | 0x30EE | 0x30F5 | 0x30F6
+            | 0x31F0..=0x31FF => 11,
+            0x00A5 | 0x0024 | 0x00A3 | 0x0023 | 0x20AC | 0x2116 => 12,
+            0x00B0 | 0x2032 | 0x2033 | 0x2103 | 0x00A2 | 0x0025 | 0x2030 | 0x33CB | 0x2113 | 0x3303 | 0x330D | 0x3314
+            | 0x3318 | 0x3322 | 0x3323 | 0x3326 | 0x3327 | 0x332B | 0x3336 | 0x333B | 0x3349 | 0x334A | 0x334D | 0x3351
+            | 0x3357 | 0x338E | 0x338F | 0x339C | 0x339D | 0x339E | 0x33A1 | 0x33C4 => 13,
+            0x3000 => 14,
+            _ => 0,
+        };
+        match class {
+            0 if (0x3041..=0x309F).contains(&c) => 15,
+            0 if (0x30A1..=0x30FF).contains(&c) => 16,
+            0 if (0x4E00..=0x9FCC).contains(&c) => 19,
+            0 => 27,
+            class => class,
+        }
+    }
+
+    /// Kinsoku shori, roughly as jlreq's appendix C has it.
+    fn break_allowed(before: i64, after: i64) -> bool {
+        let (b, a) = (class(before), class(after));
+        if matches!(b, 1 | 12 | 28) || matches!(a, 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 | 20 | 29) {
+            return false;
+        }
+        if b == 8 && a == 8 {
+            return before != after;
+        }
+        !(b == 27 && a == 27)
+    }
+
+    fn space(before: i64, after: i64) -> f64 {
+        let (b, a) = (class(before), class(after));
+        match (b, a) {
+            (5, 27) | (27, 5) => 0.0,
+            (_, 5) | (5, _) => -0.25,
+            (7 | 2 | -1, 1) => -0.5,
+            (6 | 7, 2 | 6 | 7) => -0.25,
+            (6 | 7, _) => 0.0,
+            (9 | 10 | 11 | 15 | 16 | 19, 21 | 24 | 25) => 0.25,
+            _ => 0.0,
+        }
+    }
+
+    fn stretch(before: i64, after: i64) -> f64 {
+        let (b, a) = (class(before), class(after));
+        match (b, a) {
+            (_, 1) => 0.25,
+            (_, ..8) => 0.0,
+            (4, 21 | 24 | 25 | 27) => 0.5,
+            (..8, _) => 0.0,
+            _ => 0.25,
+        }
+    }
+
+    fn shrink(before: i64, after: i64) -> f64 {
+        let (b, a) = (class(before), class(after));
+        match (b, a) {
+            (5, 27) | (27, 5) => 0.0,
+            (_, 1) => 0.5,
+            (_, 5) | (5, _) => 0.25,
+            (7, _) => 0.5,
+            _ => 0.0,
+        }
+    }
+
+    pub fn tokenize(items: &[Item]) -> Vec<Token> {
+        let mut out = Vec::new();
+        let mut last = -1;
+        for (i, item) in items.iter().enumerate() {
+            let this = item.text.chars().next().map_or(0, |c| c as i64);
+            if item.text.contains([' ', '\t', '\n', '\r', '\x0b', '\x0c']) {
+                out.push(Token::Space(i));
+            } else {
+                let (width, stretch, shrink) = (space(last, this), stretch(last, this), shrink(last, this));
+                let breakable = break_allowed(last, this);
+                if breakable || width != 0.0 || stretch != 0.0 || shrink != 0.0 {
+                    out.push(Token::Zenkaku { breakable, width, stretch, shrink });
+                }
+                out.push(Token::Word(i..i + 1));
+            }
+            last = this;
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +548,8 @@ mod tests {
                 Token::PunctSpace(PunctSpace::Thin) => "t".into(),
                 Token::PunctSpace(PunctSpace::Colon) => "c".into(),
                 Token::PunctSpace(PunctSpace::Guillemet) => "g".into(),
+                Token::Zenkaku { breakable: true, .. } => "|".into(),
+                Token::Zenkaku { width, .. } => format!("<{width}>"),
             })
             .collect()
     }
@@ -441,6 +560,14 @@ mod tests {
         assert_eq!(render("ሰው፡ልጅ።ሁሉ", am), "[ሰው፡]_[ልጅ።]__[ሁሉ]");
         let centered = NodeMakerOptions { ethiopic_centered: true, ..am };
         assert_eq!(render("ሰው፡ልጅ", centered), "[ሰው]_[፡]_[ልጅ]");
+    }
+
+    #[test]
+    fn japanese_characters_break_unless_kinsoku_forbids() {
+        let ja = NodeMakerOptions::for_language("ja");
+        assert_eq!(render("私は「日本」。", ja), "|[私]|[は]|[「][日]|[本][」][。]");
+        assert_eq!(render("ab", ja), "|[a]<0>[b]");
+        assert_eq!(render("、（", ja), "[、]|[（]");
     }
 
     #[test]

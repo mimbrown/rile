@@ -146,6 +146,14 @@ impl Canvas for TraceCanvas {
     fn rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
         let _ = writeln!(self.out, "Draw line\t{}\t{}\t{}\t{}", round(x), round(y), round(width), round(height));
     }
+
+    fn push_color(&mut self, color: Color) {
+        let _ = writeln!(self.out, "Push color\t{}", fmt_color(color));
+    }
+
+    fn pop_color(&mut self) {
+        self.line("Pop color");
+    }
 }
 
 /// SILE's `SU.debug_round`: four decimals, nudged away from zero.

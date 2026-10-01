@@ -503,8 +503,17 @@ impl FontDatabase {
     }
 
     /// Query fontdb and return the matching face ID (without loading).
+    /// Family names match ignoring case and blanks, as in fontconfig.
     pub fn query(&self, spec: &FontSpec) -> Option<fontdb::ID> {
         let family = spec.family.as_deref()?;
+        let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect::<String>();
+        let wanted = squash(family);
+        let family = self
+            .db
+            .faces()
+            .flat_map(|f| &f.families)
+            .find(|(name, _)| squash(name) == wanted)
+            .map_or(family, |(name, _)| name.as_str());
         let query = fontdb::Query {
             families: &[fontdb::Family::Name(family)],
             weight: fontdb::Weight(spec.weight.0),

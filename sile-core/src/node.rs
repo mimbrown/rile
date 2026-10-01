@@ -408,6 +408,10 @@ pub enum Ink {
     /// wraps what falls between them in its own `Liner` box.
     LinerStart(Stroke),
     LinerEnd,
+    /// A ruby reading: its content is drawn raised by this much, a box
+    /// width on from where it stands, and the pen goes back to where it was
+    /// (SILE's `ruby` package).
+    Ruby(f64),
 }
 
 impl HBox {

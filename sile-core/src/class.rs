@@ -132,6 +132,15 @@ impl Plain {
     }
 }
 
+impl Plain {
+    /// SILE's `jplain`: a content frame on a 50 by 30 character grid.
+    pub fn japanese() -> Self {
+        let mut frames = Self::frameset();
+        frames[0] = Hanmen::PLAIN.frame("content", "8.3%pw", "11.6%ph");
+        Self { folio: Folio::default(), frames }
+    }
+}
+
 impl Default for Plain {
     fn default() -> Self {
         Self::new()
@@ -150,6 +159,37 @@ impl DocumentClass for Plain {
 
     fn end_page(&mut self, doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
         self.folio.output(doc)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// hanmen
+// ---------------------------------------------------------------------------
+
+/// The character grid Japanese pages are laid out on: lines of square cells
+/// with a gap between lines (SILE's `hanmenkyoshi`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hanmen {
+    pub gridsize: f64,
+    pub linegap: f64,
+    pub linelength: usize,
+    pub linecount: usize,
+}
+
+impl Hanmen {
+    pub const PLAIN: Hanmen = Hanmen { gridsize: 10.0, linegap: 7.0, linelength: 50, linecount: 30 };
+    pub const BOOK: Hanmen = Hanmen { gridsize: 10.0, linegap: 7.0, linelength: 40, linecount: 35 };
+
+    /// A horizontal frame exactly one grid in size.
+    pub fn frame(&self, id: &str, left: &str, top: &str) -> FrameSpec {
+        let width = self.gridsize * self.linelength as f64;
+        let height = self.gridsize * self.linecount as f64 + self.linegap * (self.linecount as f64 - 1.0);
+        FrameSpec::new(id).left(left).top(top).width(format!("{width}pt")).height(format!("{height}pt"))
+    }
+
+    /// From one line's baseline to the next.
+    pub fn baseline_skip(&self) -> f64 {
+        self.gridsize + self.linegap
     }
 }
 
@@ -192,6 +232,24 @@ impl Book {
             skip_head_this_page: false,
             chapters_open_spread: true,
         }
+    }
+
+    /// SILE's `jbook`: a content frame on a 40 by 35 character grid.
+    pub fn japanese() -> Self {
+        Self::with_frames(vec![
+            FrameSpec::new("runningHead")
+                .left("left(content) + 9pt")
+                .right("right(content) - 9pt")
+                .height("20pt")
+                .bottom("top(content)-9pt"),
+            Hanmen::BOOK.frame("content", "8.3%pw", "12%ph"),
+            FrameSpec::new("folio")
+                .left("left(content)")
+                .right("right(content)")
+                .top("bottom(footnotes)+3%ph")
+                .bottom("bottom(footnotes)+5%ph"),
+            FrameSpec::new("footnotes").left("left(content)").right("right(content)").height("0").bottom("83.3%ph"),
+        ])
     }
 
     pub fn frameset() -> Vec<FrameSpec> {
