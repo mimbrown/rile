@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::color::Color;
+use crate::counter::MultilevelCounter;
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec};
 use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
@@ -205,9 +207,15 @@ impl LineSkips {
 
 pub use crate::pagebuilder::SUPER_EJECT;
 
+impl AsMut<DocumentBuilder> for DocumentBuilder {
+    fn as_mut(&mut self) -> &mut DocumentBuilder {
+        self
+    }
+}
+
 struct LaidOut {
     pages: Vec<Page>,
-    fonts: std::collections::BTreeMap<String, RegisteredFont>,
+    fonts: BTreeMap<String, RegisteredFont>,
     bookmarks: Vec<Bookmark>,
     pdf_config: PdfConfig,
 }
@@ -307,7 +315,7 @@ pub struct DocumentBuilder {
 
     // Font system
     font_db: FontDatabase,
-    fonts: std::collections::BTreeMap<String, RegisteredFont>,
+    fonts: BTreeMap<String, RegisteredFont>,
     shaper: Box<dyn Shaper>,
 
     // Hyphenation
@@ -332,6 +340,8 @@ pub struct DocumentBuilder {
     last_penalty: i32,
     insertion_classes: std::collections::BTreeMap<String, InsertionClass>,
     insertions: PageInsertions,
+    counters: BTreeMap<String, i64>,
+    multilevel_counters: BTreeMap<String, MultilevelCounter>,
     /// Typesetting states set aside by `push_typesetter`.
     typesetters: Vec<SavedTypesetter>,
 
@@ -371,6 +381,8 @@ impl DocumentBuilder {
             last_penalty: 0,
             insertion_classes: std::collections::BTreeMap::new(),
             insertions: PageInsertions::default(),
+            counters: BTreeMap::new(),
+            multilevel_counters: BTreeMap::new(),
             typesetters: Vec::new(),
             header: None,
             footer: None,
@@ -457,20 +469,59 @@ impl DocumentBuilder {
         Ok(self)
     }
 
+    /// Make the fonts in `dir` available to `set_font_spec`.
+    pub fn load_fonts_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.font_db.load_fonts_dir(dir.as_ref());
+        self
+    }
+
     pub fn set_font(&mut self, name: impl Into<String>) -> &mut Self {
         self.settings.font = Some(name.into());
         self
     }
 
-    pub fn set_font_size(&mut self, size: f64) -> &mut Self {
-        if let Some(ref name) = self.settings.font.clone()
-            && let Some(entry) = self.fonts.get_mut(name) {
-                entry.spec.size = size;
-            }
-        self
+    /// The current font.
+    pub fn font_spec(&self) -> Option<&FontSpec> {
+        self.fonts.get(self.settings.font.as_deref()?).map(|f| &f.spec)
+    }
+
+    /// Switch to the font `spec` describes, from the fonts already
+    /// registered or else the font database (SILE's `\font`).
+    pub fn set_font_spec(&mut self, spec: FontSpec) -> Result<&mut Self, BuilderError> {
+        let key = spec.cache_key();
+        if !self.fonts.contains_key(&key) {
+            let same_face = |f: &&RegisteredFont| {
+                f.spec.family.as_deref().map(str::to_lowercase) == spec.family.as_deref().map(str::to_lowercase)
+                    && f.spec.weight == spec.weight
+                    && f.spec.style == spec.style
+                    && f.spec.filename == spec.filename
+            };
+            let face = match self.fonts.values().find(same_face) {
+                Some(f) => Arc::clone(&f.face),
+                None => self.font_db.resolve(&spec)?,
+            };
+            self.fonts.insert(key.clone(), RegisteredFont { spec, face });
+        }
+        self.settings.font = Some(key);
+        Ok(self)
+    }
+
+    /// Change some aspects of the current font.
+    pub fn update_font(&mut self, f: impl FnOnce(&mut FontSpec)) -> Result<&mut Self, BuilderError> {
+        let mut spec = self.font_spec().cloned().unwrap_or_default();
+        f(&mut spec);
+        self.set_font_spec(spec)
+    }
+
+    pub fn set_font_size(&mut self, size: f64) -> Result<&mut Self, BuilderError> {
+        self.update_font(|spec| spec.size = size)
     }
 
     // -- Language and hyphenation --------------------------------------------
+
+    pub fn language(&self) -> &str {
+        &self.settings.language
+    }
 
     pub fn set_language(&mut self, lang: impl Into<String>) -> &mut Self {
         self.settings.language = lang.into();
@@ -1169,6 +1220,18 @@ impl DocumentBuilder {
             }
         }
         Ok(self)
+    }
+
+    // -- Counters -------------------------------------------------------------
+
+    /// A document-wide counter such as `footnote`, starting at 0.
+    pub fn counter_mut(&mut self, id: &str) -> &mut i64 {
+        self.counters.entry(id.to_string()).or_default()
+    }
+
+    /// A document-wide multilevel counter such as `sectioning`.
+    pub fn multilevel_counter_mut(&mut self, id: &str) -> &mut MultilevelCounter {
+        self.multilevel_counters.entry(id.to_string()).or_default()
     }
 
     // -- Bookmarks and links ------------------------------------------------
@@ -1906,8 +1969,9 @@ mod tests {
             Some(d) => d,
             None => return,
         };
-        doc.set_font_size(24.0);
-        assert_eq!(doc.fonts["body"].spec.size, 24.0);
+        doc.set_font_size(24.0).unwrap();
+        assert_eq!(doc.font_spec().unwrap().size, 24.0);
+        assert_eq!(doc.fonts["body"].spec.size, 12.0);
     }
 
     // -- Text and paragraph --------------------------------------------------

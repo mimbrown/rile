@@ -366,6 +366,10 @@ impl FontDatabase {
         self.db.load_font_data(data);
     }
 
+    pub fn load_fonts_dir(&mut self, dir: &Path) {
+        self.db.load_fonts_dir(dir);
+    }
+
     pub fn load_font_file(&mut self, path: &Path) -> Result<(), FontError> {
         self.db
             .load_font_file(path)
