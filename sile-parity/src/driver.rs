@@ -7,6 +7,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, TextAlign};
+use sile_core::counter::format_number;
 use sile_core::class::{Book, Folio, FolioState, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{Node, Stroke};
@@ -123,6 +124,10 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "open-spread",
     "left-running-head",
     "right-running-head",
+    "discretionary",
+    "increment-counter",
+    "set-counter",
+    "show-counter",
     "increment-multilevel-counter",
     "set-multilevel-counter",
     "show-multilevel-counter",
@@ -222,7 +227,7 @@ fn check(
                     missing.insert(format!("papersize={p}"));
                 }
                 for (k, _) in &cmd.options {
-                    if !matches!(k.as_str(), "class" | "papersize") {
+                    if !matches!(k.as_str(), "class" | "papersize" | "landscape") {
                         missing.insert(format!("document[{k}]"));
                     }
                 }
@@ -235,7 +240,8 @@ fn check(
                     | "packages.rules"
                     | "packages.leaders"
                     | "packages.masters"
-                    | "packages.frametricks",
+                    | "packages.frametricks"
+                    | "packages.counters",
                 ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
@@ -254,6 +260,12 @@ fn check(
                 }
             }
             "set" => match cmd.option("parameter") {
+                Some(p)
+                    if (cmd.option("reset").is_some() || cmd.option("makedefault").is_some())
+                        && !p.starts_with("font.") =>
+                {
+                    missing.insert(format!("set {p} default"));
+                }
                 Some(p) if SETTINGS.contains(&p) => {}
                 Some(p) => {
                     missing.insert(format!("set {p}"));
@@ -343,6 +355,9 @@ pub(crate) struct Driver<'a> {
     /// Frames collected by an open `\pagetemplate`.
     page_frames: Option<Vec<FrameSpec>>,
     masters: BTreeMap<String, PageTemplate>,
+    /// What `\set[reset=true]` goes back to, for the settings that have one.
+    defaults: BTreeMap<String, String>,
+    counter_display: BTreeMap<String, String>,
     paper: PaperSize,
     settings: Settings,
     synced: Option<Synced>,
@@ -378,6 +393,11 @@ impl<'a> Driver<'a> {
             lua_chunks: 0,
             page_frames: None,
             masters: BTreeMap::new(),
+            counter_display: BTreeMap::new(),
+            defaults: [("font.family", "Gentium Book"), ("font.size", "10"), ("font.style", "normal"), ("font.weight", "400")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             paper: PaperSize::A4,
             settings: Settings {
                 language: "en".into(),
@@ -421,7 +441,7 @@ impl<'a> Driver<'a> {
     /// SILE's `footnotes` package: insertions into the `footnotes` frame,
     /// taken from `content`. Its skips are relative to the font in use when
     /// it is first needed.
-    fn footnote_class(&mut self) -> Result<(), String> {
+    pub(crate) fn footnote_class(&mut self) -> Result<(), String> {
         if self.doc.insertion_class_mut("footnote").is_some() {
             return Ok(());
         }
@@ -668,8 +688,11 @@ impl<'a> Driver<'a> {
             "document" => {
                 if let Some(p) = cmd.option("papersize") {
                     self.paper = paper_size(p).ok_or("bad papersize")?;
-                    self.doc.set_page_size(self.paper);
                 }
+                if cmd.option("landscape").is_some_and(truthy) {
+                    self.paper = self.paper.landscape();
+                }
+                self.doc.set_page_size(self.paper);
                 match cmd.option("class") {
                     Some("book") => self.doc.set_class(Book::new()),
                     _ => self.doc.set_class(Plain::new()),
@@ -726,6 +749,28 @@ impl<'a> Driver<'a> {
                     book.left_head = Some(material);
                 } else {
                     book.right_head = Some(material);
+                }
+            }
+            "discretionary" => {
+                self.sync()?;
+                self.doc.add_discretionary(cmd.option("prebreak"), cmd.option("postbreak"), cmd.option("replacement"));
+            }
+            "increment-counter" | "set-counter" | "show-counter" => {
+                let id = opt("id")?.to_string();
+                if let Some(display) = cmd.option("display") {
+                    self.counter_display.insert(id.clone(), display.to_string());
+                }
+                let value = cmd.option("value").map(|v| v.parse::<i64>().map_err(|_| "bad value")).transpose()?;
+                let counter = self.doc.counter_mut(&id);
+                match (cmd.name.as_str(), value) {
+                    ("increment-counter", _) => *counter += 1,
+                    ("set-counter", Some(value)) => *counter = value,
+                    ("show-counter", _) => {
+                        let display = self.counter_display.get(&id).map_or("arabic", String::as_str);
+                        let text = format_number(*counter, display).ok_or_else(|| format!("unknown display {display}"))?;
+                        self.add_text(&text)?;
+                    }
+                    _ => {}
                 }
             }
             "increment-multilevel-counter" | "set-multilevel-counter" | "show-multilevel-counter" => {
@@ -1019,7 +1064,11 @@ impl<'a> Driver<'a> {
             "set" => {
                 let parameter = cmd.option("parameter");
                 let value = cmd.option("value").unwrap_or("");
-                if cmd.content.is_some() {
+                if let Some(p) = parameter.filter(|_| cmd.option("reset").is_some_and(truthy)) {
+                    self.reset_setting(p)?;
+                } else if let Some(p) = parameter.filter(|_| cmd.option("makedefault").is_some_and(truthy)) {
+                    self.set_default(p, value)?;
+                } else if cmd.content.is_some() {
                     self.scoped(|d| {
                         if let Some(p) = parameter {
                             d.set(p, value)?;
@@ -1132,7 +1181,17 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
-    fn set(&mut self, parameter: &str, value: &str) -> Result<(), String> {
+    pub(crate) fn reset_setting(&mut self, parameter: &str) -> Result<(), String> {
+        let value = self.defaults.get(parameter).cloned().ok_or_else(|| format!("no default for {parameter}"))?;
+        self.set(parameter, &value)
+    }
+
+    pub(crate) fn set_default(&mut self, parameter: &str, value: &str) -> Result<(), String> {
+        self.defaults.insert(parameter.to_string(), value.to_string());
+        self.set(parameter, value)
+    }
+
+    pub(crate) fn set(&mut self, parameter: &str, value: &str) -> Result<(), String> {
         let num = || {
             value
                 .parse::<f64>()
@@ -1193,6 +1252,7 @@ impl<'a> Driver<'a> {
         self.target = semver(target);
         if self.target < (0, 15, 14) {
             self.update_font(|f| f.family = Some("Gentium Plus".into()))?;
+            self.defaults.insert("font.family".into(), "Gentium Plus".into());
         }
         if self.target < (0, 15, 0) {
             self.settings.parindent = "20pt".into();

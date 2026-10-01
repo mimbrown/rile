@@ -99,6 +99,8 @@ enum Inline {
     Text(TextRun),
     Node(Box<Node>),
     Box(Group, Vec<Inline>),
+    /// Prebreak, postbreak and replacement text.
+    Discretionary(Box<[Option<TextRun>; 3]>),
 }
 
 /// How material collected between `start_*` and `end_hbox` is set.
@@ -670,21 +672,35 @@ impl DocumentBuilder {
                 return self;
             }
         }
+        let run = self.text_run(text);
+        self.push_inline(Inline::Text(run));
+        self
+    }
+
+    fn text_run(&self, text: String) -> TextRun {
         let tokens = NodeMakerOptions {
             obey_spaces: self.settings.obey_spaces,
             fixed_nbsp: self.settings.fixed_nbsp,
             letterspace: self.settings.letter_space.is_some(),
             ..NodeMakerOptions::for_language(&self.settings.language)
         };
-        let run = TextRun {
+        TextRun {
             text,
             font_name: self.settings.font.clone().unwrap_or_default(),
             color: self.settings.color,
             language: self.settings.language.clone(),
             tokens,
             letter_space: self.settings.letter_space,
-        };
-        self.push_inline(Inline::Text(run));
+        }
+    }
+
+    /// A break opportunity: `prebreak` ends the line and `postbreak` starts
+    /// the next if the paragraph breaks here, and `replacement` is set if it
+    /// does not (SILE's `\discretionary`).
+    pub fn add_discretionary(&mut self, prebreak: Option<&str>, postbreak: Option<&str>, replacement: Option<&str>) -> &mut Self {
+        let run = |t: Option<&str>| t.map(|t| self.text_run(t.to_string()));
+        let parts = Box::new([run(prebreak), run(postbreak), run(replacement)]);
+        self.push_inline(Inline::Discretionary(parts));
         self
     }
 
@@ -1699,6 +1715,17 @@ impl DocumentBuilder {
             match item {
                 Inline::Text(run) => h_nodes.extend(self.shape_run(run)?),
                 Inline::Node(node) => h_nodes.push((**node).clone()),
+                Inline::Discretionary(parts) => {
+                    let mut lists = Vec::with_capacity(3);
+                    for part in parts.iter() {
+                        lists.push(match part {
+                            Some(run) => vec![Node::HBox(natural_hbox(self.shape_run(run)?))],
+                            None => Vec::new(),
+                        });
+                    }
+                    let [prebreak, postbreak, replacement]: [Vec<Node>; 3] = lists.try_into().expect("three parts");
+                    h_nodes.push(Node::discretionary(prebreak, postbreak, replacement));
+                }
                 Inline::Box(Group::Liner(stroke), content) => {
                     h_nodes.push(liner_mark(Ink::LinerStart(*stroke)));
                     h_nodes.extend(self.shape_inlines(content)?);
@@ -2171,7 +2198,7 @@ fn natural_width(node: &Node) -> Length {
 }
 
 fn natural_hbox(nodes: Vec<Node>) -> node::HBox {
-    let width: f64 = nodes.iter().map(|n| pt_of(&n.width())).sum();
+    let width: f64 = nodes.iter().map(|n| pt_of(&natural_width(n))).sum();
     let mut hbox = node::HBox::new(
         Length::pt(width),
         node::max_node_dim(&nodes, node::Dim::Height),
