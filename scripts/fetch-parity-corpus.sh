@@ -20,24 +20,16 @@ git -C "$root/sile" checkout -q FETCH_HEAD
 fetch() { # url sha256 file
   local out="$root/downloads/$3"
   if [ ! -f "$out" ] || ! echo "$2  $out" | sha256sum -c --status; then
-    curl -fsSL "$1" -o "$out" && echo "$2  $out" | sha256sum -c --quiet || { rm -f "$out"; return 1; }
+    curl -fsSL "$1" -o "$out"
+    echo "$2  $out" | sha256sum -c --quiet
   fi
 }
 
-# SILE's expectations were generated with Gentium Plus 5.000, which only SIL's
-# own site serves. Where that is unreachable, drop GentiumPlus-5.000-web.zip
-# into .parity/downloads/ by hand; failing both, 6.200 is close but kerns and
-# numbers some glyphs differently.
+# SILE's expectations were generated with Gentium Plus 5.000, which only
+# SIL's own site serves, so it is kept in the repo (OFL, unmodified).
 rm -rf "$root/fonts/gentium-plus"
-if fetch https://software.sil.org/downloads/r/gentium/GentiumPlus-5.000-web.zip \
-  9aa8f475181928d040824e0c2c7ed4a17335cdc7a6f12ef8299170f8ee3fe3f7 GentiumPlus-5.000-web.zip; then
-  unzip -qjo "$root/downloads/GentiumPlus-5.000-web.zip" 'GentiumPlus-5.000-web/GentiumPlus-*.ttf' 'GentiumPlus-5.000-web/OFL.txt' -d "$root/fonts/gentium-plus"
-else
-  echo "warning: Gentium Plus 5.000 unavailable, falling back to 6.200" >&2
-  fetch https://github.com/silnrsi/font-gentium/releases/download/v6.200/GentiumPlus-6.200.zip \
-    9b21103b79961149b6508791572acb3b2fe7eb621474c57d5e4ee37e76d7b073 GentiumPlus-6.200.zip
-  unzip -qjo "$root/downloads/GentiumPlus-6.200.zip" 'GentiumPlus-6.200/GentiumPlus-*.ttf' 'GentiumPlus-6.200/OFL.txt' -d "$root/fonts/gentium-plus"
-fi
+cp -r "$(dirname "$0")/../sile-parity/fonts/gentium-plus-5.000" "$root/fonts/gentium-plus"
+
 fetch https://github.com/silnrsi/font-gentium/releases/download/v7.000/GentiumBook-7.000.zip \
   fa4e35bcea62dd68befabf4bb7c2765aacd2691f51ec8ae008f5f913ef49f419 GentiumBook-7.000.zip
 fetch https://github.com/alerque/libertinus/releases/download/v7.050/Libertinus-7.050.tar.zst \
