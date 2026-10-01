@@ -81,11 +81,13 @@ pub struct Page {
     /// Material set into frames, by frame id; each entry starts at its
     /// frame's top.
     pub content: Vec<(String, Vec<Node>)>,
+    /// Frames to draw the outline of, as they were when asked for.
+    pub outlines: Vec<FrameGeometry>,
 }
 
 impl Page {
     pub fn new(number: usize, paper: PaperSize, frames: Vec<FrameGeometry>) -> Self {
-        Self { number, paper, frames, content: Vec::new() }
+        Self { number, paper, frames, content: Vec::new(), outlines: Vec::new() }
     }
 
     pub fn frame(&self, id: &str) -> Option<&FrameGeometry> {

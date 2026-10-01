@@ -150,10 +150,12 @@ fn round(v: f64) -> String {
     }
 }
 
-/// C's `%g` for the font sizes that occur in practice.
+/// C's `%g`: six significant digits, trailing zeros dropped.
 fn fmt_g(v: f64) -> String {
-    let s = format!("{v:.6}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
+    let int_digits = if v.abs() >= 1.0 { v.abs().log10().floor() as i32 + 1 } else { 1 };
+    let decimals = (6 - int_digits).max(0) as usize;
+    let s = format!("{v:.decimals$}");
+    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 
 #[cfg(test)]
@@ -171,12 +173,13 @@ mod tests {
     fn font_sizes_print_like_percent_g() {
         assert_eq!(fmt_g(10.0), "10");
         assert_eq!(fmt_g(10.5), "10.5");
+        assert_eq!(fmt_g(6.811523), "6.81152");
     }
 
     #[test]
     fn empty_document_trace() {
         let t = TraceCanvas::new(PaperSize::A4).finish();
-        assert!(t.starts_with("Set paper size \t595.276\t841.89\nBegin page\n"));
+        assert!(t.starts_with("Set paper size \t595.275597\t841.8897728999999\nBegin page\n"));
         assert!(t.ends_with("End page\nFinish\n"));
     }
 }

@@ -7,11 +7,12 @@ use std::path::Path;
 use std::str::FromStr;
 
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, TextAlign};
-use sile_core::class::{Book, Folio, FolioState, Heading, Plain};
+use sile_core::class::{Book, Folio, FolioState, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{Node, Stroke};
-use sile_core::font::{FontSpec, FontStyle, FontWeight};
+use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
+use sile_core::framespec::FrameSpec;
 use sile_core::length::Length;
 use sile_core::measurement::{Measurement, Unit};
 use sile_core::node::INFINITY;
@@ -134,6 +135,13 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "chapter",
     "section",
     "subsection",
+    "pagetemplate",
+    "frame",
+    "define-master-template",
+    "switch-master",
+    "switch-master-one-page",
+    "showframe",
+    "makecolumns",
     "hrule",
     "hrulefill",
     "fullrule",
@@ -183,6 +191,27 @@ fn check(
     for c in content {
         let Content::Command(cmd) = c else { continue };
         match cmd.name.as_str() {
+            "frame" => {
+                for (k, v) in &cmd.options {
+                    match k.as_str() {
+                        "id" | "left" | "right" | "top" | "bottom" | "width" | "height" | "next" => {}
+                        "direction" if matches!(v.as_str(), "LTR-TTB" | "RTL-TTB") => {}
+                        "direction" => {
+                            missing.insert(format!("frame[direction={v}]"));
+                        }
+                        _ => {
+                            missing.insert(format!("frame[{k}]"));
+                        }
+                    }
+                }
+            }
+            "pagetemplate" => {
+                for (k, _) in &cmd.options {
+                    if k != "first-content-frame" {
+                        missing.insert(format!("pagetemplate[{k}]"));
+                    }
+                }
+            }
             "document" => {
                 if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book")) {
                     missing.insert(format!("class={class}"));
@@ -199,7 +228,15 @@ fn check(
                 }
             }
             "use" => match cmd.option("module") {
-                Some("packages.retrograde" | "packages.lorem" | "packages.footnotes" | "packages.rules" | "packages.leaders") => {}
+                Some(
+                    "packages.retrograde"
+                    | "packages.lorem"
+                    | "packages.footnotes"
+                    | "packages.rules"
+                    | "packages.leaders"
+                    | "packages.masters"
+                    | "packages.frametricks",
+                ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
                 }
@@ -300,6 +337,9 @@ pub(crate) struct Driver<'a> {
     /// have run.
     port: Option<Port>,
     lua_chunks: usize,
+    /// Frames collected by an open `\pagetemplate`.
+    page_frames: Option<Vec<FrameSpec>>,
+    masters: BTreeMap<String, PageTemplate>,
     paper: PaperSize,
     settings: Settings,
     synced: Option<Synced>,
@@ -333,6 +373,8 @@ impl<'a> Driver<'a> {
             doc,
             port: None,
             lua_chunks: 0,
+            page_frames: None,
+            masters: BTreeMap::new(),
             paper: PaperSize::A4,
             settings: Settings {
                 language: "en".into(),
@@ -523,6 +565,27 @@ impl<'a> Driver<'a> {
         self.scoped(|d| {
             d.settings.language = "la".to_string();
             d.text(&text)
+        })
+    }
+
+    /// `\lorem[counter=true]`: each space replaced by a running count.
+    fn numbered_lorem(&mut self, words: usize) -> Result<(), String> {
+        let text = lorem(self.corpus.lorem, words);
+        let mut count = 0;
+        let mut numbered = String::new();
+        for (i, part) in text.split(char::is_whitespace).enumerate() {
+            if i > 0 && part.is_empty() {
+                continue;
+            }
+            if i > 0 {
+                count += 1;
+                numbered.push_str(&format!(" {count} "));
+            }
+            numbered.push_str(part);
+        }
+        self.scoped(|d| {
+            d.settings.language = "la".to_string();
+            d.text(&numbered)
         })
     }
 
@@ -778,6 +841,69 @@ impl<'a> Driver<'a> {
                 self.process(content)?;
                 self.doc.end_hbox();
             }
+            "pagetemplate" => {
+                self.sync()?;
+                let outer = self.page_frames.replace(Vec::new());
+                let result = self.scoped(|d| d.process(content));
+                let frames = std::mem::replace(&mut self.page_frames, outer).unwrap_or_default();
+                result?;
+                self.doc.declare_page_frames(&frames).map_err(err)?;
+                if let Some(first) = cmd.option("first-content-frame") {
+                    self.doc.set_content_frame(first).map_err(err)?;
+                }
+            }
+            "define-master-template" => {
+                let outer = self.page_frames.replace(Vec::new());
+                let result = self.scoped(|d| d.process(content));
+                let frames = std::mem::replace(&mut self.page_frames, outer).unwrap_or_default();
+                result?;
+                let first_content_frame = opt("first-content-frame")?.to_string();
+                self.masters.insert(opt("id")?.to_string(), PageTemplate { frames, first_content_frame });
+            }
+            "switch-master" | "switch-master-one-page" => {
+                let id = opt("id")?;
+                let master = self.masters.get(id).cloned().ok_or_else(|| format!("no master {id}"))?;
+                self.sync()?;
+                if cmd.name == "switch-master" {
+                    self.doc.set_master(master).map_err(err)?;
+                } else {
+                    self.doc.set_page_master(&master).map_err(err)?;
+                }
+            }
+            "makecolumns" => {
+                let columns = cmd.option("columns").and_then(|c| c.parse().ok()).unwrap_or(2);
+                let gutter = self.dimen(cmd.option("gutter").unwrap_or("3%pw"))?;
+                self.sync()?;
+                self.doc.make_columns(columns, gutter).map_err(err)?;
+            }
+            "showframe" => {
+                let id = cmd.option("id").filter(|id| *id != "all");
+                self.doc.show_frame(id).map_err(err)?;
+            }
+            "frame" => {
+                let mut spec = FrameSpec::new(opt("id")?);
+                for (k, v) in &cmd.options {
+                    let v = Some(v.clone());
+                    match k.as_str() {
+                        "left" => spec.left = v,
+                        "right" => spec.right = v,
+                        "top" => spec.top = v,
+                        "bottom" => spec.bottom = v,
+                        "width" => spec.width = v,
+                        "height" => spec.height = v,
+                        "next" => spec.next = v,
+                        "direction" if v.as_deref() == Some("RTL-TTB") => spec.direction = Some(Direction::RTL),
+                        _ => {}
+                    }
+                }
+                match &mut self.page_frames {
+                    Some(frames) => frames.push(spec),
+                    None => {
+                        self.sync()?;
+                        self.doc.declare_page_frames(&[spec]).map_err(err)?;
+                    }
+                }
+            }
             "hrule" => {
                 let mut dim = |name| cmd.option(name).map_or(Ok(0.0), |v| self.dimen(v));
                 let (width, height, depth) = (dim("width")?, dim("height")?, dim("depth")?);
@@ -901,7 +1027,14 @@ impl<'a> Driver<'a> {
                 }
                 self.process(content)?;
             }
-            "lorem" => self.lorem(cmd.option("words").and_then(|w| w.parse().ok()).unwrap_or(50))?,
+            "lorem" => {
+                let words = cmd.option("words").and_then(|w| w.parse().ok()).unwrap_or(50);
+                if cmd.option("counter").is_some_and(truthy) {
+                    self.numbered_lorem(words)?;
+                } else {
+                    self.lorem(words)?;
+                }
+            }
             "raise" | "lower" => {
                 let height = self.dimen(opt("height")?)?;
                 let height = if cmd.name == "raise" { height } else { -height };

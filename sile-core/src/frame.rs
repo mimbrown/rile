@@ -11,12 +11,12 @@ impl PaperSize {
         Self { width, height }
     }
 
-    pub const A4: Self = Self::new(595.276, 841.89);
-    pub const A5: Self = Self::new(419.528, 595.276);
-    pub const A3: Self = Self::new(841.89, 1190.551);
+    pub const A4: Self = Self::new(595.275597, 841.8897728999999);
+    pub const A5: Self = Self::new(419.52756359999995, 595.275597);
+    pub const A3: Self = Self::new(841.8897728999999, 1190.551194);
     pub const LETTER: Self = Self::new(612.0, 792.0);
     pub const LEGAL: Self = Self::new(612.0, 1008.0);
-    pub const B5: Self = Self::new(498.898, 708.661);
+    pub const B5: Self = Self::new(498.89764319999995, 708.661425);
 
     pub fn landscape(self) -> Self {
         Self::new(self.height, self.width)

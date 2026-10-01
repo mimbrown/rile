@@ -321,6 +321,8 @@ pub struct DocumentBuilder {
     footer_height: f64,
     frame_gap: f64,
     class: Option<Box<dyn DocumentClass>>,
+    /// Frames used instead of the class's (SILE's `\switch-master`).
+    master: Option<PageTemplate>,
 
     // Font system
     font_db: FontDatabase,
@@ -373,6 +375,7 @@ impl DocumentBuilder {
             footer_height: 0.0,
             frame_gap: 0.0,
             class: None,
+            master: None,
             font_db: FontDatabase::new(),
             fonts: std::collections::BTreeMap::new(),
             shaper: shaper::default_shaper(),
@@ -1004,12 +1007,17 @@ impl DocumentBuilder {
         Ok(())
     }
 
+    fn page_template(&self) -> PageTemplate {
+        match (&self.master, &self.class) {
+            (Some(master), _) => master.clone(),
+            (None, Some(class)) => class.page_template(),
+            (None, None) => self.default_template(),
+        }
+    }
+
     fn start_page(&mut self) -> Result<(), BuilderError> {
-        let template = match &self.class {
-            Some(class) => class.page_template(),
-            None => self.default_template(),
-        };
-        let frames = framespec::solve(self.paper, &template.frames)
+        let template = self.page_template();
+        let frames = framespec::solve(self.paper, self.font_spec().map_or(10.0, |f| f.size), &template.frames)
             .map_err(|e| BuilderError::Layout(e.to_string()))?;
         if !frames.iter().any(|f| f.id == template.first_content_frame) {
             return Err(BuilderError::Layout(format!(
@@ -1023,6 +1031,126 @@ impl DocumentBuilder {
             frame: template.first_content_frame,
         });
         Ok(())
+    }
+
+    /// Declare or redeclare frames on the current page only; the next page
+    /// goes back to the class's frames (SILE's `\frame`). Expressions may
+    /// refer to the page's other frames.
+    pub fn declare_page_frames(&mut self, frames: &[FrameSpec]) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let template = self.page_template();
+        let mut specs: Vec<FrameSpec> =
+            template.frames.into_iter().filter(|t| !frames.iter().any(|f| f.id == t.id)).collect();
+        specs.extend(frames.iter().cloned());
+        let solved = framespec::solve(self.paper, self.font_spec().map_or(10.0, |f| f.size), &specs).map_err(|e| BuilderError::Layout(e.to_string()))?;
+        let page = &mut self.page.as_mut().expect("page").page;
+        for frame in solved.into_iter().filter(|g| frames.iter().any(|f| f.id == g.id)) {
+            match page.frames.iter_mut().find(|g| g.id == frame.id) {
+                Some(existing) => *existing = frame,
+                None => page.frames.push(frame),
+            }
+        }
+        Ok(self)
+    }
+
+    /// Carry on in frame `id` of the current page, which becomes the start
+    /// of this page's content frames (SILE's `\pagetemplate`).
+    pub fn set_content_frame(&mut self, id: &str) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let state = self.page.as_mut().expect("page");
+        if state.page.frame(id).is_none() {
+            return Err(BuilderError::Layout(format!("no frame {id}")));
+        }
+        state.frame = id.to_string();
+        Ok(self)
+    }
+
+    /// Use `template`'s frames instead of the class's from now on, starting
+    /// with the current page (SILE's `\switch-master`).
+    pub fn set_master(&mut self, template: PageTemplate) -> Result<&mut Self, BuilderError> {
+        self.master = Some(template.clone());
+        self.replace_page_frames(&template)
+    }
+
+    /// Use `template`'s frames for the rest of the current page only, after
+    /// shipping what is waiting into the current frame (SILE's
+    /// `\switch-master-one-page`).
+    pub fn set_page_master(&mut self, template: &PageTemplate) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        self.chuck()?;
+        self.replace_page_frames(template)?;
+        self.leave_hmode(false)?;
+        Ok(self)
+    }
+
+    /// Ship everything waiting into the current frame as it is (SILE's
+    /// `chuck`).
+    fn chuck(&mut self) -> Result<(), BuilderError> {
+        self.leave_hmode(true)?;
+        if !self.vertical_queue.is_empty() {
+            let id = self.page.as_ref().expect("page").frame.clone();
+            let nodes = std::mem::take(&mut self.vertical_queue);
+            self.output(&id, nodes);
+        }
+        Ok(())
+    }
+
+    fn replace_page_frames(&mut self, template: &PageTemplate) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let frames = framespec::solve(self.paper, self.font_spec().map_or(10.0, |f| f.size), &template.frames).map_err(|e| BuilderError::Layout(e.to_string()))?;
+        let state = self.page.as_mut().expect("page");
+        state.page.frames.retain(|f| state.page.content.iter().any(|(id, _)| *id == f.id));
+        state.page.frames.retain(|f| !frames.iter().any(|g| g.id == f.id));
+        state.page.frames.extend(frames);
+        self.set_content_frame(&template.first_content_frame)
+    }
+
+    /// Split the current frame into `columns` equal columns separated by
+    /// `gutter`, for the rest of this page (SILE's `\makecolumns`).
+    pub fn make_columns(&mut self, columns: usize, gutter: f64) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let state = self.page.as_mut().expect("page");
+        let Some(frame) = state.page.frame(&state.frame).cloned() else { return Ok(self) };
+        if columns < 2 {
+            return Ok(self);
+        }
+        let width = (frame.width() - gutter * (columns - 1) as f64) / columns as f64;
+        let mut new_frames = Vec::new();
+        let mut previous = frame.id.clone();
+        for i in 1..columns {
+            let left = frame.left + i as f64 * (width + gutter);
+            let gutter_frame = FrameGeometry {
+                id: format!("{}_gutter{i}", frame.id),
+                left: left - gutter,
+                right: left,
+                next: None,
+                ..frame.clone()
+            };
+            let column = FrameGeometry { id: format!("{}_col{i}", frame.id), left, right: left + width, next: None, ..frame.clone() };
+            new_frames.push((previous.clone(), column.id.clone()));
+            previous = column.id.clone();
+            state.page.frames.push(gutter_frame);
+            state.page.frames.push(column);
+        }
+        for (from, to) in new_frames {
+            if let Some(f) = state.page.frames.iter_mut().find(|f| f.id == from) {
+                f.next = Some(to);
+            }
+        }
+        if let Some(f) = state.page.frames.iter_mut().find(|f| f.id == frame.id) {
+            f.right = f.left + width;
+        }
+        Ok(self)
+    }
+
+    /// Outline frame `id` on the current page, or all its frames when
+    /// `None` (SILE's `\showframe`).
+    pub fn show_frame(&mut self, id: Option<&str>) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let page = &mut self.page.as_mut().expect("page").page;
+        let frames: Vec<FrameGeometry> = page.frames.iter().filter(|f| id.is_none_or(|id| f.id == id)).cloned().collect();
+        page.outlines.extend(frames);
+        Ok(self)
     }
 
     fn current_frame(&self) -> Option<&FrameGeometry> {
@@ -1126,6 +1254,7 @@ impl DocumentBuilder {
         if self.vertical_queue.is_empty() {
             self.previous_depth = None;
         }
+        let old_width = self.current_frame().map(FrameGeometry::width);
         let next = self.current_frame().and_then(|f| f.next.clone());
         match next {
             Some(next) if self.last_penalty > SUPER_EJECT => {
@@ -1136,9 +1265,75 @@ impl DocumentBuilder {
                 self.new_page()?;
             }
         }
-        if !self.vertical_queue.is_empty() {
+        let new_width = self.current_frame().map(FrameGeometry::width);
+        if !self.vertical_queue.is_empty() && old_width.zip(new_width).is_some_and(|(a, b)| (a - b).abs() > 1e-6) {
+            self.push_back()?;
+            if self.typesetters.is_empty() && self.build_page()? {
+                self.init_next_frame()?;
+            }
+        } else if !self.vertical_queue.is_empty() {
             self.vertical_queue.insert(0, Node::vglue(Length::zero()));
         }
+        Ok(())
+    }
+
+    /// Re-break the lines waiting for the page to the width of the frame
+    /// they now go to (SILE's `pushBack`). Lines run together into one
+    /// paragraph until their margins change, as in SILE; inter-line glue and
+    /// penalties go.
+    fn push_back(&mut self) -> Result<(), BuilderError> {
+        let queue = std::mem::take(&mut self.vertical_queue);
+        self.previous_depth = None;
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut margins: Option<(Length, Length)> = None;
+        for v in queue {
+            match v {
+                Node::VBox(vbox) if !vbox.explicit && vbox.nodes.len() >= 4 => {
+                    let n = vbox.nodes.len();
+                    let line_margins = (vbox.nodes[1].width(), vbox.nodes[n - 2].width());
+                    if margins.is_some_and(|m| m != line_margins) {
+                        self.rebreak(&mut nodes, margins)?;
+                    }
+                    margins = Some(line_margins);
+                    if nodes.is_empty() {
+                        nodes.push(Node::zerohbox());
+                    }
+                    for (i, node) in vbox.nodes.into_iter().enumerate() {
+                        let keep = match &node {
+                            _ if i == 0 || i == 1 || i == n - 2 => false,
+                            Node::Discretionary(_) => i == 2,
+                            Node::Penalty(_) => false,
+                            _ => true,
+                        };
+                        if keep {
+                            nodes.push(node);
+                        }
+                    }
+                }
+                Node::VBox(_) | Node::Insertion(_) | Node::Migrating(_) => {
+                    self.rebreak(&mut nodes, margins)?;
+                    self.vertical_queue.push(v);
+                }
+                _ => {}
+            }
+        }
+        self.rebreak(&mut nodes, margins)
+    }
+
+    fn rebreak(&mut self, nodes: &mut Vec<Node>, margins: Option<(Length, Length)>) -> Result<(), BuilderError> {
+        while nodes.last().is_some_and(|n| n.is_penalty() || n.is_zero()) {
+            nodes.pop();
+        }
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        let hsize = self.current_frame().map_or(0.0, FrameGeometry::width);
+        let (left, right) = margins.unwrap_or_default();
+        let skips = LineSkips { left, right, ..self.settings.skips };
+        let mut previous_depth = self.previous_depth;
+        let lines = self.break_nodes(std::mem::take(nodes), hsize, self.settings.direction, skips, &mut previous_depth);
+        self.previous_depth = previous_depth;
+        self.vertical_queue.extend(lines);
         Ok(())
     }
 
@@ -1450,7 +1645,20 @@ impl DocumentBuilder {
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
-        let mut h_nodes = self.shape_inlines(inlines)?;
+        let h_nodes = self.shape_inlines(inlines)?;
+        Ok(self.break_nodes(h_nodes, hsize, direction, skips, previous_depth))
+    }
+
+    /// Break shaped paragraph material into lines (the rest of SILE's
+    /// `boxUpNodes`).
+    fn break_nodes(
+        &mut self,
+        mut h_nodes: Vec<Node>,
+        hsize: f64,
+        direction: Direction,
+        skips: LineSkips,
+        previous_depth: &mut Option<f64>,
+    ) -> Vec<Node> {
         let mut j = h_nodes.len();
         while j > 0 {
             j -= 1;
@@ -1466,7 +1674,7 @@ impl DocumentBuilder {
             h_nodes.remove(0);
         }
         if h_nodes.is_empty() {
-            return Ok(Vec::new());
+            return Vec::new();
         }
         let mut par_fill = Node::glue(skips.par_fill);
         if let Node::Glue(g) = &mut par_fill {
@@ -1482,7 +1690,7 @@ impl DocumentBuilder {
             (lb_settings.hang_after, lb_settings.hang_indent) = (after, indent);
         }
         let (h_nodes, breaks) = linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes));
-        Ok(self.build_lines(&h_nodes, &breaks, direction, skips, previous_depth))
+        self.build_lines(&h_nodes, &breaks, direction, skips, previous_depth)
     }
 
     fn shape_inlines(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
@@ -2177,6 +2385,52 @@ mod tests {
         doc.add_text("A").start_leaders(None).add_text(".").end_hbox().add_text("B");
         let trace = doc.render_debug().unwrap();
         assert!(trace.matches("\t(.)\n").count() > 10, "{trace}");
+    }
+
+    #[test]
+    fn make_columns_splits_the_frame_evenly() {
+        let mut doc = DocumentBuilder::new(PaperSize::A4);
+        doc.make_columns(3, 10.0).unwrap();
+        let pages = doc.into_pages().unwrap();
+        let frames = &pages[0].frames;
+        let width = |id: &str| frames.iter().find(|f| f.id == id).unwrap().width();
+        assert!((width("content") - width("content_col1")).abs() < 1e-9);
+        assert!((width("content") - width("content_col2")).abs() < 1e-9);
+        assert_eq!(width("content_gutter1"), 10.0);
+    }
+
+    #[test]
+    fn page_frames_apply_to_the_current_page_only() {
+        let Some(mut doc) = builder_with_font() else { return };
+        let narrow = FrameSpec::new("a").left("100pt").right("300pt").top("100pt").bottom("200pt").next("b");
+        let wide = FrameSpec::new("b").left("50pt").right("500pt").top("300pt").bottom("700pt");
+        doc.declare_page_frames(&[narrow, wide]).unwrap();
+        doc.set_content_frame("a").unwrap();
+        doc.add_text("word ".repeat(1500));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        assert!(pages.len() > 1);
+        let ids = |p: &Page| p.content.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&pages[0]), ["a", "b"]);
+        assert!(ids(&pages[1]).iter().all(|id| id == "content"));
+    }
+
+    #[test]
+    fn lines_moving_to_a_wider_frame_are_broken_again() {
+        let Some(mut doc) = builder_with_font() else { return };
+        let narrow = FrameSpec::new("a").left("100pt").right("200pt").top("100pt").bottom("150pt").next("b");
+        let wide = FrameSpec::new("b").left("100pt").right("500pt").top("300pt").bottom("700pt");
+        doc.declare_page_frames(&[narrow, wide]).unwrap();
+        doc.set_content_frame("a").unwrap();
+        doc.add_text("word ".repeat(60));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        let (_, wide_lines) = pages[0].content.iter().find(|(id, _)| id == "b").unwrap();
+        let first_line = wide_lines.iter().find_map(|n| match n {
+            Node::VBox(v) => Some(v.nodes.iter().filter(|n| n.is_nnode()).count()),
+            _ => None,
+        });
+        assert!(first_line.unwrap() > 10, "lines in b use b's width");
     }
 
     #[test]
