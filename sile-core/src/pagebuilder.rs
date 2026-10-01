@@ -1,4 +1,5 @@
-use crate::frame::{FrameId, PageLayout};
+use crate::frame::PaperSize;
+use crate::framespec::FrameGeometry;
 use crate::measurement::Measurement;
 use crate::node::Node;
 
@@ -59,28 +60,37 @@ pub struct PageBreakResult {
     pub badness: i64,
     pub penalty: i32,
     pub cost: i64,
+    /// Penalty at the node that ended the search: the forced break, or
+    /// whatever overflowed the frame (SILE's `lastPenalty`).
+    pub trigger_penalty: i32,
 }
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
+/// A finished page: its frames, and what was set into each.
 #[derive(Debug, Clone)]
 pub struct Page {
     pub number: usize,
-    pub frames: Vec<(FrameId, Vec<Node>)>,
+    pub paper: PaperSize,
+    pub frames: Vec<FrameGeometry>,
+    /// Material set into frames, by frame id; each entry starts at its
+    /// frame's top.
+    pub content: Vec<(String, Vec<Node>)>,
 }
 
 impl Page {
-    pub fn new(number: usize) -> Self {
-        Self {
-            number,
-            frames: Vec::new(),
-        }
+    pub fn new(number: usize, paper: PaperSize, frames: Vec<FrameGeometry>) -> Self {
+        Self { number, paper, frames, content: Vec::new() }
     }
 
-    pub fn add_frame_content(&mut self, id: FrameId, nodes: Vec<Node>) {
-        self.frames.push((id, nodes));
+    pub fn frame(&self, id: &str) -> Option<&FrameGeometry> {
+        self.frames.iter().find(|f| f.id == id)
+    }
+
+    pub fn add_frame_content(&mut self, id: impl Into<String>, nodes: Vec<Node>) {
+        self.content.push((id.into(), nodes));
     }
 }
 
@@ -92,18 +102,11 @@ impl Page {
 pub struct PageBuilder {
     pub settings: PageBreakSettings,
     queue: Vec<Node>,
-    pages: Vec<Page>,
-    page_number: usize,
 }
 
 impl PageBuilder {
     pub fn new(settings: PageBreakSettings) -> Self {
-        Self {
-            settings,
-            queue: Vec::new(),
-            pages: Vec::new(),
-            page_number: 0,
-        }
+        Self { settings, queue: Vec::new() }
     }
 
     pub fn enqueue(&mut self, node: Node) {
@@ -118,138 +121,95 @@ impl PageBuilder {
         &self.queue
     }
 
-    pub fn pages(&self) -> &[Page] {
-        &self.pages
-    }
-
-    pub fn into_pages(self) -> Vec<Page> {
-        self.pages
-    }
-
-    /// Find the best page break in the queue for a frame of `target_height`
-    /// (SILE's `findBestBreak`). Legal breaks are penalties below 10000 and
-    /// glue after non-discardable material. Returns `None` until the queue
-    /// holds a forced break or overflows the frame.
     pub fn find_break(&self, target_height: f64) -> Option<PageBreakResult> {
-        let queue = &self.queue;
-        let mut i = queue.iter().position(|n| !n.is_vglue()).unwrap_or(queue.len());
-        let (mut height, mut stretch, mut shrink) = (0.0_f64, 0.0_f64, 0.0_f64);
-        let mut least_cost = INF_BAD;
-        let mut best: Option<PageBreakResult> = None;
-
-        while i < queue.len() {
-            let node = &queue[i];
-            match node {
-                Node::VBox(_) => height += pt(node.height()) + pt(node.depth()),
-                Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
-                    height += g.height.length.to_pt().unwrap_or(0.0);
-                    stretch += g.height.stretch.to_pt().unwrap_or(0.0);
-                    shrink += g.height.shrink.to_pt().unwrap_or(0.0);
-                }
-                _ => {}
-            }
-            let pi = match node {
-                Node::Penalty(p) => p.penalty,
-                _ => 0,
-            };
-            let legal = match node {
-                Node::Penalty(p) => (p.penalty as i64) < INF_BAD,
-                n => n.is_vglue() && i > 0 && !queue[i - 1].is_discardable(),
-            };
-            if legal {
-                let left = target_height - height;
-                let badness = if height < target_height {
-                    rate_badness(left, stretch)
-                } else if left < shrink {
-                    AWFUL_BAD
-                } else {
-                    rate_badness(-left, shrink)
-                };
-                let cost = if badness < AWFUL_BAD {
-                    if pi <= EJECT_PENALTY {
-                        pi as i64
-                    } else if badness < INF_BAD {
-                        badness + pi as i64
-                    } else {
-                        DEPLORABLE
-                    }
-                } else {
-                    badness
-                };
-                let here = PageBreakResult { break_index: i, badness, penalty: pi, cost };
-                if cost < least_cost {
-                    least_cost = cost;
-                    best = Some(here.clone());
-                }
-                if cost == AWFUL_BAD || pi <= EJECT_PENALTY {
-                    return Some(best.unwrap_or(here));
-                }
-            }
-            i += 1;
-        }
-        None
+        find_break(&self.queue, target_height)
     }
 
-    /// Take the next page's material off the queue, glue set to fill
-    /// `target_height`.
-    fn take_page(&mut self, target_height: f64, flush: bool) -> Option<Vec<Node>> {
-        if self.queue.is_empty() {
-            return None;
+    pub fn take_page(&mut self, target_height: f64, flush: bool) -> Option<Vec<Node>> {
+        take_page(&mut self.queue, target_height, flush).map(|(nodes, _)| nodes)
+    }
+}
+
+/// Find the best page break in the queue for a frame of `target_height`
+/// (SILE's `findBestBreak`). Legal breaks are penalties below 10000 and
+/// glue after non-discardable material. Returns `None` until the queue
+/// holds a forced break or overflows the frame.
+pub fn find_break(queue: &[Node], target_height: f64) -> Option<PageBreakResult> {
+    let mut i = queue.iter().position(|n| !n.is_vglue()).unwrap_or(queue.len());
+    let (mut height, mut stretch, mut shrink) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let mut least_cost = INF_BAD;
+    let mut best: Option<PageBreakResult> = None;
+
+    while i < queue.len() {
+        let node = &queue[i];
+        match node {
+            Node::VBox(_) => height += pt(node.height()) + pt(node.depth()),
+            Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
+                height += g.height.length.to_pt().unwrap_or(0.0);
+                stretch += g.height.stretch.to_pt().unwrap_or(0.0);
+                shrink += g.height.shrink.to_pt().unwrap_or(0.0);
+            }
+            _ => {}
         }
-        let end = match self.find_break(target_height) {
-            Some(br) => br.break_index + 1,
-            None if flush => self.queue.len(),
-            None => return None,
+        let pi = match node {
+            Node::Penalty(p) => p.penalty,
+            _ => 0,
         };
-        let mut content: Vec<Node> = self.queue.drain(..end).collect();
-        while content.len() > 1 && content.last().is_some_and(Node::is_discardable) {
-            content.pop();
-        }
-        Some(set_vertical_glue(content, target_height))
-    }
-
-    /// Build pages from the queue, distributing content into the target frame.
-    pub fn build_pages(&mut self, layout: &PageLayout, target_frame: FrameId) -> Vec<Page> {
-        let target_height = layout.frame(target_frame).height();
-        let mut result_pages = Vec::new();
-        while let Some(content) = self.take_page(target_height, true) {
-            self.page_number += 1;
-            let mut page = Page::new(self.page_number);
-            page.add_frame_content(target_frame, content);
-            result_pages.push(page);
-        }
-        self.pages.extend(result_pages.clone());
-        result_pages
-    }
-
-    /// Build pages using a multi-frame layout, distributing content across
-    /// chained frames. Content flows from one frame to the next via `frame.next`.
-    pub fn build_pages_multi_frame(
-        &mut self,
-        layout: &PageLayout,
-        start_frame: FrameId,
-    ) -> Vec<Page> {
-        let mut result_pages = Vec::new();
-        while !self.queue.is_empty() {
-            self.page_number += 1;
-            let mut page = Page::new(self.page_number);
-            let mut current_frame = start_frame;
-            loop {
-                let frame = layout.frame(current_frame);
-                let Some(content) = self.take_page(frame.height(), true) else {
-                    break;
-                };
-                page.add_frame_content(current_frame, content);
-                match frame.next {
-                    Some(next_id) if !self.queue.is_empty() => current_frame = next_id,
-                    _ => break,
+        let legal = match node {
+            Node::Penalty(p) => (p.penalty as i64) < INF_BAD,
+            n => n.is_vglue() && i > 0 && !queue[i - 1].is_discardable(),
+        };
+        if legal {
+            let left = target_height - height;
+            let badness = if height < target_height {
+                rate_badness(left, stretch)
+            } else if left < shrink {
+                AWFUL_BAD
+            } else {
+                rate_badness(-left, shrink)
+            };
+            let cost = if badness < AWFUL_BAD {
+                if pi <= EJECT_PENALTY {
+                    pi as i64
+                } else if badness < INF_BAD {
+                    badness + pi as i64
+                } else {
+                    DEPLORABLE
                 }
+            } else {
+                badness
+            };
+            let here = PageBreakResult { break_index: i, badness, penalty: pi, cost, trigger_penalty: pi };
+            if cost < least_cost {
+                least_cost = cost;
+                best = Some(here.clone());
             }
-            result_pages.push(page);
+            if cost == AWFUL_BAD || pi <= EJECT_PENALTY {
+                return Some(PageBreakResult { trigger_penalty: pi, ..best.unwrap_or(here) });
+            }
         }
-        self.pages.extend(result_pages.clone());
-        result_pages
+        i += 1;
     }
+    None
+}
+
+/// Take a frame's worth of material off the queue, glue set to fill
+/// `target_height`, with the penalty that ended the search. With `flush`, everything
+/// goes when there is no break yet.
+pub fn take_page(queue: &mut Vec<Node>, target_height: f64, flush: bool) -> Option<(Vec<Node>, i32)> {
+    if queue.is_empty() {
+        return None;
+    }
+    let (end, penalty) = match find_break(queue, target_height) {
+        Some(br) => (br.break_index + 1, br.trigger_penalty),
+        None if flush => (queue.len(), 0),
+        None => return None,
+    };
+    let mut content: Vec<Node> = queue.drain(..end).collect();
+    while content.len() > 1 && content.last().is_some_and(Node::is_discardable) {
+        content.pop();
+    }
+    Some((set_vertical_glue(content, target_height), penalty))
 }
 
 fn pt(l: crate::length::Length) -> f64 {
@@ -309,7 +269,6 @@ mod tests {
     use super::*;
 
     const INF_PENALTY: i32 = 10_000;
-    use crate::frame::PaperSize;
     use crate::length::Length;
     use crate::measurement::Measurement;
     use crate::node::VBox;
@@ -344,8 +303,6 @@ mod tests {
         }
         nodes
     }
-
-
 
     // -- PageBuilder find_break --
 
@@ -409,163 +366,13 @@ mod tests {
         assert_eq!(g.adjustment.to_pt(), Some(0.5));
     }
 
-    // -- PageBuilder build_pages --
-
     #[test]
-    fn build_single_page() {
-        let mut pb = PageBuilder::new(PageBreakSettings::default());
-        let nodes = make_paragraph(5, 12.0, 3.0);
-        pb.enqueue_many(nodes);
-        // Add an eject penalty to force page
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-
-        let layout = PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
-        let pages = pb.build_pages(&layout, frame_id);
-
-        assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].number, 1);
-        assert_eq!(pages[0].frames.len(), 1);
-        assert_eq!(pages[0].frames[0].0, frame_id);
-    }
-
-    #[test]
-    fn build_multiple_pages() {
-        let mut pb = PageBuilder::new(PageBreakSettings::default());
-
-        // Create enough lines to fill ~3 pages
-        // A4 content height with 72pt margin ≈ 698pt
-        // Each line: 12pt + 3pt + 2pt glue = 17pt → ~41 lines per page
-        let nodes = make_paragraph(120, 12.0, 3.0);
-        for node in &nodes {
-            pb.enqueue(node.clone());
-        }
-        // Force final page
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-
-        let layout = PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
-        let pages = pb.build_pages(&layout, frame_id);
-
-        assert!(
-            pages.len() >= 2,
-            "expected at least 2 pages, got {}",
-            pages.len()
-        );
-
-        for page in &pages {
-            assert_eq!(page.frames.len(), 1);
-        }
-    }
-
-    #[test]
-    fn build_pages_trims_discardables() {
-        let mut pb = PageBuilder::new(PageBreakSettings::default());
-        pb.enqueue(make_line(12.0, 3.0));
-        pb.enqueue(make_vglue(2.0));
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-        pb.enqueue(make_vglue(2.0)); // leading discardable on next page
-        pb.enqueue(make_line(12.0, 3.0));
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-
-        let layout = PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
-        let pages = pb.build_pages(&layout, frame_id);
-
-        assert_eq!(pages.len(), 2);
-
-        // First page: vglue and penalty trimmed from end
-        let p1_content = &pages[0].frames[0].1;
-        assert!(
-            p1_content.last().unwrap().is_vbox(),
-            "last node on page should be a vbox after trimming"
-        );
-
-        // Second page: leading vglue should be trimmed
-        let p2_content = &pages[1].frames[0].1;
-        assert!(
-            p2_content.first().unwrap().is_vbox(),
-            "first node on page should be a vbox after trimming"
-        );
-    }
-
-
-    // -- Multi-frame page building --
-
-    #[test]
-    fn build_pages_multi_frame_with_columns() {
-        let mut pb = PageBuilder::new(PageBreakSettings::default());
-
-        // Create 80 lines (~80×17pt = 1360pt). Each column is ~698pt tall,
-        // so content should overflow into the second column.
-        let nodes = make_paragraph(80, 12.0, 3.0);
-        for node in &nodes {
-            pb.enqueue(node.clone());
-        }
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-
-        let layout = PageLayout::two_column(PaperSize::A4, 72.0, 0.0, 0.0, 0.0, 12.0);
-        let ids = layout.frame_ids();
-        // ids[1] = left_column, ids[2] = right_column (left flows to right)
-        let start = ids[1];
-
-        let pages = pb.build_pages_multi_frame(&layout, start);
-
-        assert!(!pages.is_empty());
-
-        // At least one page should have content in both columns
-        let multi_frame_page = pages.iter().find(|p| p.frames.len() >= 2);
-        assert!(
-            multi_frame_page.is_some(),
-            "at least one page should use both columns"
-        );
-    }
-
-    #[test]
-    fn build_pages_header_footer() {
-        let mut pb = PageBuilder::new(PageBreakSettings::default());
-
-        // Enough content for ~2 pages of the body frame
-        let nodes = make_paragraph(80, 12.0, 3.0);
-        pb.enqueue_many(nodes);
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-
-        let layout =
-            PageLayout::with_header_footer(PaperSize::A4, 72.0, 30.0, 20.0, 10.0);
-        let content_id = layout.content_frame_id().unwrap();
-
-        let pages = pb.build_pages(&layout, content_id);
-
-        assert!(
-            pages.len() >= 2,
-            "expected at least 2 pages, got {}",
-            pages.len()
-        );
-    }
-
-    // -- End-to-end: paragraph → page break --
-
-    #[test]
-    fn end_to_end_paragraph_to_pages() {
-        let mut pb = PageBuilder::new(PageBreakSettings::default());
-
-        // Simulate 3 paragraphs with inter-paragraph glue and penalty
-        for _para in 0..3 {
-            pb.enqueue_many(make_paragraph(15, 12.0, 3.0));
-            pb.enqueue(make_vglue(6.0)); // paragraph skip
-            pb.enqueue(Node::penalty(0)); // allow break between paragraphs
-        }
-        pb.enqueue(Node::penalty(EJECT_PENALTY));
-
-        let layout = PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
-        let pages = pb.build_pages(&layout, frame_id);
-
-        assert!(!pages.is_empty());
-        // Verify all pages have content
-        for page in &pages {
-            assert!(!page.frames.is_empty());
-            assert!(!page.frames[0].1.is_empty());
-        }
+    fn overflow_reports_the_penalty_that_ended_the_search() {
+        let mut queue = make_paragraph(10, 12.0, 3.0);
+        queue.insert(5, Node::penalty(-500));
+        let (page, penalty) = take_page(&mut queue, 50.0, false).unwrap();
+        assert_eq!(penalty, 0, "the overflowing glue, not the break taken");
+        assert_eq!(page.iter().filter(|n| matches!(n, Node::VBox(_))).count(), 3);
+        assert!(!queue.is_empty());
     }
 }

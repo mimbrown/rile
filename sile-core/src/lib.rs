@@ -1,7 +1,10 @@
 pub mod builder;
+pub mod class;
 pub mod color;
+pub mod counter;
 pub mod font;
 pub mod frame;
+pub mod framespec;
 pub mod hyphenation;
 pub mod length;
 pub mod linebreak;
