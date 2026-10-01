@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, TextAlign};
 use sile_core::counter::format_number;
+use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{Node, Stroke};
@@ -78,6 +79,7 @@ pub fn run(name: &str, src: &str, format: Format, corpus: &Corpus) -> Result<Str
 
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
+    "color",
     "em",
     "strong",
     "noindent",
@@ -157,11 +159,14 @@ const SIMPLE_COMMANDS: &[&str] = &[
     " ",
 ];
 
-const FONT_OPTIONS: &[&str] = &["family", "size", "style", "weight", "language"];
+const FONT_OPTIONS: &[&str] = &["family", "size", "style", "weight", "language", "features", "variations", "filename"];
 
 const SETTINGS: &[&str] = &[
     "font.family",
     "font.size",
+    "font.features",
+    "font.variations",
+    "font.filename",
     "font.style",
     "font.weight",
     "document.parindent",
@@ -172,6 +177,7 @@ const SETTINGS: &[&str] = &[
     "document.rskip",
     "document.language",
     "document.letterspaceglue",
+    "shaper.tracking",
     "typesetter.obeyspaces",
     "languages.fixedNbsp",
     "current.parindent",
@@ -241,7 +247,9 @@ fn check(
                     | "packages.leaders"
                     | "packages.masters"
                     | "packages.frametricks"
-                    | "packages.counters",
+                    | "packages.counters"
+                    | "packages.color"
+                    | "packages.color-fonts",
                 ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
@@ -318,6 +326,7 @@ struct Settings {
     baselineskip: String,
     lineskip: String,
     letterspace: Option<String>,
+    tracking: Option<f64>,
     obey_spaces: bool,
     fixed_nbsp: bool,
     skips: LineSkips,
@@ -332,6 +341,7 @@ struct Synced {
     skips: LineSkips,
     language: String,
     letterspace: Option<Length>,
+    tracking: Option<f64>,
     obey_spaces: bool,
     fixed_nbsp: bool,
 }
@@ -406,6 +416,7 @@ impl<'a> Driver<'a> {
                 baselineskip: "1.2em plus 1pt".into(),
                 lineskip: "1pt".into(),
                 letterspace: None,
+                tracking: None,
                 obey_spaces: false,
                 fixed_nbsp: false,
                 skips: LineSkips::default(),
@@ -512,6 +523,7 @@ impl<'a> Driver<'a> {
             skips: self.settings.skips,
             language: self.settings.language.clone(),
             letterspace,
+            tracking: self.settings.tracking,
             obey_spaces: self.settings.obey_spaces,
             fixed_nbsp: self.settings.fixed_nbsp,
         };
@@ -532,6 +544,7 @@ impl<'a> Driver<'a> {
         push!(skips, doc.set_line_skips(now.skips));
         push!(language, doc.set_language(now.language.clone()));
         push!(letterspace, doc.set_letter_space(now.letterspace));
+        push!(tracking, doc.set_tracking(now.tracking));
         push!(obey_spaces, doc.set_obey_spaces(now.obey_spaces));
         push!(fixed_nbsp, doc.set_fixed_nbsp(now.fixed_nbsp));
         self.synced = Some(now);
@@ -1041,6 +1054,17 @@ impl<'a> Driver<'a> {
                 })?;
                 d.process(content)
             })?,
+            "color" => {
+                let color = Color::parse(cmd.option("color").unwrap_or("black"))?;
+                let previous = self.doc.color();
+                self.doc.set_color(color);
+                let r = self.process(content);
+                match previous {
+                    Some(c) => self.doc.set_color(c),
+                    None => self.doc.clear_color(),
+                };
+                r?
+            }
             "strong" => self.scoped(|d| {
                 d.update_font(|f| f.weight = FontWeight(700))?;
                 d.process(content)
@@ -1176,6 +1200,16 @@ impl<'a> Driver<'a> {
                 self.update_font(|f| f.weight = FontWeight(weight))?
             }
             "language" => self.settings.language = value.to_string(),
+            "features" => self.update_font(|f| f.features = value.to_string())?,
+            "variations" => self.update_font(|f| f.variations = value.to_string())?,
+            "filename" => {
+                let path = match value.strip_prefix(".fonts/") {
+                    Some(file) => self.corpus.font_dir.join("extra").join(file),
+                    None => self.corpus.font_dir.with_file_name("sile").join(value),
+                };
+                let path = path.to_string_lossy().into_owned();
+                self.update_font(|f| f.filename = (!value.is_empty()).then_some(path))?
+            }
             _ => return Err(format!("font option {key}")),
         }
         Ok(())
@@ -1202,12 +1236,16 @@ impl<'a> Driver<'a> {
             "font.size" => self.set_font_option("size", value)?,
             "font.style" => self.set_font_option("style", value)?,
             "font.weight" => self.set_font_option("weight", value)?,
+            "font.features" => self.set_font_option("features", value)?,
+            "font.variations" => self.set_font_option("variations", value)?,
+            "font.filename" => self.set_font_option("filename", value)?,
             "document.language" => self.settings.language = value.to_string(),
             "document.parindent" => self.settings.parindent = value.to_string(),
             "document.parskip" => self.settings.parskip = value.to_string(),
             "document.baselineskip" => self.settings.baselineskip = value.to_string(),
             "document.lineskip" => self.settings.lineskip = value.to_string(),
-            "document.letterspaceglue" => self.settings.letterspace = Some(value.to_string()),
+            "document.letterspaceglue" => self.settings.letterspace = Some(value.to_string()).filter(|v| !v.is_empty()),
+            "shaper.tracking" => self.settings.tracking = if value.is_empty() { None } else { Some(num()?) },
             "typesetter.obeyspaces" => self.settings.obey_spaces = value == "true",
             "languages.fixedNbsp" => self.settings.fixed_nbsp = value == "true",
             "document.lskip" => self.settings.skips.left = self.length(value)?,

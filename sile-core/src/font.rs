@@ -306,6 +306,83 @@ impl FontFace {
         })
     }
 
+    /// Axis positions for `spec` on a variable font, set as SILE does:
+    /// optical size from the point size, weight and italic from the spec,
+    /// then any explicit `variations` ("wght=150,wdth=120").
+    pub fn variations(&self, spec: &FontSpec) -> Vec<([u8; 4], f32)> {
+        if !self.is_variable {
+            return vec![];
+        }
+        let explicit: Vec<([u8; 4], f32)> = spec
+            .variations
+            .split([',', ';', ':'])
+            .filter_map(|v| {
+                let (tag, value) = v.trim().split_once(['=', ' '])?;
+                let tag: [u8; 4] = format!("{tag:<4}").as_bytes().try_into().ok()?;
+                Some((tag, value.trim().parse().ok()?))
+            })
+            .collect();
+        self.with_face(|f| {
+            f.variation_axes()
+                .into_iter()
+                .map(|axis| {
+                    let tag = axis.tag.to_bytes();
+                    let default = match &tag {
+                        b"opsz" => spec.size as f32,
+                        b"wght" => spec.weight.0 as f32,
+                        b"ital" if spec.style == FontStyle::Italic => 1.0,
+                        _ => axis.def_value,
+                    };
+                    let value = explicit.iter().rev().find(|(t, _)| *t == tag).map_or(default, |(_, v)| *v);
+                    (tag, value)
+                })
+                .collect()
+        })
+    }
+
+    pub fn has_color_layers(&self) -> bool {
+        self.has_colr && self.has_cpal
+    }
+
+    /// The layers a `COLR` glyph is drawn with, bottom first, each with its
+    /// colour from the first palette (`None` for the text colour).
+    pub fn color_layers(&self, glyph_id: u16) -> Option<Vec<(u16, Option<crate::color::Color>)>> {
+        struct Layers(Vec<(u16, Option<crate::color::Color>)>, bool);
+        impl<'a> ttf_parser::colr::Painter<'a> for Layers {
+            fn outline_glyph(&mut self, glyph_id: ttf_parser::GlyphId) {
+                self.0.push((glyph_id.0, None));
+            }
+            fn paint(&mut self, paint: ttf_parser::colr::Paint<'a>) {
+                match (paint, self.0.last_mut()) {
+                    (ttf_parser::colr::Paint::Solid(c), Some(layer)) if c != FOREGROUND => {
+                        let channel = |v: u8| v as f64 / 255.0;
+                        layer.1 = Some(crate::color::Color::Rgb { r: channel(c.red), g: channel(c.green), b: channel(c.blue) });
+                    }
+                    (ttf_parser::colr::Paint::Solid(_), Some(_)) => {}
+                    _ => self.1 = false,
+                }
+            }
+            fn push_clip(&mut self) {}
+            fn push_clip_box(&mut self, _: ttf_parser::colr::ClipBox) {}
+            fn pop_clip(&mut self) {}
+            fn push_layer(&mut self, _: ttf_parser::colr::CompositeMode) {}
+            fn pop_layer(&mut self) {}
+            fn push_transform(&mut self, _: ttf_parser::Transform) {
+                self.1 = false;
+            }
+            fn pop_transform(&mut self) {}
+        }
+        const FOREGROUND: ttf_parser::RgbaColor = ttf_parser::RgbaColor { red: 0, green: 0, blue: 0, alpha: 0 };
+        if !self.has_color_layers() {
+            return None;
+        }
+        self.with_face(|f| {
+            let mut layers = Layers(Vec::new(), true);
+            f.paint_color_glyph(ttf_parser::GlyphId(glyph_id), 0, FOREGROUND, &mut layers)?;
+            (layers.1 && !layers.0.is_empty()).then_some(layers.0)
+        })
+    }
+
     // -- Scaling helpers -----------------------------------------------------
 
     /// Convert signed font units to points at a given point size.

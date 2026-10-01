@@ -59,6 +59,17 @@ impl HbFont {
         unsafe { Self(hb::hb_font_create(face.0)) }
     }
 
+    pub fn set_variations(&mut self, variations: &[([u8; 4], f32)]) {
+        if variations.is_empty() {
+            return;
+        }
+        let variations: Vec<hb::hb_variation_t> = variations
+            .iter()
+            .map(|(tag, value)| hb::hb_variation_t { tag: u32::from_be_bytes(*tag), value: *value })
+            .collect();
+        unsafe { hb::hb_font_set_variations(self.0, variations.as_ptr(), variations.len() as u32) }
+    }
+
     pub fn as_ptr(&self) -> *mut hb::hb_font_t {
         self.0
     }

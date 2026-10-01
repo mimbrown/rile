@@ -23,7 +23,8 @@ impl Shaper for HarfBuzzShaper {
         let (data, index) = face.raw_data();
         let blob = HbBlob::from_bytes(data);
         let hb_face = HbFace::new(&blob, index);
-        let font = HbFont::new(&hb_face);
+        let mut font = HbFont::new(&hb_face);
+        font.set_variations(&face.variations(spec));
 
         let mut buffer = HbBuffer::new();
         buffer.add_str(text);
