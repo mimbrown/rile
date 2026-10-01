@@ -690,6 +690,17 @@ impl crate::render::Canvas for PdfOutputter {
     fn rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
         self.draw_rule(x, y, width, height);
     }
+
+    fn frame_outline(&mut self, frame: &crate::framespec::FrameGeometry) {
+        let page = self.current.as_mut().expect("no current page");
+        let y = page.height - frame.bottom;
+        page.content.save_state();
+        page.content.set_stroke_rgb(0.8, 0.0, 0.0);
+        page.content.set_line_width(0.5);
+        page.content.rect(frame.left as f32, y as f32, frame.width() as f32, frame.height() as f32);
+        page.content.stroke();
+        page.content.restore_state();
+    }
 }
 
 fn write_font(

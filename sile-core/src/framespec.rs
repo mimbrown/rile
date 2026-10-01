@@ -148,14 +148,14 @@ impl Edge {
 }
 
 /// Solve a page's frames. Frames named in expressions but not declared are
-/// created unconstrained, as SILE does.
-pub fn solve(paper: PaperSize, specs: &[FrameSpec]) -> Result<Vec<FrameGeometry>, FrameError> {
+/// created unconstrained, as SILE does. `em` is the current font size.
+pub fn solve(paper: PaperSize, em: f64, specs: &[FrameSpec]) -> Result<Vec<FrameGeometry>, FrameError> {
     let mut vars: BTreeMap<(String, Edge), Variable> = BTreeMap::new();
     let mut constraints = Vec::new();
     for spec in specs {
         for (edge, expr) in spec.edges() {
             let Some(expr) = expr else { continue };
-            let parsed = Parser { src: expr, pos: 0, paper }
+            let parsed = Parser { src: expr, pos: 0, paper, em }
                 .parse()
                 .ok_or_else(|| FrameError::Parse { frame: spec.id.clone(), expr: expr.clone() })?;
             constraints.push(((spec.id.clone(), edge), parsed));
@@ -261,6 +261,7 @@ struct Parser<'a> {
     src: &'a str,
     pos: usize,
     paper: PaperSize,
+    em: f64,
 }
 
 impl Parser<'_> {
@@ -357,6 +358,8 @@ impl Parser<'_> {
             "%ph" => height / 100.0,
             "%pmin" => width.min(height) / 100.0,
             "%pmax" => width.max(height) / 100.0,
+            "em" => self.em,
+            "en" => self.em / 2.0,
             _ => return None,
         };
         self.pos += unit_len;
@@ -384,7 +387,7 @@ mod tests {
                 .bottom("97%ph"),
             FrameSpec::new("footnotes").left("left(content)").right("right(content)").height("0").bottom("90%ph"),
         ];
-        let frames = solve(paper, &specs).unwrap();
+        let frames = solve(paper, 10.0, &specs).unwrap();
         let content = &frames[0];
         assert!(close(content.left, 10.0) && close(content.right, 190.0));
         assert!(close(content.top, 5.0) && close(content.bottom, 90.0));
@@ -398,13 +401,13 @@ mod tests {
         let m = spec.mirrored();
         assert_eq!(m.left.as_deref(), Some("100%pw-(86%pw)"));
         assert_eq!(m.right.as_deref(), Some("100%pw-(8.3%pw)"));
-        let frames = solve(PaperSize::new(1000.0, 10.0), &[m]).unwrap();
+        let frames = solve(PaperSize::new(1000.0, 10.0), 10.0, &[m]).unwrap();
         assert!(close(frames[0].left, 140.0) && close(frames[0].right, 917.0));
     }
 
     #[test]
     fn bad_expressions_are_errors() {
         let specs = [FrameSpec::new("a").left("left(b")];
-        assert!(matches!(solve(PaperSize::A4, &specs), Err(FrameError::Parse { .. })));
+        assert!(matches!(solve(PaperSize::A4, 10.0, &specs), Err(FrameError::Parse { .. })));
     }
 }

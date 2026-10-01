@@ -1,4 +1,5 @@
 use crate::node::{HBox, Ink, Leader, NNode, Node};
+use crate::framespec::FrameGeometry;
 use crate::pagebuilder::Page;
 
 /// A drawing surface for laid-out pages. Coordinates are in points, measured
@@ -9,6 +10,8 @@ pub trait Canvas {
     fn glyphs(&mut self, nnode: &NNode, x: f64, baseline_y: f64);
     /// A filled rectangle with its top-left corner at `(x, y)`.
     fn rule(&mut self, x: f64, y: f64, width: f64, height: f64);
+    /// A frame's outline, for debugging layouts (SILE's `\showframe`).
+    fn frame_outline(&mut self, _frame: &FrameGeometry) {}
 }
 
 /// Walk every page and draw its frames' content onto `canvas`.
@@ -16,6 +19,9 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
     for page in pages {
         canvas.begin_page(page.paper.width, page.paper.height);
         draw_page(page, canvas);
+        for frame in &page.outlines {
+            canvas.frame_outline(frame);
+        }
         canvas.end_page();
     }
 }
