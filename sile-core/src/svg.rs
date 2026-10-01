@@ -136,7 +136,7 @@ pub fn render_glyphs_to_svg_with_fallbacks(
             );
         }
 
-        cursor_x += item.x_advance;
+        cursor_x += item.width;
     }
 
     let width = cursor_x + margin;

@@ -16,6 +16,7 @@ use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::framespec::FrameSpec;
 use sile_core::length::Length;
+use sile_core::lists::{ListKind, ListOptions};
 use sile_core::measurement::{Measurement, Unit};
 use sile_core::node::INFINITY;
 use sile_core::shaper::SpaceSettings;
@@ -79,7 +80,12 @@ pub fn run(name: &str, src: &str, format: Format, corpus: &Corpus) -> Result<Str
 
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
+    "verbatim",
+    "itemize",
+    "enumerate",
+    "item",
     "color",
+    "unichar",
     "em",
     "strong",
     "noindent",
@@ -159,7 +165,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     " ",
 ];
 
-const FONT_OPTIONS: &[&str] = &["family", "size", "style", "weight", "language", "features", "variations", "filename"];
+const FONT_OPTIONS: &[&str] = &["family", "size", "style", "weight", "language", "features", "variations", "filename", "adjust"];
 
 const SETTINGS: &[&str] = &[
     "font.family",
@@ -178,6 +184,12 @@ const SETTINGS: &[&str] = &[
     "document.language",
     "document.letterspaceglue",
     "shaper.tracking",
+    "shaper.variablespaces",
+    "document.spaceskip",
+    "lists.parskip",
+    "lists.enumerate.leftmargin",
+    "lists.enumerate.labelindent",
+    "lists.itemize.leftmargin",
     "typesetter.obeyspaces",
     "languages.fixedNbsp",
     "current.parindent",
@@ -249,6 +261,9 @@ fn check(
                     | "packages.frametricks"
                     | "packages.counters"
                     | "packages.color"
+                    | "packages.unichar"
+                    | "packages.lists"
+                    | "packages.verbatim"
                     | "packages.color-fonts",
                 ) => {}
                 Some(m) => {
@@ -329,7 +344,10 @@ struct Settings {
     tracking: Option<f64>,
     obey_spaces: bool,
     fixed_nbsp: bool,
+    /// Every newline ends a paragraph (`typesetter.parseppattern` "\n").
+    obey_lines: bool,
     skips: LineSkips,
+    space: SpaceSettings,
 }
 
 /// Settings as last handed to the builder.
@@ -344,6 +362,7 @@ struct Synced {
     tracking: Option<f64>,
     obey_spaces: bool,
     fixed_nbsp: bool,
+    space: SpaceSettings,
 }
 
 /// A driver error passed through a class's typesetting callbacks.
@@ -379,7 +398,6 @@ pub(crate) struct Driver<'a> {
     /// The settings at depth 0, for material set with the document's own
     /// settings (SILE's `toplevelState`).
     toplevel: Option<Settings>,
-    space_settings: SpaceSettings,
     /// SILE release targeted by `packages.retrograde` (latest if unset).
     target: (u32, u32, u32),
 }
@@ -419,14 +437,15 @@ impl<'a> Driver<'a> {
                 tracking: None,
                 obey_spaces: false,
                 fixed_nbsp: false,
+                obey_lines: false,
                 skips: LineSkips::default(),
+                space: SpaceSettings::default(),
             },
             synced: None,
             depth: 0,
             defines: BTreeMap::new(),
             macro_content: Vec::new(),
             toplevel: None,
-            space_settings: SpaceSettings::default(),
             target: (u32::MAX, 0, 0),
         })
     }
@@ -526,6 +545,7 @@ impl<'a> Driver<'a> {
             tracking: self.settings.tracking,
             obey_spaces: self.settings.obey_spaces,
             fixed_nbsp: self.settings.fixed_nbsp,
+            space: self.settings.space,
         };
         // Only what changed, so that settings a class made around content
         // it hands back to us stay in force.
@@ -547,6 +567,7 @@ impl<'a> Driver<'a> {
         push!(tracking, doc.set_tracking(now.tracking));
         push!(obey_spaces, doc.set_obey_spaces(now.obey_spaces));
         push!(fixed_nbsp, doc.set_fixed_nbsp(now.fixed_nbsp));
+        push!(space, doc.set_space_settings(now.space));
         self.synced = Some(now);
         if self.depth == 0 {
             self.doc.mark_toplevel();
@@ -575,9 +596,17 @@ impl<'a> Driver<'a> {
         if matches!(text, "\n" | "\r\n") {
             return Ok(());
         }
-        let mut paragraphs = split_paragraphs(text).into_iter().peekable();
+        let mut paragraphs = if self.settings.obey_lines {
+            text.split('\n').map(str::to_string).collect()
+        } else {
+            split_paragraphs(text)
+        }
+        .into_iter()
+        .peekable();
         while let Some(chunk) = paragraphs.next() {
-            self.add_text(&chunk)?;
+            if !chunk.is_empty() {
+                self.add_text(&chunk)?;
+            }
             if paragraphs.peek().is_some() {
                 self.par()?;
             }
@@ -1054,6 +1083,74 @@ impl<'a> Driver<'a> {
                 })?;
                 d.process(content)
             })?,
+            "itemize" | "enumerate" => {
+                let kind = if cmd.name == "itemize" { ListKind::Itemize } else { ListKind::Enumerate };
+                let options = ListOptions {
+                    start: cmd.option("start").map(|v| v.parse().map_err(|_| format!("bad start {v}"))).transpose()?,
+                    display: cmd.option("display").map(str::to_string),
+                    before: cmd.option("before").map(str::to_string),
+                    after: cmd.option("after").map(str::to_string),
+                    bullet: cmd.option("bullet").map(str::to_string),
+                };
+                self.sync()?;
+                self.doc.begin_list(kind, &options).map_err(err)?;
+                self.scoped(|d| {
+                    d.settings.skips = d.doc.line_skips();
+                    d.settings.parindent = "0pt".into();
+                    for item in content {
+                        let Content::Command(c) = item else { continue };
+                        if c.name == "item" {
+                            d.doc.begin_item(c.option("bullet")).map_err(err)?;
+                            d.process(c.content.as_deref().unwrap_or(&[]))?;
+                            d.sync()?;
+                            d.doc.end_item().map_err(err)?;
+                        } else {
+                            d.command(c)?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                self.sync()?;
+                self.doc.end_list().map_err(err)?;
+            }
+            "verbatim" => {
+                self.sync()?;
+                self.doc.push_vglue(Length::pt(6.0));
+                self.doc.leave_hmode(false).map_err(err)?;
+                self.scoped(|d| {
+                    if d.defines.contains_key("verbatim:font") {
+                        d.command(&Command { name: "verbatim:font".into(), options: Vec::new(), content: None, raw: None })?;
+                    } else {
+                        let before = d.doc.font_spec().cloned();
+                        d.set_font_option("family", "Hack")?;
+                        d.adjust_font_size("ex-height", before)?;
+                    }
+                    d.settings.language = "und".into();
+                    d.settings.obey_lines = true;
+                    d.settings.obey_spaces = true;
+                    let fixed = |l: Length| Length::new(l.length, Measurement::pt(0.0), Measurement::pt(0.0));
+                    d.settings.skips.left = fixed(d.settings.skips.left);
+                    d.settings.skips.right = fixed(d.settings.skips.right);
+                    d.settings.parindent = "0pt".into();
+                    d.settings.parskip = "0pt".into();
+                    d.settings.space.skip = Some(d.length("1spc")?);
+                    d.settings.space.variable_spaces = false;
+                    d.process(content)?;
+                    d.sync()?;
+                    d.doc.leave_hmode(false).map_err(err)
+                })?;
+            }
+            "unichar" => {
+                let arg = sil::plain_text(content);
+                let arg = arg.trim();
+                let cp = match arg.strip_prefix("U+").or_else(|| arg.strip_prefix("u+")).or_else(|| arg.strip_prefix("0x")).or_else(|| arg.strip_prefix("0X")) {
+                    Some(hex) => u32::from_str_radix(hex, 16),
+                    None => arg.parse(),
+                };
+                let c = cp.ok().and_then(char::from_u32).ok_or_else(|| format!("bad codepoint {arg}"))?;
+                self.sync()?;
+                self.doc.add_char(c);
+            }
             "color" => {
                 let color = Color::parse(cmd.option("color").unwrap_or("black"))?;
                 let previous = self.doc.color();
@@ -1071,8 +1168,14 @@ impl<'a> Driver<'a> {
             })?,
             "font" => {
                 let apply = |d: &mut Self| -> Result<(), String> {
+                    let before = d.doc.font_spec().cloned();
                     for (k, v) in &cmd.options {
-                        d.set_font_option(k, v)?;
+                        if k != "adjust" {
+                            d.set_font_option(k, v)?;
+                        }
+                    }
+                    if let Some(adjust) = cmd.option("adjust") {
+                        d.adjust_font_size(adjust, before)?;
                     }
                     Ok(())
                 };
@@ -1215,6 +1318,26 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
+    /// SILE's `\font[adjust=...]`, applied after the font's other options:
+    /// scale the font so its ex or cap height matches the previous font's.
+    fn adjust_font_size(&mut self, adjust: &str, before: Option<FontSpec>) -> Result<(), String> {
+        let adjust = adjust.trim();
+        let (amount, metric) = adjust.split_at(adjust.find(|c: char| c.is_alphabetic()).unwrap_or(0));
+        let ratio: f64 = if amount.trim().is_empty() { 1.0 } else { amount.trim().parse().map_err(|_| format!("bad adjust {adjust}"))? };
+        if metric != "ex-height" {
+            return Err(format!("font adjust {metric}"));
+        }
+        let new = self.dimen("1ex")?;
+        let (Some(before), Some(after)) = (before, self.doc.font_spec().cloned()) else {
+            return Ok(());
+        };
+        self.doc.set_font_spec(before).map_err(|e| e.to_string())?;
+        let current = self.dimen("1ex")?;
+        let size = after.size * ratio * current / new;
+        self.doc.set_font_spec(FontSpec { size, ..after }).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub(crate) fn reset_setting(&mut self, parameter: &str) -> Result<(), String> {
         let value = self.defaults.get(parameter).cloned().ok_or_else(|| format!("no default for {parameter}"))?;
         self.set(parameter, &value)
@@ -1245,6 +1368,13 @@ impl<'a> Driver<'a> {
             "document.baselineskip" => self.settings.baselineskip = value.to_string(),
             "document.lineskip" => self.settings.lineskip = value.to_string(),
             "document.letterspaceglue" => self.settings.letterspace = Some(value.to_string()).filter(|v| !v.is_empty()),
+            "lists.parskip" => {
+                let skip = self.length(value)?;
+                self.doc.list_settings_mut().parskip = skip;
+            }
+            "lists.enumerate.leftmargin" => self.doc.list_settings_mut().enumerate_margin = Measurement::from_str(value).map_err(|_| format!("bad length {value}"))?,
+            "lists.enumerate.labelindent" => self.doc.list_settings_mut().enumerate_label_indent = Measurement::from_str(value).map_err(|_| format!("bad length {value}"))?,
+            "lists.itemize.leftmargin" => self.doc.list_settings_mut().itemize_margin = Measurement::from_str(value).map_err(|_| format!("bad length {value}"))?,
             "shaper.tracking" => self.settings.tracking = if value.is_empty() { None } else { Some(num()?) },
             "typesetter.obeyspaces" => self.settings.obey_spaces = value == "true",
             "languages.fixedNbsp" => self.settings.fixed_nbsp = value == "true",
@@ -1271,14 +1401,16 @@ impl<'a> Driver<'a> {
             "shaper.spaceenlargementfactor"
             | "shaper.spacestretchfactor"
             | "shaper.spaceshrinkfactor" => {
-                let mut s = self.space_settings;
+                let s = &mut self.settings.space;
                 match parameter {
                     "shaper.spaceenlargementfactor" => s.enlargement_factor = num()?,
                     "shaper.spacestretchfactor" => s.stretch_factor = num()?,
                     _ => s.shrink_factor = num()?,
                 }
-                self.doc.set_space_settings(s);
-                self.space_settings = s;
+            }
+            "shaper.variablespaces" => self.settings.space.variable_spaces = truthy(value),
+            "document.spaceskip" => {
+                self.settings.space.skip = if value.is_empty() { None } else { Some(self.length(value)?) }
             }
             other => return Err(format!("setting {other}")),
         }
@@ -1294,8 +1426,7 @@ impl<'a> Driver<'a> {
         }
         if self.target < (0, 15, 0) {
             self.settings.parindent = "20pt".into();
-            self.space_settings.enlargement_factor = 1.2;
-            self.doc.set_space_settings(self.space_settings);
+            self.settings.space.enlargement_factor = 1.2;
         }
         Ok(())
     }

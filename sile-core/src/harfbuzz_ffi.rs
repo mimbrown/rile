@@ -70,6 +70,11 @@ impl HbFont {
         unsafe { hb::hb_font_set_variations(self.0, variations.as_ptr(), variations.len() as u32) }
     }
 
+    /// The glyph's own advance, in font units.
+    pub fn glyph_h_advance(&self, gid: u32) -> i32 {
+        unsafe { hb::hb_font_get_glyph_h_advance(self.0, gid) }
+    }
+
     pub fn as_ptr(&self) -> *mut hb::hb_font_t {
         self.0
     }
