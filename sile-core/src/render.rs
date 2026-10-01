@@ -29,32 +29,7 @@ fn draw_page(page: &Page, layout: &PageLayout, canvas: &mut impl Canvas) {
                 Node::VBox(vbox) => {
                     let height = pt(&vbox.height.length);
                     let depth = pt(&vbox.depth.length);
-                    let baseline_y = cursor_y + height;
-                    let mut cursor_x = frame.left;
-
-                    for hnode in &vbox.nodes {
-                        match hnode {
-                            Node::NNode(nnode) => {
-                                canvas.glyphs(nnode, cursor_x, baseline_y);
-                                cursor_x += pt(&nnode.width.length);
-                            }
-                            Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
-                                let natural = pt(&g.width.length);
-                                let scaled = if vbox.ratio > 0.0 {
-                                    natural + pt(&g.width.stretch) * vbox.ratio
-                                } else if vbox.ratio < 0.0 {
-                                    natural + pt(&g.width.shrink) * vbox.ratio
-                                } else {
-                                    natural
-                                };
-                                cursor_x += scaled.max(0.0);
-                            }
-                            Node::Kern(k) => cursor_x += pt(&k.width.length),
-                            Node::HBox(hbox) => cursor_x += pt(&hbox.width.length),
-                            _ => {}
-                        }
-                    }
-
+                    draw_hlist(&vbox.nodes, frame.left, cursor_y + height, vbox.ratio, canvas);
                     cursor_y += height + depth;
                 }
                 Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
@@ -65,6 +40,35 @@ fn draw_page(page: &Page, layout: &PageLayout, canvas: &mut impl Canvas) {
             }
         }
     }
+}
+
+/// Draw a line's nodes from `x`, scaling glue by the line's `ratio` the way
+/// SILE's `rationWidth` does.
+fn draw_hlist(nodes: &[Node], mut x: f64, baseline_y: f64, ratio: f64, canvas: &mut impl Canvas) -> f64 {
+    for node in nodes {
+        match node {
+            Node::NNode(nnode) => {
+                canvas.glyphs(nnode, x, baseline_y);
+                x += pt(&nnode.width.length);
+            }
+            Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
+                let (stretch, shrink) = (pt(&g.width.stretch), pt(&g.width.shrink));
+                x += pt(&g.width.length);
+                if ratio > 0.0 && stretch > 0.0 {
+                    x += stretch * ratio;
+                } else if ratio < 0.0 && shrink > 0.0 {
+                    x += shrink * ratio;
+                }
+            }
+            Node::Kern(k) => x += pt(&k.width.length),
+            Node::HBox(hbox) => {
+                draw_hlist(&hbox.nodes, x, baseline_y, 0.0, canvas);
+                x += pt(&hbox.width.length);
+            }
+            _ => {}
+        }
+    }
+    x
 }
 
 fn pt(m: &crate::measurement::Measurement) -> f64 {

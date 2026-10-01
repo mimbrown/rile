@@ -82,6 +82,14 @@ struct TextRun {
     color: Option<Color>,
 }
 
+/// Paragraph material in the order it was added: text still to be shaped,
+/// ready-made nodes, and boxes of further material set at natural width.
+enum Inline {
+    Text(TextRun),
+    Node(Box<Node>),
+    Box(Vec<Inline>),
+}
+
 // ---------------------------------------------------------------------------
 // RunningText — a header or footer line, typeset afresh on every page
 // ---------------------------------------------------------------------------
@@ -108,17 +116,18 @@ impl RunningText {
         }
     }
 
-    fn resolved(&self, page: usize, pages: usize) -> Vec<TextRun> {
-        self.runs
-            .iter()
-            .map(|(font, text)| TextRun {
+    fn resolved(&self, page: usize, pages: usize) -> Vec<Inline> {
+        let mut line = vec![Inline::Node(Box::new(Node::zerohbox())), Inline::Node(Box::new(Node::glue(Length::zero())))];
+        line.extend(self.runs.iter().map(|(font, text)| {
+            Inline::Text(TextRun {
                 text: text
                     .replace("{page}", &page.to_string())
                     .replace("{pages}", &pages.to_string()),
                 font_name: font.clone(),
                 color: self.color,
             })
-            .collect()
+        }));
+        line
     }
 }
 
@@ -142,6 +151,43 @@ impl BaselineSkip {
         } else {
             Node::vglue(Length::pt(self.lineskip))
         }
+    }
+}
+
+/// The glue around every line (SILE's `document.lskip` and `document.rskip`)
+/// and after the last one (`typesetter.parfillskip`). Alignment is expressed
+/// through these, as in SILE.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineSkips {
+    pub left: Length,
+    pub right: Length,
+    pub par_fill: Length,
+}
+
+impl Default for LineSkips {
+    fn default() -> Self {
+        Self {
+            left: Length::zero(),
+            right: Length::zero(),
+            par_fill: Length::new(Measurement::pt(0.0), Measurement::pt(10_000.0), Measurement::pt(0.0)),
+        }
+    }
+}
+
+impl LineSkips {
+    /// Change alignment, keeping the fixed part of both margins (SILE's
+    /// `\raggedright`, `\raggedleft`, `\center` and `\justified`).
+    pub fn aligned(self, align: TextAlign) -> Self {
+        let fixed = |l: Length| Length::from(l.length);
+        let fill = |l: Length| Length::new(l.length, Measurement::pt(node::INFINITY), Measurement::pt(0.0));
+        let (left, right) = match align {
+            TextAlign::Justify => (fixed(self.left), fixed(self.right)),
+            TextAlign::Left => (fixed(self.left), fill(self.right)),
+            TextAlign::Right => (fill(self.left), fixed(self.right)),
+            TextAlign::Center => (fill(self.left), fill(self.right)),
+        };
+        let par_fill = if align == TextAlign::Justify { Self::default().par_fill } else { Length::zero() };
+        Self { left, right, par_fill }
     }
 }
 
@@ -178,17 +224,18 @@ pub struct DocumentBuilder {
     // Style state
     current_color: Option<Color>,
     direction: Direction,
-    alignment: TextAlign,
+    skips: LineSkips,
 
     // Paragraph state
-    paragraph_runs: Vec<TextRun>,
+    paragraph: Vec<Inline>,
+    open_boxes: Vec<Vec<Inline>>,
     paragraph_indent: f64,
-    paragraph_skip: f64,
+    current_indent: Option<f64>,
+    paragraph_skip: Length,
     leading: f64,
     baseline_skip: Option<BaselineSkip>,
     previous_depth: Option<f64>,
     space_settings: SpaceSettings,
-    first_paragraph: bool,
 
     // Settings
     linebreak_settings: LinebreakSettings,
@@ -223,15 +270,16 @@ impl DocumentBuilder {
             language: "en".to_string(),
             current_color: None,
             direction: Direction::LTR,
-            alignment: TextAlign::Justify,
-            paragraph_runs: Vec::new(),
+            skips: LineSkips::default(),
+            paragraph: Vec::new(),
+            open_boxes: Vec::new(),
             paragraph_indent: 20.0,
-            paragraph_skip: 0.0,
+            current_indent: None,
+            paragraph_skip: Length::zero(),
             leading: 2.0,
             baseline_skip: None,
             previous_depth: None,
             space_settings: SpaceSettings::default(),
-            first_paragraph: true,
             linebreak_settings: LinebreakSettings::default(),
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
@@ -356,13 +404,22 @@ impl DocumentBuilder {
 
     // -- Paragraph settings --------------------------------------------------
 
+    /// Indent for paragraphs that start from now on.
     pub fn set_paragraph_indent(&mut self, indent: f64) -> &mut Self {
         self.paragraph_indent = indent;
         self
     }
 
-    pub fn set_paragraph_skip(&mut self, skip: f64) -> &mut Self {
-        self.paragraph_skip = skip;
+    /// Indent for the next paragraph only (SILE's `current.parindent`);
+    /// `Some(0.0)` is `\noindent`.
+    pub fn set_current_indent(&mut self, indent: Option<f64>) -> &mut Self {
+        self.current_indent = indent;
+        self
+    }
+
+    /// Vertical glue after each paragraph (SILE's `document.parskip`).
+    pub fn set_paragraph_skip(&mut self, skip: impl Into<Length>) -> &mut Self {
+        self.paragraph_skip = skip.into();
         self
     }
 
@@ -384,7 +441,16 @@ impl DocumentBuilder {
     }
 
     pub fn set_alignment(&mut self, alignment: TextAlign) -> &mut Self {
-        self.alignment = alignment;
+        self.skips = self.skips.aligned(alignment);
+        self
+    }
+
+    pub fn line_skips(&self) -> LineSkips {
+        self.skips
+    }
+
+    pub fn set_line_skips(&mut self, skips: LineSkips) -> &mut Self {
+        self.skips = skips;
         self
     }
 
@@ -403,54 +469,160 @@ impl DocumentBuilder {
 
     // -- Text ----------------------------------------------------------------
 
+    /// Add text to the current paragraph, starting one if needed. Leading
+    /// whitespace at the start of a paragraph or box is dropped.
     pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
-        let font_name = self.current_font.clone().unwrap_or_default();
-        let color = self.current_color;
-        self.paragraph_runs.push(TextRun {
-            text: text.into(),
-            font_name,
-            color,
-        });
+        let mut text = text.into();
+        if self.current_list().is_empty() {
+            text = text.trim_start().to_string();
+            if text.is_empty() {
+                return self;
+            }
+        }
+        let run = TextRun {
+            text,
+            font_name: self.current_font.clone().unwrap_or_default(),
+            color: self.current_color,
+        };
+        self.push_inline(Inline::Text(run));
         self
     }
 
+    /// Breakable space that disappears at line breaks.
+    pub fn add_glue(&mut self, width: impl Into<Length>) -> &mut Self {
+        self.push_inline(Inline::Node(Box::new(Node::glue(width.into()))));
+        self
+    }
+
+    /// Infinitely stretchable space that survives line breaks (`\hfill`).
+    pub fn add_hfill(&mut self) -> &mut Self {
+        let mut fill = Node::hfillglue(Length::zero());
+        if let Node::HFillGlue(g) = &mut fill {
+            g.explicit = true;
+        }
+        self.push_inline(Inline::Node(Box::new(fill)));
+        self
+    }
+
+    /// Unbreakable fixed space.
+    pub fn add_kern(&mut self, width: impl Into<Length>) -> &mut Self {
+        self.push_inline(Inline::Node(Box::new(Node::kern(width.into()))));
+        self
+    }
+
+    /// A line break penalty inside a paragraph, or a page break penalty
+    /// between paragraphs. `-10000` forces the break, `10000` forbids it.
+    pub fn add_penalty(&mut self, penalty: i32) -> &mut Self {
+        if self.paragraph.is_empty() && self.open_boxes.is_empty() {
+            self.vertical_queue.push(Node::penalty(penalty));
+        } else {
+            self.push_inline(Inline::Node(Box::new(Node::penalty(penalty))));
+        }
+        self
+    }
+
+    /// Start collecting material into a box set at its natural width;
+    /// everything added until `end_hbox` goes inside it.
+    pub fn start_hbox(&mut self) -> &mut Self {
+        self.open_boxes.push(Vec::new());
+        self
+    }
+
+    pub fn end_hbox(&mut self) -> &mut Self {
+        if let Some(content) = self.open_boxes.pop() {
+            self.push_inline(Inline::Box(content));
+        }
+        self
+    }
+
+    fn current_list(&self) -> &[Inline] {
+        self.open_boxes.last().unwrap_or(&self.paragraph)
+    }
+
+    /// SILE's `initline`: a paragraph opens with a zero box and its indent.
+    fn push_inline(&mut self, item: Inline) {
+        if let Some(open) = self.open_boxes.last_mut() {
+            open.push(item);
+            return;
+        }
+        if self.paragraph.is_empty() {
+            let indent = self.current_indent.take().unwrap_or(self.paragraph_indent);
+            self.paragraph.push(Inline::Node(Box::new(Node::zerohbox())));
+            self.paragraph.push(Inline::Node(Box::new(Node::glue(Length::pt(indent)))));
+        }
+        self.paragraph.push(item);
+    }
+
+    /// End the paragraph and add the paragraph skip after it. Does nothing
+    /// right after vertical glue or a penalty, so skips are not doubled.
     pub fn new_paragraph(&mut self) -> Result<&mut Self, BuilderError> {
-        if self.paragraph_runs.is_empty() {
+        if self.paragraph.is_empty()
+            && self.vertical_queue.last().is_some_and(|n| n.is_vglue() || n.is_penalty())
+        {
             return Ok(self);
         }
-
-        let runs = std::mem::take(&mut self.paragraph_runs);
-        let nodes = self.typeset_paragraph(&runs)?;
-
-        // Inter-paragraph skip
-        if !self.first_paragraph && self.paragraph_skip > 0.0 {
-            self.vertical_queue.push(Node::vglue(Length::new(
-                Measurement::pt(self.paragraph_skip),
-                Measurement::pt(self.paragraph_skip * 0.5),
-                Measurement::pt(0.0),
-            )));
-            self.vertical_queue.push(Node::penalty(0));
-        }
-
-        self.vertical_queue.extend(nodes);
-        self.first_paragraph = false;
+        self.current_indent = None;
+        self.leave_hmode()?;
+        self.vertical_queue.push(Node::vglue(self.paragraph_skip));
         Ok(self)
+    }
+
+    /// Break the pending paragraph into lines without ending it as a
+    /// paragraph (no paragraph skip).
+    fn leave_hmode(&mut self) -> Result<(), BuilderError> {
+        self.open_boxes.clear();
+        if self.paragraph.is_empty() {
+            return Ok(());
+        }
+        let inlines = std::mem::take(&mut self.paragraph);
+        let nodes = self.typeset_paragraph(&inlines)?;
+        self.vertical_queue.extend(nodes);
+        Ok(())
     }
 
     // -- Vertical material ---------------------------------------------------
 
-    pub fn add_vskip(&mut self, amount: f64) -> &mut Self {
-        self.vertical_queue.push(Node::vglue(Length::pt(amount)));
-        self
+    pub fn add_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
+        self.leave_hmode()?;
+        self.vertical_queue.push(Node::vglue(amount.into()));
+        Ok(self)
     }
 
-    pub fn add_page_break(&mut self) -> &mut Self {
-        self.vertical_queue.push(Node::penalty(-10_000));
-        self
+    /// Vertical space kept even at the top or bottom of a page (SILE's
+    /// `\skip` and `\smallskip` family).
+    pub fn add_explicit_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
+        self.leave_hmode()?;
+        let mut glue = Node::vglue(amount.into());
+        if let Node::VGlue(g) = &mut glue {
+            g.explicit = true;
+        }
+        self.vertical_queue.push(glue);
+        Ok(self)
     }
 
-    pub fn add_rule(&mut self, width: f64, height: f64) -> &mut Self {
-        // A rule is an HBox with dimensions
+    pub fn add_vfill(&mut self) -> Result<&mut Self, BuilderError> {
+        self.leave_hmode()?;
+        let mut fill = Node::vfillglue(Length::zero());
+        if let Node::VFillGlue(g) = &mut fill {
+            g.explicit = true;
+        }
+        self.vertical_queue.push(fill);
+        Ok(self)
+    }
+
+    pub fn add_page_break(&mut self) -> Result<&mut Self, BuilderError> {
+        self.add_vertical_penalty(-10_000)
+    }
+
+    /// A page break penalty, ending any pending paragraph first.
+    pub fn add_vertical_penalty(&mut self, penalty: i32) -> Result<&mut Self, BuilderError> {
+        self.leave_hmode()?;
+        self.vertical_queue.push(Node::penalty(penalty));
+        Ok(self)
+    }
+
+    pub fn add_rule(&mut self, width: f64, height: f64) -> Result<&mut Self, BuilderError> {
+        self.leave_hmode()?;
         let vbox = VBox {
             width: Length::pt(width),
             height: Length::pt(height),
@@ -461,7 +633,7 @@ impl DocumentBuilder {
             explicit: false,
         };
         self.vertical_queue.push(Node::VBox(vbox));
-        self
+        Ok(self)
     }
 
     // -- Bookmarks and links ------------------------------------------------
@@ -527,24 +699,11 @@ impl DocumentBuilder {
     }
 
     fn lay_out(mut self) -> Result<LaidOut, BuilderError> {
-        // Flush any pending paragraph
-        if !self.paragraph_runs.is_empty() {
-            // We need to move self to call new_paragraph, which takes &mut self
-            let runs = std::mem::take(&mut self.paragraph_runs);
-            let nodes = self.typeset_paragraph(&runs)?;
-            if !self.first_paragraph && self.paragraph_skip > 0.0 {
-                self.vertical_queue.push(Node::vglue(Length::new(
-                    Measurement::pt(self.paragraph_skip),
-                    Measurement::pt(self.paragraph_skip * 0.5),
-                    Measurement::pt(0.0),
-                )));
-                self.vertical_queue.push(Node::penalty(0));
-            }
-            self.vertical_queue.extend(nodes);
-        }
+        self.leave_hmode()?;
 
-        // Add final eject penalty
-        self.vertical_queue.push(Node::penalty(-10_000));
+        // SILE's class:finish fills the last page and ejects it.
+        self.add_vfill()?;
+        self.vertical_queue.push(Node::penalty(-20_000));
 
         // Build page layout (header/footer frames included when reserved)
         let layout = self.build_layout()?;
@@ -553,8 +712,6 @@ impl DocumentBuilder {
             .content_frame_id()
             .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
 
-        // Inject widow/orphan penalties
-        PageBuilder::inject_penalties(&mut self.vertical_queue, &self.page_break_settings);
 
         // Build pages
         let mut page_builder = PageBuilder::new(self.page_break_settings.clone());
@@ -569,9 +726,9 @@ impl DocumentBuilder {
             };
             let hsize = layout.frame(frame_id).width();
             for page in pages.iter_mut() {
-                let runs = running.resolved(page.number, total);
-                let nodes =
-                    self.typeset_runs(&runs, hsize, running.direction, running.align, 0.0, &mut None)?;
+                let line = running.resolved(page.number, total);
+                let skips = LineSkips::default().aligned(running.align);
+                let nodes = self.typeset_inlines(&line, hsize, running.direction, skips, &mut None)?;
                 page.add_frame_content(frame_id, nodes);
             }
         }
@@ -587,118 +744,44 @@ impl DocumentBuilder {
 
     // -- Internal: paragraph typesetting ------------------------------------
 
-    fn typeset_paragraph(
-        &mut self,
-        runs: &[TextRun],
-    ) -> Result<Vec<Node>, BuilderError> {
+    fn typeset_paragraph(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
         let layout = self.build_layout()?;
         let content_frame_id = layout
             .content_frame_id()
             .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
         let hsize = layout.frame(content_frame_id).width();
-        let (direction, alignment, indent) = (self.direction, self.alignment, self.paragraph_indent);
         let mut previous_depth = self.previous_depth;
         let nodes =
-            self.typeset_runs(runs, hsize, direction, alignment, indent, &mut previous_depth)?;
+            self.typeset_inlines(inlines, hsize, self.direction, self.skips, &mut previous_depth)?;
         self.previous_depth = previous_depth;
         Ok(nodes)
     }
 
-    /// Shape, break and package `runs` into lines of width `hsize`.
-    fn typeset_runs(
+    /// Shape, break and package paragraph material into lines of width
+    /// `hsize` (SILE's `boxUpNodes`).
+    fn typeset_inlines(
         &mut self,
-        runs: &[TextRun],
+        inlines: &[Inline],
         hsize: f64,
         direction: Direction,
-        alignment: TextAlign,
-        indent: f64,
+        skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
-        // Build horizontal node list from text runs
-        let mut h_nodes = Vec::new();
-
-        // Paragraph indent
-        if indent > 0.0 {
-            h_nodes.push(Node::hbox(indent, 0.0, 0.0));
+        let mut h_nodes = self.shape_inlines(inlines)?;
+        while h_nodes.last().is_some_and(Node::is_discardable) {
+            h_nodes.pop();
         }
-
-        for run in runs {
-            let font_entry = self.fonts.get(&run.font_name).ok_or_else(|| {
-                BuilderError::NoFont(run.font_name.clone())
-            })?;
-            let face = Arc::clone(&font_entry.face);
-            let spec = font_entry.spec.clone();
-
-            // Shape the entire run at once so the shaping engine can apply
-            // inter-word kerning (critical for nastaliq scripts where words
-            // overlap horizontally based on their vertical positions).
-            let all_glyphs = self.shaper.shape(&run.text, &face, &spec);
-
-            // Split shaped output into word NNodes and space glue by
-            // classifying each glyph as space or non-space via its cluster.
-            let mut segments: Vec<Node> = Vec::new();
-            let mut gi = 0;
-            while gi < all_glyphs.len() {
-                let cluster = all_glyphs[gi].cluster as usize;
-                let is_space = run.text.get(cluster..)
-                    .and_then(|s| s.chars().next())
-                    .is_some_and(|c| c.is_whitespace());
-
-                let seg_start = gi;
-                gi += 1;
-                while gi < all_glyphs.len() {
-                    let c = all_glyphs[gi].cluster as usize;
-                    let next_space = run.text.get(c..)
-                        .and_then(|s| s.chars().next())
-                        .is_some_and(|c| c.is_whitespace());
-                    if next_space != is_space {
-                        break;
-                    }
-                    gi += 1;
-                }
-
-                let seg_glyphs = &all_glyphs[seg_start..gi];
-
-                if is_space {
-                    let base: f64 = seg_glyphs.iter().map(|g| g.x_advance).sum();
-                    let w = base * self.space_settings.enlargement_factor;
-                    let stretch = base * self.space_settings.stretch_factor;
-                    let shrink = base * self.space_settings.shrink_factor;
-                    segments.push(Node::glue(Length::new(
-                        Measurement::pt(w),
-                        Measurement::pt(stretch),
-                        Measurement::pt(shrink),
-                    )));
-                } else {
-                    let word = text_from_clusters(&run.text, seg_glyphs);
-                    let nnode = self.build_nnode(
-                        &word, seg_glyphs, &run.font_name, &spec, run.color,
-                    );
-                    segments.push(Node::NNode(nnode));
-                }
-            }
-
-            // For RTL runs the shaper returns glyphs in visual order
-            // (left-to-right); reverse to logical order so the linebreaker
-            // and build_lines (which reverses again) work consistently.
-            if spec.direction == Direction::RTL {
-                segments.reverse();
-            }
-
-            for node in segments {
-                if h_nodes.is_empty() && node.is_glue() {
-                    continue;
-                }
-                h_nodes.push(node);
-            }
+        while h_nodes.first().is_some_and(Node::is_penalty) {
+            h_nodes.remove(0);
         }
-
         if h_nodes.is_empty() {
             return Ok(Vec::new());
         }
-
-        // Add parfillskip (infinite stretch glue to fill last line)
-        h_nodes.push(Node::hfillglue(Length::zero()));
+        let mut par_fill = Node::glue(skips.par_fill);
+        if let Node::Glue(g) = &mut par_fill {
+            g.explicit = true;
+        }
+        h_nodes.push(par_fill);
         h_nodes.push(Node::penalty(-10_000));
 
         // Pre-hyphenate so we have a single consistent node list for both
@@ -714,28 +797,90 @@ impl DocumentBuilder {
             &self.fonts,
         );
 
-        // For ragged (non-justify) modes, add infinite stretch to right_skip
-        // so the linebreaker allows short lines instead of forcing tight fits.
         let mut lb_settings = self.linebreak_settings.clone();
-        if alignment != TextAlign::Justify {
-            lb_settings.right_skip = Length::new(
-                Measurement::pt(0.0),
-                Measurement::pt(1e13),
-                Measurement::pt(0.0),
-            );
+        lb_settings.left_skip = skips.left;
+        lb_settings.right_skip = skips.right;
+        let breaks = linebreak::do_break(&h_nodes, hsize, &lb_settings, None);
+        Ok(self.build_lines(&h_nodes, &breaks, direction, skips, previous_depth))
+    }
+
+    fn shape_inlines(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
+        let mut h_nodes = Vec::new();
+        for item in inlines {
+            match item {
+                Inline::Text(run) => h_nodes.extend(self.shape_run(run)?),
+                Inline::Node(node) => h_nodes.push((**node).clone()),
+                Inline::Box(content) => {
+                    let nodes = self.shape_inlines(content)?;
+                    let width: f64 = nodes.iter().map(|n| pt_of(&n.width())).sum();
+                    let mut hbox = node::HBox::new(
+                        Length::pt(width),
+                        node::max_node_dim(&nodes, node::Dim::Height),
+                        node::max_node_dim(&nodes, node::Dim::Depth),
+                    );
+                    hbox.nodes = nodes;
+                    h_nodes.push(Node::HBox(hbox));
+                }
+            }
+        }
+        Ok(h_nodes)
+    }
+
+    /// Shape one run into word nodes separated by space glue.
+    fn shape_run(&mut self, run: &TextRun) -> Result<Vec<Node>, BuilderError> {
+        let font_entry = self
+            .fonts
+            .get(&run.font_name)
+            .ok_or_else(|| BuilderError::NoFont(run.font_name.clone()))?;
+        let face = Arc::clone(&font_entry.face);
+        let spec = font_entry.spec.clone();
+
+        // Shape the entire run at once so the shaping engine can apply
+        // inter-word kerning (critical for nastaliq scripts where words
+        // overlap horizontally based on their vertical positions).
+        let all_glyphs = self.shaper.shape(&run.text, &face, &spec);
+        let is_space_at = |cluster: u32| {
+            run.text
+                .get(cluster as usize..)
+                .and_then(|s| s.chars().next())
+                .is_some_and(char::is_whitespace)
+        };
+
+        let mut segments: Vec<Node> = Vec::new();
+        let mut gi = 0;
+        while gi < all_glyphs.len() {
+            let is_space = is_space_at(all_glyphs[gi].cluster);
+            let seg_start = gi;
+            gi += 1;
+            while gi < all_glyphs.len() && is_space_at(all_glyphs[gi].cluster) == is_space {
+                gi += 1;
+            }
+            let seg_glyphs = &all_glyphs[seg_start..gi];
+
+            if is_space {
+                let base: f64 = seg_glyphs.iter().map(|g| g.x_advance).sum();
+                let s = self.space_settings;
+                let (w, stretch, shrink) =
+                    (base * s.enlargement_factor, base * s.stretch_factor, base * s.shrink_factor);
+                segments.push(Node::glue(Length::new(
+                    Measurement::pt(w),
+                    Measurement::pt(stretch),
+                    Measurement::pt(shrink),
+                )));
+            } else {
+                let word = text_from_clusters(&run.text, seg_glyphs);
+                let nnode = self.build_nnode(&word, seg_glyphs, &run.font_name, &spec, run.color);
+                segments.push(Node::NNode(nnode));
+            }
         }
 
-        let breaks = linebreak::do_break(
-            &h_nodes,
-            hsize,
-            &lb_settings,
-            None,
-        );
-
-        // Package lines into VBoxes
-        let v_nodes =
-            self.build_lines(&h_nodes, &breaks, hsize, direction, alignment, previous_depth);
-        Ok(v_nodes)
+        // For RTL runs the shaper returns glyphs in visual order
+        // (left-to-right); reverse to logical order so the linebreaker
+        // and build_lines (which reverses again) work consistently.
+        if spec.direction == Direction::RTL {
+            segments.reverse();
+        }
+        Ok(segments)
     }
 
     fn build_nnode(
@@ -771,168 +916,106 @@ impl DocumentBuilder {
         nnode
     }
 
+    /// Cut the node list at the breakpoints into lines, add the margin
+    /// glue and package each line (SILE's `breakpointsToLines`).
     fn build_lines(
         &self,
         h_nodes: &[Node],
         breaks: &[BreakResult],
-        hsize: f64,
         direction: Direction,
-        alignment: TextAlign,
+        skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Vec<Node> {
-        let mut v_nodes = Vec::new();
+        let mut lines: Vec<(VBox, bool)> = Vec::new();
         let mut start = 0;
+        let mut postbreak: Vec<Node> = Vec::new();
 
-        for (line_idx, br) in breaks.iter().enumerate() {
-            // Collect nodes for this line
-            let end = br.position.min(h_nodes.len());
-            // A break inside material already consumed by the previous line
-            // (e.g. parfillskip after an overfull last word) yields no line.
+        for br in breaks {
+            if br.position == 0 || h_nodes.is_empty() {
+                continue;
+            }
+            let end = br.position.min(h_nodes.len() - 1);
             if start > end {
                 continue;
             }
-            let mut line_nodes: Vec<Node> = Vec::new();
-
-            // Left indent (LTR only; RTL handles alignment below)
-            if br.left > 0.0 && direction == Direction::LTR {
-                line_nodes.push(Node::hbox(br.left, 0.0, 0.0));
+            let mut line: Vec<Node> = std::mem::take(&mut postbreak);
+            line.extend(h_nodes[start..=end].iter().cloned());
+            start = end + 1;
+            // Lines holding nothing but discardables (e.g. two breaks in a
+            // row) are dropped.
+            if line.iter().all(Node::is_discardable) {
+                continue;
+            }
+            let broken = matches!(line.last(), Some(Node::Discretionary(_)));
+            if let Some(Node::Discretionary(d)) = line.last() {
+                let d = d.clone();
+                line.pop();
+                line.extend(d.prebreak);
+                postbreak = d.postbreak;
             }
 
-            // Copy nodes from start..end, skipping leading discardables
-            let mut started = false;
-            for node in &h_nodes[start..end] {
-                if !started && node.is_discardable() {
-                    continue;
-                }
-                started = true;
-                // Skip hfillglue — we handle alignment explicitly
-                if matches!(node, Node::HFillGlue(_)) {
-                    continue;
-                }
-                line_nodes.push(node.clone());
-            }
-
-            // Trim trailing discardables
-            while line_nodes.last().is_some_and(|n| n.is_discardable()) {
-                line_nodes.pop();
-            }
-
-            // Handle discretionary at break point
-            if end < h_nodes.len()
-                && let Node::Discretionary(d) = &h_nodes[end] {
-                    line_nodes.extend(d.prebreak.clone());
-                }
-
-            // Right indent (LTR only)
-            if br.right > 0.0 && direction == Direction::LTR {
-                line_nodes.push(Node::hbox(br.right, 0.0, 0.0));
-            }
-
-            // For RTL paragraphs, reverse node order so the first word
-            // in logical order appears at the right edge.
-            if direction == Direction::RTL {
-                line_nodes.reverse();
-            }
-
-            // Compute alignment ratio and padding.
-            // For Justify, the ratio comes from the linebreaker and the PDF
-            // renderer scales glue stretch/shrink accordingly.
-            // For ragged modes, ratio is 0 and we insert padding hboxes.
-            let line_ratio = match alignment {
-                TextAlign::Justify => br.ratio.max(-1.0),
-                _ => 0.0,
+            let (start_skip, end_skip, start_hang, end_hang) = match direction {
+                Direction::RTL => (skips.right, skips.left, br.right, br.left),
+                _ => (skips.left, skips.right, br.left, br.right),
             };
-
-            // For non-justify modes, compute slack and insert padding
-            if alignment != TextAlign::Justify {
-                let content_width: f64 = line_nodes
-                    .iter()
-                    .map(|n| n.width().length.to_pt().unwrap_or(0.0))
-                    .sum();
-                let slack = (hsize - content_width).max(0.0);
-
-                // For RTL: Left=right-aligned, Right=left-aligned
-                let effective_align = if direction == Direction::RTL {
-                    match alignment {
-                        TextAlign::Left => TextAlign::Right,
-                        TextAlign::Right => TextAlign::Left,
-                        other => other,
-                    }
-                } else {
-                    alignment
-                };
-
-                match effective_align {
-                    TextAlign::Right => {
-                        if slack > 0.5 {
-                            line_nodes.insert(0, Node::hbox(slack, 0.0, 0.0));
-                        }
-                    }
-                    TextAlign::Center => {
-                        let half = slack / 2.0;
-                        if half > 0.5 {
-                            line_nodes.insert(0, Node::hbox(half, 0.0, 0.0));
-                        }
-                    }
-                    _ => {} // Left: no padding needed
-                }
-            } else if direction == Direction::RTL {
-                // Justify + RTL: still need right-alignment for the last line
-                // (which has parfillskip absorbing slack). The ratio handles
-                // full lines; for short lines ratio is large but capped, so
-                // we pad them instead.
-                let content_width: f64 = line_nodes
-                    .iter()
-                    .map(|n| n.width().length.to_pt().unwrap_or(0.0))
-                    .sum();
-                let slack = hsize - content_width;
-                if slack > 0.5 && line_ratio.abs() > 1.0 {
-                    line_nodes.insert(0, Node::hbox(slack, 0.0, 0.0));
-                }
+            let hung = |skip: Length, hang: f64| {
+                if hang > 0.0 { Length::pt(pt_of(&skip) + hang) } else { skip }
+            };
+            let (start_skip, end_skip) = (hung(start_skip, start_hang), hung(end_skip, end_hang));
+            while line.first().is_some_and(Node::is_discardable) {
+                line.remove(0);
             }
-
-            // Compute line dimensions
-            let line_height = node::max_node_dim(&line_nodes, node::Dim::Height);
-            let line_depth = node::max_node_dim(&line_nodes, node::Dim::Depth);
+            let mut line = rejoin_unbroken_words(line);
+            let ratio = line_ratio(br.width, &line, start_skip + end_skip);
+            line.insert(0, Node::glue(start_skip));
+            line.insert(0, Node::zerohbox());
+            line.push(Node::glue(end_skip));
+            line.push(Node::zerohbox());
+            if direction == Direction::RTL {
+                line.reverse();
+            }
 
             let vbox = VBox {
-                width: Length::pt(hsize),
-                height: line_height,
-                depth: line_depth,
-                nodes: line_nodes,
-                ratio: line_ratio,
+                width: Length::pt(br.width),
+                height: node::max_node_dim(&line, node::Dim::Height),
+                depth: node::max_node_dim(&line, node::Dim::Depth),
+                nodes: line,
+                ratio,
                 misfit: false,
                 explicit: false,
             };
+            lines.push((vbox, broken));
+        }
 
+        let count = lines.len();
+        let mut v_nodes = Vec::new();
+        for (index, (vbox, broken)) in lines.into_iter().enumerate() {
+            let (height, depth) = (pt_of(&vbox.height), pt_of(&vbox.depth));
             if let Some(bls) = self.baseline_skip {
-                v_nodes.push(bls.leading_for(line_height.to_pt().unwrap_or(0.0), *previous_depth));
-                *previous_depth = Some(line_depth.to_pt().unwrap_or(0.0));
-            } else if line_idx > 0 && self.leading > 0.0 {
+                v_nodes.push(bls.leading_for(height, *previous_depth));
+                *previous_depth = Some(depth);
+            } else if index > 0 && self.leading > 0.0 {
                 v_nodes.push(Node::vglue(Length::new(
                     Measurement::pt(self.leading),
                     Measurement::pt(self.leading * 0.5),
                     Measurement::pt(self.leading * 0.3),
                 )));
             }
-
             v_nodes.push(Node::VBox(vbox));
-
-            // Advance start past the break point + any discardables
-            start = end + 1;
-            // Skip discardables after break point (consumed by linebreaker)
-            while start < h_nodes.len() && h_nodes[start].is_discardable() {
-                start += 1;
-            }
-            // If we broke at a discretionary, skip the postbreak handling
-            if end < h_nodes.len() && h_nodes[end].is_discretionary() {
-                start = end + 1;
-                while start < h_nodes.len() && h_nodes[start].is_discardable() {
-                    start += 1;
-                }
+            let settings = &self.page_break_settings;
+            let penalty = if count > 1 && index == 0 {
+                settings.widow_penalty
+            } else if count > 1 && index == count - 2 {
+                settings.orphan_penalty
+            } else if broken {
+                settings.broken_penalty
+            } else {
+                0
+            };
+            if penalty > 0 {
+                v_nodes.push(Node::penalty(penalty));
             }
         }
-
         v_nodes
     }
 
@@ -983,6 +1066,68 @@ impl DocumentBuilder {
 // ---------------------------------------------------------------------------
 // Cluster-based text extraction
 // ---------------------------------------------------------------------------
+
+/// Put back whole any hyphenated word whose syllables all landed on this
+/// line, so it is set as shaped rather than syllable by syllable.
+fn rejoin_unbroken_words(line: Vec<Node>) -> Vec<Node> {
+    let mut out = Vec::with_capacity(line.len());
+    let mut i = 0;
+    while i < line.len() {
+        if let Node::NNode(NNode { parent: Some(parent), .. }) = &line[i] {
+            let same = |n: &Node| match n {
+                Node::NNode(NNode { parent: Some(p), .. }) => Arc::ptr_eq(p, parent),
+                Node::Discretionary(_) => true,
+                _ => false,
+            };
+            let mut end = i;
+            let mut syllables = 0;
+            while end < line.len() && same(&line[end]) {
+                if line[end].is_nnode() {
+                    syllables += 1;
+                }
+                end += 1;
+            }
+            while end > i && line[end - 1].is_discretionary() {
+                end -= 1;
+            }
+            if syllables == parent.syllables {
+                out.push(Node::NNode(parent.word.clone()));
+                i = end;
+                continue;
+            }
+        }
+        out.push(line[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn pt_of(l: &Length) -> f64 {
+    l.length.to_pt().unwrap_or(0.0)
+}
+
+/// How far the line's glue must stretch (positive) or shrink (negative) to
+/// fill `width` (SILE's `computeLineRatio`). Trailing glue does not count.
+fn line_ratio(width: f64, line: &[Node], margins: Length) -> f64 {
+    let end = line
+        .iter()
+        .rposition(|n| !(n.is_glue() || n.is_zero()))
+        .map_or(0, |i| i + 1);
+    let mut natural = margins;
+    for n in &line[..end] {
+        natural += match n {
+            Node::Discretionary(d) => d.replacement.iter().map(Node::width).fold(Length::zero(), |a, b| a + b),
+            other => other.width(),
+        };
+    }
+    let left = width - pt_of(&natural);
+    let flex = if left < 0.0 { natural.shrink } else { natural.stretch };
+    let flex = flex.to_pt().unwrap_or(0.0);
+    if flex == 0.0 {
+        return 0.0;
+    }
+    (left / flex).max(-1.0)
+}
 
 fn text_from_clusters(text: &str, glyphs: &[GlyphItem]) -> String {
     if glyphs.is_empty() {
@@ -1066,6 +1211,7 @@ fn hyphenate_nodes(
                 }
             };
 
+            let parent = Arc::new(node::HyphenatedWord { word: nnode.clone(), syllables: segments.len() });
             for (i, segment) in segments.iter().enumerate() {
                 // Shape this segment
                 let glyphs = shaper.shape(segment, &font_entry.face, &font_entry.spec);
@@ -1099,6 +1245,7 @@ fn hyphenate_nodes(
                 );
                 seg_nnode.color = nnode.color;
                 seg_nnode.language = nnode.language.clone();
+                seg_nnode.parent = Some(Arc::clone(&parent));
 
                 result.push(Node::NNode(seg_nnode));
 
@@ -1283,9 +1430,9 @@ mod tests {
             Some(d) => d,
             None => return,
         };
-        doc.add_text("Hello");
-        assert_eq!(doc.paragraph_runs.len(), 1);
-        assert_eq!(doc.paragraph_runs[0].text, "Hello");
+        doc.add_text("  Hello");
+        assert!(matches!(&doc.paragraph[0], Inline::Node(n) if n.is_zerohbox()));
+        assert!(matches!(&doc.paragraph[2], Inline::Text(r) if r.text == "Hello"));
     }
 
     #[test]
@@ -1296,18 +1443,20 @@ mod tests {
         };
         doc.add_text("Hello, world.");
         assert!(doc.new_paragraph().is_ok());
-        assert!(doc.paragraph_runs.is_empty());
+        assert!(doc.paragraph.is_empty());
         assert!(!doc.vertical_queue.is_empty());
     }
 
     #[test]
-    fn empty_paragraph_is_noop() {
+    fn empty_paragraph_adds_only_discardable_skip() {
         let mut doc = match builder_with_font() {
             Some(d) => d,
             None => return,
         };
         assert!(doc.new_paragraph().is_ok());
-        assert!(doc.vertical_queue.is_empty());
+        assert!(doc.new_paragraph().is_ok());
+        assert_eq!(doc.vertical_queue.len(), 1);
+        assert!(doc.vertical_queue[0].is_discardable());
     }
 
     // -- Full render ---------------------------------------------------------
@@ -1381,7 +1530,7 @@ mod tests {
         };
         doc.add_text("Page one content.");
         doc.new_paragraph().unwrap();
-        doc.add_page_break();
+        doc.add_page_break().unwrap();
         doc.add_text("Page two content.");
         let pdf = doc.render().unwrap();
         assert!(pdf.starts_with(b"%PDF"));
