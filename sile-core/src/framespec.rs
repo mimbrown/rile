@@ -8,6 +8,74 @@ use cassowary::strength::REQUIRED;
 use cassowary::{Expression, Solver, Variable, WeightedRelation::EQ};
 
 use crate::font::Direction;
+
+/// One of the four ways text or lines can advance across a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    LTR,
+    RTL,
+    TTB,
+    BTT,
+}
+
+impl Flow {
+    fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "LTR" => Some(Self::LTR),
+            "RTL" => Some(Self::RTL),
+            "TTB" => Some(Self::TTB),
+            "BTT" => Some(Self::BTT),
+            _ => None,
+        }
+    }
+}
+
+/// How a frame fills: the way text runs along a line, then the way lines
+/// follow one another (SILE's frame `direction`, such as `RTL-TTB`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameDirection {
+    pub writing: Flow,
+    pub page: Flow,
+}
+
+impl FrameDirection {
+    pub const LTR: Self = Self { writing: Flow::LTR, page: Flow::TTB };
+    pub const RTL: Self = Self { writing: Flow::RTL, page: Flow::TTB };
+    /// Vertical Japanese: columns down the page, from right to left.
+    pub const TATE: Self = Self { writing: Flow::TTB, page: Flow::RTL };
+
+    /// `WRITING-PAGE`, either part optional as in SILE.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (writing, page) = match s.split_once('-') {
+            Some((w, p)) => (Flow::parse(w)?, Flow::parse(p)?),
+            None => (Flow::parse(s)?, Flow::TTB),
+        };
+        Some(Self { writing, page })
+    }
+
+    /// The direction text is shaped in.
+    pub fn text(self) -> Direction {
+        match self.writing {
+            Flow::LTR => Direction::LTR,
+            Flow::RTL => Direction::RTL,
+            Flow::TTB | Flow::BTT => Direction::TTB,
+        }
+    }
+
+    pub fn is_vertical(self) -> bool {
+        matches!(self.writing, Flow::TTB | Flow::BTT)
+    }
+}
+
+impl From<Direction> for FrameDirection {
+    fn from(direction: Direction) -> Self {
+        match direction {
+            Direction::LTR => Self::LTR,
+            Direction::RTL => Self::RTL,
+            Direction::TTB => Self { writing: Flow::TTB, page: Flow::TTB },
+        }
+    }
+}
 use crate::frame::PaperSize;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -21,7 +89,10 @@ pub struct FrameSpec {
     pub height: Option<String>,
     /// Frame that content flows into when this one is full.
     pub next: Option<String>,
-    pub direction: Option<Direction>,
+    pub direction: Option<FrameDirection>,
+    /// Set as vertical Japanese: lines broken first-fit, one zenkaku tall
+    /// (SILE's tate frames).
+    pub tate: bool,
 }
 
 impl FrameSpec {
@@ -93,7 +164,10 @@ pub struct FrameGeometry {
     pub right: f64,
     pub bottom: f64,
     pub next: Option<String>,
-    pub direction: Option<Direction>,
+    pub direction: Option<FrameDirection>,
+    /// Set as vertical Japanese: lines broken first-fit, one zenkaku tall
+    /// (SILE's tate frames).
+    pub tate: bool,
 }
 
 impl FrameGeometry {
@@ -198,6 +272,7 @@ pub fn solve(paper: PaperSize, em: f64, specs: &[FrameSpec]) -> Result<Vec<Frame
             bottom: value(&solver, &spec.id, Edge::Bottom),
             next: spec.next.clone(),
             direction: spec.direction,
+            tate: spec.tate,
         })
         .collect())
 }

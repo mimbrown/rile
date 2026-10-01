@@ -1,7 +1,6 @@
 use crate::node::{HBox, Ink, Leader, NNode, Node};
 use crate::color::Color;
-use crate::font::Direction;
-use crate::framespec::FrameGeometry;
+use crate::framespec::{Flow, FrameDirection, FrameGeometry};
 use crate::pagebuilder::Page;
 
 /// A drawing surface for laid-out pages. Coordinates are in points, measured
@@ -41,26 +40,79 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
 fn draw_page(page: &Page, canvas: &mut impl Canvas) {
     for (frame_id, nodes) in &page.content {
         let Some(frame) = page.frame(frame_id) else { continue };
-        let mut cursor_y = frame.top;
-
+        let mut c = Cursor::start(frame);
         for node in nodes {
             match node {
                 Node::VBox(vbox) => {
-                    let height = pt(&vbox.height.length);
-                    let depth = pt(&vbox.depth.length);
-                    let rtl = frame.direction == Some(Direction::RTL);
-                    let line = Line { ratio: vbox.ratio, end_edge: frame.right, rtl };
-                    let start = if rtl { frame.right } else { frame.left };
-                    draw_hlist(&vbox.nodes, start, cursor_y + height, &line, canvas);
-                    cursor_y += height + depth;
+                    let line = Line { ratio: vbox.ratio, end_edge: frame.right };
+                    c.advance_page(pt(&vbox.height.length));
+                    draw_hlist(&vbox.nodes, &mut c, &line, canvas);
+                    c.advance_page(pt(&vbox.depth.length));
+                    c.new_line(frame);
                 }
                 Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
-                    cursor_y += pt(&g.height.length) + g.adjustment.to_pt().unwrap_or(0.0);
+                    c.advance_page(pt(&g.height.length) + g.adjustment.to_pt().unwrap_or(0.0));
                 }
-                Node::VKern(k) => cursor_y += pt(&k.height.length),
+                Node::VKern(k) => c.advance_page(pt(&k.height.length)),
                 _ => {}
             }
         }
+    }
+}
+
+/// The pen in a frame, moved along the frame's writing and page directions
+/// as SILE's frames move it.
+#[derive(Debug, Clone, Copy)]
+struct Cursor {
+    x: f64,
+    y: f64,
+    dir: FrameDirection,
+}
+
+impl Cursor {
+    fn start(frame: &FrameGeometry) -> Self {
+        let dir = frame.direction.unwrap_or(FrameDirection::LTR);
+        let mut c = Cursor { x: frame.left, y: frame.top, dir };
+        c.new_line(frame);
+        match dir.page {
+            Flow::TTB => c.y = frame.top,
+            Flow::LTR => c.x = frame.left,
+            Flow::RTL => c.x = frame.right,
+            Flow::BTT => c.y = frame.bottom,
+        }
+        c
+    }
+
+    fn new_line(&mut self, frame: &FrameGeometry) {
+        match self.dir.writing {
+            Flow::LTR => self.x = frame.left,
+            Flow::RTL => self.x = frame.right,
+            Flow::TTB => self.y = frame.top,
+            Flow::BTT => self.y = frame.bottom,
+        }
+    }
+
+    fn advance(&mut self, flow: Flow, amount: f64) {
+        match flow {
+            Flow::LTR => self.x += amount,
+            Flow::RTL => self.x -= amount,
+            Flow::TTB => self.y += amount,
+            Flow::BTT => self.y -= amount,
+        }
+    }
+
+    fn advance_writing(&mut self, amount: f64) {
+        self.advance(self.dir.writing, amount);
+    }
+
+    fn advance_page(&mut self, amount: f64) {
+        self.advance(self.dir.page, amount);
+    }
+
+    /// Boxes are drawn from their start edge, which in right-to-left lines
+    /// is only reached by moving past them first.
+    fn backwards(&self) -> bool {
+        self.dir.writing == Flow::RTL
     }
 }
 
@@ -68,15 +120,10 @@ struct Line {
     ratio: f64,
     /// Where leaders line up.
     end_edge: f64,
-    /// Set from the right edge leftwards, each node in turn (SILE's RTL
-    /// frames).
-    rtl: bool,
 }
 
 impl Line {
-    fn natural(&self) -> Line {
-        Line { ratio: 0.0, end_edge: f64::INFINITY, rtl: self.rtl }
-    }
+    const NATURAL: Line = Line { ratio: 0.0, end_edge: f64::INFINITY };
 
     /// SILE's `rationWidth`.
     fn width(&self, node: &Node) -> f64 {
@@ -92,71 +139,85 @@ impl Line {
     }
 }
 
-/// Draw a line's nodes from `x`, scaling glue by the line's ratio. In
-/// right-to-left lines `x` is the right end, and boxes are drawn from their
-/// left edge after moving past them, as SILE's frames do.
-fn draw_hlist(nodes: &[Node], mut x: f64, mut baseline_y: f64, line: &Line, canvas: &mut impl Canvas) -> f64 {
-    let sign = if line.rtl { -1.0 } else { 1.0 };
+/// Draw a line's nodes from the cursor, scaling glue by the line's ratio.
+fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut impl Canvas) {
     for node in nodes {
         match node {
             Node::NNode(nnode) => {
                 let width = pt(&nnode.width.length);
-                if line.rtl {
-                    x -= width;
-                    canvas.glyphs(nnode, x, baseline_y);
-                } else {
-                    canvas.glyphs(nnode, x, baseline_y);
-                    x += width;
+                if c.backwards() {
+                    c.advance_writing(width);
+                }
+                canvas.glyphs(nnode, c.x, c.y);
+                if !c.backwards() {
+                    c.advance_writing(width);
                 }
             }
             Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
                 let width = line.width(node);
                 match &g.leader {
-                    Some(Leader::Stroke(s)) => canvas.rule(x, baseline_y - s.raise, sign * width, s.thickness),
-                    Some(Leader::Box(b)) => draw_leaders(b, x.min(x + sign * width), width, baseline_y, line, canvas),
-                    None => {}
+                    Some(Leader::Stroke(s)) => {
+                        let ox = c.x;
+                        c.advance_page(-s.raise);
+                        c.advance_writing(width);
+                        canvas.rule(ox, c.y, c.x - ox, s.thickness);
+                        c.advance_page(s.raise);
+                    }
+                    Some(Leader::Box(b)) => {
+                        let from = if c.backwards() { c.x - width } else { c.x };
+                        draw_leaders(b, from, width, c, line, canvas);
+                        c.advance_writing(width);
+                    }
+                    None => c.advance_writing(width),
                 }
-                x += sign * width;
             }
-            Node::Kern(_) => x += sign * line.width(node),
-            Node::Discretionary(d) => x = draw_hlist(&d.replacement, x, baseline_y, line, canvas),
+            Node::Kern(_) => c.advance_writing(line.width(node)),
+            Node::Discretionary(d) => draw_hlist(&d.replacement, c, line, canvas),
             Node::HBox(hbox) => match hbox.ink {
                 Some(Ink::Rule) => {
-                    let (width, height, depth) = (pt(&hbox.width.length), pt(&hbox.height.length), pt(&hbox.depth.length));
-                    canvas.rule(x, baseline_y - height, sign * width, height + depth);
-                    x += sign * width;
-                }
-                Some(Ink::Ruby(raise)) => {
-                    let start = x + sign * pt(&hbox.width.length);
-                    draw_hlist(&hbox.nodes, start, baseline_y - raise, line, canvas);
+                    let (height, depth) = (pt(&hbox.height.length), pt(&hbox.depth.length));
+                    c.advance_page(-height);
+                    let (ox, oy) = (c.x, c.y);
+                    c.advance_writing(line.width(node));
+                    c.advance_page(height + depth);
+                    canvas.rule(ox, oy, c.x - ox, c.y - oy);
+                    c.advance_page(-depth);
                 }
                 Some(Ink::Liner(s)) => {
-                    let end = draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
-                    canvas.rule(x, baseline_y - s.raise, end - x, s.thickness);
-                    x = end;
+                    let (ox, oy) = (c.x, c.y);
+                    draw_hlist(&hbox.nodes, c, line, canvas);
+                    canvas.rule(ox, oy - s.raise, c.x - ox, s.thickness);
+                }
+                Some(Ink::Ruby(raise)) => {
+                    let saved = *c;
+                    c.advance_writing(pt(&hbox.width.length));
+                    c.advance_page(-raise);
+                    draw_hlist(&hbox.nodes, c, line, canvas);
+                    *c = saved;
                 }
                 _ => {
                     let width = line.width(node);
-                    if line.rtl {
-                        x -= width;
-                        draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
-                    } else {
-                        draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
-                        x += width;
+                    if c.backwards() {
+                        c.advance_writing(width);
                     }
-                    baseline_y -= hbox.raise;
+                    let saved = *c;
+                    draw_hlist(&hbox.nodes, c, line, canvas);
+                    *c = saved;
+                    if !c.backwards() {
+                        c.advance_writing(width);
+                    }
+                    c.advance_page(-hbox.raise);
                 }
             },
             _ => {}
         }
     }
-    x
 }
 
 /// As many copies of `pattern` as fit between `x` and `x + width`, placed
 /// so that copies on different lines line up from the frame's end edge
 /// (SILE's `leader:outputYourself`).
-fn draw_leaders(pattern: &HBox, x: f64, width: f64, baseline_y: f64, line: &Line, canvas: &mut impl Canvas) {
+fn draw_leaders(pattern: &HBox, x: f64, width: f64, c: &Cursor, line: &Line, canvas: &mut impl Canvas) {
     let step = pt(&pattern.width.length);
     if step <= 0.0 || !line.end_edge.is_finite() {
         return;
@@ -165,10 +226,11 @@ fn draw_leaders(pattern: &HBox, x: f64, width: f64, baseline_y: f64, line: &Line
     let max = (fit / step).floor();
     let skip = ((line.end_edge - x - width) * 1e6).floor() / 1e6;
     let repetitions = max - (skip / step).ceil();
-    let mut x = x + fit - max * step;
+    let mut copy = Cursor { x: x + fit - max * step, ..*c };
     for _ in 0..repetitions.max(0.0) as usize {
-        draw_hlist(&pattern.nodes, x, baseline_y, &line.natural(), canvas);
-        x += step;
+        let start = copy;
+        draw_hlist(&pattern.nodes, &mut copy, &Line::NATURAL, canvas);
+        copy = Cursor { x: start.x + step, ..start };
     }
 }
 
