@@ -9,10 +9,12 @@ pub mod measurement;
 pub mod node;
 pub mod pagebuilder;
 pub mod pdf;
+pub mod render;
 pub mod shaper;
 pub mod svg;
+pub mod trace;
 
-#[cfg(not(feature = "wasm"))]
+#[cfg(feature = "harfbuzz")]
 mod harfbuzz_ffi;
-#[cfg(not(feature = "wasm"))]
+#[cfg(feature = "harfbuzz")]
 pub mod shaper_harfbuzz;

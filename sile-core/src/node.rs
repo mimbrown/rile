@@ -41,6 +41,9 @@ pub struct GlyphData {
     pub y_advance: f64,
     pub x_offset: f64,
     pub y_offset: f64,
+    /// The source text of the cluster this glyph starts (empty for the
+    /// remaining glyphs of a multi-glyph cluster).
+    pub text: String,
 }
 
 // ─── Helper functions (mirrors _maxnode / SU.sum) ────────────────────────────

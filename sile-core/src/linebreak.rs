@@ -351,6 +351,13 @@ impl<'a> LineBreaker<'a> {
             && last.is_glue() {
                 self.nodes.pop();
             }
+        // A paragraph must end in parfillskip + eject; callers that hand us a
+        // bare node list get one, so the final line is always breakable.
+        let terminated = matches!(self.nodes.last(), Some(Node::Penalty(p)) if p.penalty <= EJECT_PENALTY);
+        if !terminated {
+            self.nodes.push(Node::hfillglue(Length::zero()));
+            self.nodes.push(Node::penalty(EJECT_PENALTY));
+        }
         self.nodes.push(Node::penalty(INF_BAD as i32));
     }
 
@@ -759,9 +766,10 @@ impl<'a> LineBreaker<'a> {
     }
 
     fn try_final_break(&mut self) -> bool {
-        // Force a final break at end-of-paragraph (TeX §899)
+        // TeX §899 calls try_break here; SILE deliberately does not, because
+        // the paragraph already ends with an eject penalty. Calling it adds a
+        // spurious break past the end of the node list.
         self.place = self.nodes.len();
-        self.try_break();
 
         if self.next_of(self.head) == self.head {
             return false;
@@ -923,11 +931,8 @@ pub fn do_break(
             place += 1;
         }
 
-        if place >= lb.nodes.len() || lb.next_of(lb.head) == lb.head {
-            lb.place = lb.nodes.len();
-            if lb.try_final_break() {
-                break;
-            }
+        if place >= lb.nodes.len() && lb.try_final_break() {
+            break;
         }
 
         match lb.pass {

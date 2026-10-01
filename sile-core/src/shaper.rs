@@ -301,16 +301,16 @@ pub fn shape_with_fallbacks(
 
 /// Returns the default shaper for the current build configuration.
 ///
-/// Without the `wasm` feature (the default), this returns a `HarfBuzzShaper`
-/// backed by the native C HarfBuzz library. With `--features wasm`, this
-/// returns a `RustyBuzzShaper` (pure Rust, WASM-compatible).
+/// With the `harfbuzz` feature this returns a `HarfBuzzShaper` backed by the
+/// native C HarfBuzz library (required for Graphite fonts). Otherwise it
+/// returns the pure-Rust `RustyBuzzShaper`.
 pub fn default_shaper() -> Box<dyn Shaper> {
-    #[cfg(not(feature = "wasm"))]
+    #[cfg(feature = "harfbuzz")]
     {
         Box::new(crate::shaper_harfbuzz::HarfBuzzShaper::new())
     }
 
-    #[cfg(feature = "wasm")]
+    #[cfg(not(feature = "harfbuzz"))]
     {
         Box::new(RustyBuzzShaper::new())
     }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use cassowary::strength::{REQUIRED, STRONG};
 use cassowary::{AddConstraintError, Solver, Variable, WeightedRelation::*};
@@ -49,7 +49,7 @@ impl WritingDirection {
 // FrameId
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameId(pub u32);
 
 impl std::fmt::Display for FrameId {
@@ -247,7 +247,7 @@ pub enum FrameConstraint {
 
 pub struct PageLayout {
     pub paper: PaperSize,
-    pub frames: HashMap<FrameId, Frame>,
+    pub frames: BTreeMap<FrameId, Frame>,
     next_id: u32,
     solver: Solver,
     page_left: Variable,
@@ -261,7 +261,7 @@ impl PageLayout {
     pub fn new(paper: PaperSize) -> Self {
         Self {
             paper,
-            frames: HashMap::new(),
+            frames: BTreeMap::new(),
             next_id: 0,
             solver: Solver::new(),
             page_left: Variable::new(),
