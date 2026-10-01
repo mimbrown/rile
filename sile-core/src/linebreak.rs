@@ -981,6 +981,29 @@ pub fn do_break(nodes: &[Node], hsize: f64, settings: &LinebreakSettings) -> Vec
     lb.post_line_break()
 }
 
+/// Break at the first glue, kern or penalty once the line is at least
+/// `width` long (SILE's `firstfit` typesetter, used for vertical Japanese).
+pub fn first_fit(nodes: &[Node], width: f64) -> Vec<BreakResult> {
+    let at = |position| BreakResult { position, width, left: 0.0, right: 0.0, ratio: 0.0 };
+    let mut breaks = Vec::new();
+    let mut length = 0.0;
+    for (i, node) in nodes.iter().enumerate() {
+        if node.is_box() {
+            length += node.line_contribution().length.to_pt().unwrap_or(0.0);
+            continue;
+        }
+        if node.is_glue() || node.is_kern() {
+            length += node.width().length.to_pt().unwrap_or(0.0);
+        }
+        if length >= width {
+            breaks.push(at(i));
+            length = 0.0;
+        }
+    }
+    breaks.push(at(nodes.len().saturating_sub(1)));
+    breaks
+}
+
 /// Break a paragraph the way SILE does: a first pass without hyphenation,
 /// then, if no breaks fit `pretolerance`, `hyphenate` the nodes and break
 /// them again. Returns the nodes the breaks refer to.

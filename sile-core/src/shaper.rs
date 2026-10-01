@@ -174,7 +174,7 @@ impl Shaper for RustyBuzzShaper {
         buffer.push_str(text);
 
         buffer.set_direction(match spec.direction {
-            Direction::LTR => rustybuzz::Direction::LeftToRight,
+            Direction::LTR | Direction::Frame => rustybuzz::Direction::LeftToRight,
             Direction::RTL => rustybuzz::Direction::RightToLeft,
             Direction::TTB => rustybuzz::Direction::TopToBottom,
         });
@@ -221,9 +221,24 @@ impl Shaper for RustyBuzzShaper {
                 font_index: 0,
             });
         }
-
+        if spec.direction == Direction::TTB {
+            items.iter_mut().for_each(set_upright);
+        }
         items
     }
+}
+
+/// Vertical metrics as SILE takes them: the glyph's vertical advance is
+/// its height and its glyph advance, its horizontal advance its width, and
+/// offsets are dropped.
+pub(crate) fn set_upright(item: &mut GlyphItem) {
+    let advance = -item.y_advance;
+    item.width = item.x_advance;
+    item.x_advance = advance;
+    item.height = advance;
+    item.depth = 0.0;
+    item.x_offset = 0.0;
+    item.y_offset = 0.0;
 }
 
 // ---------------------------------------------------------------------------

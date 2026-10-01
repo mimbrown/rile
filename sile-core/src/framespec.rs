@@ -70,7 +70,7 @@ impl FrameDirection {
 impl From<Direction> for FrameDirection {
     fn from(direction: Direction) -> Self {
         match direction {
-            Direction::LTR => Self::LTR,
+            Direction::LTR | Direction::Frame => Self::LTR,
             Direction::RTL => Self::RTL,
             Direction::TTB => Self { writing: Flow::TTB, page: Flow::TTB },
         }
@@ -177,6 +177,25 @@ impl FrameGeometry {
 
     pub fn height(&self) -> f64 {
         self.bottom - self.top
+    }
+
+    fn flow(&self) -> FrameDirection {
+        self.direction.unwrap_or(FrameDirection::LTR)
+    }
+
+    /// How long a line is: across the frame, or down it when the writing
+    /// is vertical (SILE's `getLineWidth`).
+    pub fn line_length(&self) -> f64 {
+        if self.flow().is_vertical() { self.height() } else { self.width() }
+    }
+
+    /// How much room lines have, along the way they follow each other
+    /// (SILE's `getTargetLength`).
+    pub fn target_length(&self) -> f64 {
+        match self.flow().page {
+            Flow::TTB | Flow::BTT => self.height(),
+            Flow::LTR | Flow::RTL => self.width(),
+        }
     }
 }
 

@@ -188,6 +188,17 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut impl Can
                     draw_hlist(&hbox.nodes, c, line, canvas);
                     canvas.rule(ox, oy - s.raise, c.x - ox, s.thickness);
                 }
+                Some(Ink::LatinInTate(zw)) => {
+                    c.advance_writing(-0.5 * zw);
+                    c.advance_page(0.25 * zw);
+                    let y = c.y;
+                    let saved = *c;
+                    draw_hlist(&hbox.nodes, c, line, canvas);
+                    *c = saved;
+                    c.y = y;
+                    c.advance_writing(pt(&hbox.width.length) + 0.5 * zw);
+                    c.advance_page(-0.25 * zw);
+                }
                 Some(Ink::Ruby(raise)) => {
                     let saved = *c;
                     c.advance_writing(pt(&hbox.width.length));

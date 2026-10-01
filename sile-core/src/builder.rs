@@ -7,7 +7,7 @@ use crate::counter::MultilevelCounter;
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
-use crate::framespec::{self, FrameDirection, FrameGeometry, FrameSpec};
+use crate::framespec::{self, Flow, FrameDirection, FrameGeometry, FrameSpec};
 use crate::hyphenation::HyphenationDictionary;
 use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
@@ -423,6 +423,8 @@ pub struct DocumentBuilder {
     direction: FrameDirection,
     /// Directions set on frames while typesetting (SILE's `\thisframeRTL`).
     frame_directions: BTreeMap<String, FrameDirection>,
+    /// Shape as if in a frame of this direction (SILE's `\latin-in-tate`).
+    frame_override: Option<FrameDirection>,
     bidi: bool,
 
     // Font system
@@ -481,6 +483,7 @@ impl DocumentBuilder {
             master: None,
             direction: FrameDirection::LTR,
             frame_directions: BTreeMap::new(),
+            frame_override: None,
             bidi: true,
             font_db: FontDatabase::new(),
             fonts: std::collections::BTreeMap::new(),
@@ -836,7 +839,13 @@ impl DocumentBuilder {
 
     /// The direction of the frame being filled.
     pub fn frame_direction(&self) -> FrameDirection {
-        self.current_frame().and_then(|f| f.direction).unwrap_or(self.direction)
+        self.frame_override.or_else(|| self.current_frame().and_then(|f| f.direction)).unwrap_or(self.direction)
+    }
+
+    /// Lines in vertical Japanese frames are broken first-fit and set one
+    /// zenkaku tall (SILE's `tate` typesetter).
+    fn in_tate_frame(&self) -> bool {
+        self.frame_override.is_none() && self.current_frame().is_some_and(|f| f.tate)
     }
 
     /// The direction text runs in the frame being filled.
@@ -933,7 +942,7 @@ impl DocumentBuilder {
         self
     }
 
-    fn text_run(&self, text: String) -> TextRun {
+    fn text_run(&mut self, text: String) -> TextRun {
         let tokens = NodeMakerOptions {
             obey_spaces: self.settings.obey_spaces,
             fixed_nbsp: self.settings.fixed_nbsp,
@@ -941,15 +950,26 @@ impl DocumentBuilder {
             ethiopic_centered: self.settings.ethiopic_centered,
             ..NodeMakerOptions::for_language(&self.settings.language)
         };
+        let font_name = self.settings.font.clone().unwrap_or_default();
+        let fallbacks = self.settings.fallback_fonts.clone();
+        let (font_name, fallbacks) = match self.fonts.get(&font_name).map(|f| f.spec.direction) {
+            Some(Direction::Frame) => {
+                let direction = self.writing_direction();
+                let mut resolve = |name: String| self.font_in_direction(&name, direction).unwrap_or(name);
+                let font_name = resolve(font_name);
+                (font_name, fallbacks.into_iter().map(resolve).collect())
+            }
+            _ => (font_name, fallbacks),
+        };
         TextRun {
             text,
-            font_name: self.settings.font.clone().unwrap_or_default(),
+            font_name,
             color: self.settings.color,
             language: self.settings.language.clone(),
             tokens,
             letter_space: self.settings.letter_space,
             tracking: self.settings.tracking,
-            fallbacks: self.settings.fallback_fonts.clone(),
+            fallbacks,
             speaker_change: false,
             bidi_level: None,
         }
@@ -959,7 +979,7 @@ impl DocumentBuilder {
     /// the next if the paragraph breaks here, and `replacement` is set if it
     /// does not (SILE's `\discretionary`).
     pub fn add_discretionary(&mut self, prebreak: Option<&str>, postbreak: Option<&str>, replacement: Option<&str>) -> &mut Self {
-        let run = |t: Option<&str>| t.map(|t| self.text_run(t.to_string()));
+        let mut run = |t: Option<&str>| t.map(|t| self.text_run(t.to_string()));
         let parts = Box::new([run(prebreak), run(postbreak), run(replacement)]);
         self.push_inline(Inline::Discretionary(parts));
         self
@@ -1120,6 +1140,51 @@ impl DocumentBuilder {
             return font.spec.size;
         }
         glyphs.iter().map(|g| g.width).sum::<f64>() * self.settings.tracking.unwrap_or(1.0)
+    }
+
+    /// Set what `content` adds as Latin text lying on its side in vertical
+    /// Japanese, word by word, after a little space; elsewhere it is set as
+    /// is (SILE's `\\latin-in-tate`).
+    pub fn add_latin_in_tate<C, E>(ctx: &mut C, content: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: AsMut<DocumentBuilder>,
+        E: From<BuilderError>,
+    {
+        if ctx.as_mut().frame_direction().writing != Flow::TTB {
+            return content(ctx);
+        }
+        let doc = ctx.as_mut();
+        let saved = doc.settings.clone();
+        let indent = doc.current_indent.unwrap_or(doc.settings.paragraph_indent);
+        doc.set_language("und").update_font(|f| f.direction = Direction::LTR)?;
+        doc.start_hbox();
+        let result = content(ctx);
+        let doc = ctx.as_mut();
+        let inlines = doc.open_boxes.pop().map(|(_, content)| content).unwrap_or_default();
+        result?;
+        doc.frame_override = Some(FrameDirection::LTR);
+        let nodes = doc.shape_inlines(&inlines);
+        doc.frame_override = None;
+        doc.settings = saved;
+        let zw = doc.zenkaku_width();
+        doc.add_glue(Length::new(Measurement::pt(0.5 * zw), Measurement::pt(0.25 * zw), Measurement::pt(0.25 * zw)));
+        // The inner material is set as a paragraph of its own, indent included.
+        doc.add_glue(Length::pt(indent));
+        for mut node in nodes? {
+            if node.is_glue() || node.is_kern() {
+                doc.push_inline(Inline::Node(Box::new(node)));
+            } else if pt_of(&node.line_contribution()) > 0.0 {
+                if let Node::NNode(n) = &mut node {
+                    for g in &mut n.glyphs {
+                        (g.x_advance, g.x_offset, g.y_offset) = (g.width, 0.0, 0.0);
+                    }
+                }
+                let mut hbox = natural_hbox(vec![node]);
+                hbox.ink = Some(Ink::LatinInTate(zw));
+                doc.add_box(hbox);
+            }
+        }
+        Ok(())
     }
 
     /// Draw the character grid of the frame being filled under the page's
@@ -1543,7 +1608,7 @@ impl DocumentBuilder {
         self.ensure_page()?;
         let frame = self.current_frame().expect("current frame");
         let id = frame.id.clone();
-        let target = frame.height() - self.insertions.shrinkage(&id);
+        let target = frame.target_length() - self.insertions.shrinkage(&id);
         let (classes, insertions) = (&self.insertion_classes, &mut self.insertions);
         let mut on_insertion = |queue: &mut Vec<Node>, i, height, target| {
             insertions.process(classes, &id, queue, i, height, target)
@@ -1629,7 +1694,7 @@ impl DocumentBuilder {
         if self.vertical_queue.is_empty() {
             self.previous_depth = None;
         }
-        let old_width = self.current_frame().map(FrameGeometry::width);
+        let old_width = self.current_frame().map(FrameGeometry::line_length);
         let next = self.current_frame().and_then(|f| f.next.clone());
         match next {
             Some(next) if self.last_penalty > SUPER_EJECT => {
@@ -1640,7 +1705,7 @@ impl DocumentBuilder {
                 self.new_page()?;
             }
         }
-        let new_width = self.current_frame().map(FrameGeometry::width);
+        let new_width = self.current_frame().map(FrameGeometry::line_length);
         if !self.vertical_queue.is_empty() && old_width.zip(new_width).is_some_and(|(a, b)| (a - b).abs() > 1e-6) {
             self.push_back()?;
             if self.typesetters.is_empty() && self.build_page()? {
@@ -1712,7 +1777,7 @@ impl DocumentBuilder {
         if nodes.is_empty() {
             return Ok(());
         }
-        let hsize = self.current_frame().map_or(0.0, FrameGeometry::width);
+        let hsize = self.current_frame().map_or(0.0, FrameGeometry::line_length);
         let (left, right) = margins.unwrap_or_default();
         let skips = LineSkips { left, right, ..self.settings.skips };
         let mut previous_depth = self.previous_depth;
@@ -1989,7 +2054,7 @@ impl DocumentBuilder {
         for (name, running) in [("header", self.header.clone()), ("footer", self.footer.clone())] {
             let Some(running) = running else { continue };
             for page in pages.iter_mut() {
-                let Some(hsize) = page.frame(name).map(|f| f.width()) else { continue };
+                let Some(hsize) = page.frame(name).map(FrameGeometry::line_length) else { continue };
                 let line = running.resolved(page.number, total, &self.settings.language);
                 let skips = LineSkips::default().aligned(running.align);
                 let nodes = self.typeset_inlines(&line, hsize, running.direction, skips, &mut None)?;
@@ -2009,7 +2074,7 @@ impl DocumentBuilder {
 
     fn typeset_paragraph(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
         self.ensure_page()?;
-        let hsize = self.current_frame().map_or(0.0, |f| f.width());
+        let hsize = self.current_frame().map_or(0.0, FrameGeometry::line_length);
         let mut previous_depth = self.previous_depth;
         let nodes = self.typeset_inlines(inlines, hsize, self.writing_direction(), self.settings.skips, &mut previous_depth)?;
         self.previous_depth = previous_depth;
@@ -2076,7 +2141,12 @@ impl DocumentBuilder {
         if let Some((after, indent)) = self.hanging {
             (lb_settings.hang_after, lb_settings.hang_indent) = (after, indent);
         }
-        let (h_nodes, breaks) = linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes));
+        let (h_nodes, breaks) = if self.in_tate_frame() {
+            let breaks = linebreak::first_fit(&h_nodes, hsize);
+            (h_nodes, breaks)
+        } else {
+            linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes))
+        };
         self.build_lines(&h_nodes, &breaks, direction, reorder, skips, previous_depth)
     }
 
@@ -2376,11 +2446,21 @@ impl DocumentBuilder {
         let mut height = 0.0_f64;
         let mut depth = 0.0_f64;
         let mut glyph_data = Vec::with_capacity(glyphs.len());
+        let misfit = match self.frame_direction().writing {
+            Flow::TTB => spec.direction == Direction::LTR,
+            _ => spec.direction == Direction::TTB,
+        };
+        let upright = (spec.direction == Direction::TTB) != misfit;
 
         for g in glyphs {
-            width += g.width;
-            height = height.max(g.height);
-            depth = depth.max(g.depth);
+            if upright {
+                width += g.height;
+                height = height.max(g.width);
+            } else {
+                width += g.width;
+                height = height.max(g.height);
+                depth = depth.max(g.depth);
+            }
             glyph_data.push(GlyphData {
                 gid: g.gid,
                 width: g.width,
@@ -2393,6 +2473,7 @@ impl DocumentBuilder {
         }
 
         let mut nnode = NNode::with_glyphs(text, glyph_data, font_name, spec.size, width, height, depth);
+        nnode.misfit = misfit;
         nnode.color = color;
         nnode.language = self.settings.language.clone();
         nnode
@@ -2564,9 +2645,13 @@ impl DocumentBuilder {
 
         let count = lines.len();
         let mut v_nodes = Vec::new();
-        for (index, (vbox, broken, migrating)) in lines.into_iter().enumerate() {
+        let tate = self.in_tate_frame().then(|| self.zenkaku_width());
+        for (index, (mut vbox, broken, migrating)) in lines.into_iter().enumerate() {
             let (height, depth) = (pt_of(&vbox.height), pt_of(&vbox.depth));
-            if let Some(spacing) = self.settings.line_spacing {
+            if let (Some(zw), Some(bls)) = (tate, self.settings.baseline_skip) {
+                vbox.height = Length::pt(zw);
+                v_nodes.push(Node::vglue(Length::new(Measurement::pt(pt_of(&bls.skip) - zw), bls.skip.stretch, bls.skip.shrink)));
+            } else if let Some(spacing) = self.settings.line_spacing {
                 let leading = self.line_spacing_leading(spacing, &vbox, *previous_depth, &mut v_nodes);
                 v_nodes.extend(leading);
                 *previous_depth = Some(depth);

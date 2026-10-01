@@ -112,6 +112,7 @@ fn expand_includes(tree: Vec<Content>, dir: &Path) -> Result<Vec<Content>, Strin
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "ruby",
+    "latin-in-tate",
     "show-hanmen",
     "bidi-off",
     "bidi-on",
@@ -300,7 +301,7 @@ fn check(
                     match k.as_str() {
                         "class" | "papersize" | "landscape" => {}
                         "direction" if direction(v).is_some() => {}
-                        "layout" if v == "yoko" => {}
+                        "layout" if matches!(v.as_str(), "yoko" | "tate") => {}
                         _ => {
                             missing.insert(format!("document[{k}={v}]"));
                         }
@@ -519,7 +520,7 @@ impl<'a> Driver<'a> {
     fn new(corpus: &'a Corpus<'a>) -> Result<Self, String> {
         let mut doc = DocumentBuilder::new(PaperSize::A4);
         doc.load_fonts_dir(corpus.font_dir);
-        let spec = FontSpec { family: Some("Gentium Book".into()), ..Default::default() };
+        let spec = FontSpec { family: Some("Gentium Book".into()), direction: Direction::Frame, ..Default::default() };
         doc.set_font_spec(spec).map_err(|e| e.to_string())?;
         Ok(Self {
             corpus,
@@ -852,8 +853,8 @@ impl<'a> Driver<'a> {
                 self.doc.set_page_size(self.paper);
                 match cmd.option("class") {
                     Some("book") => self.doc.set_class(Book::new()),
-                    Some("jbook") => self.doc.set_class(Book::japanese()),
-                    Some("jplain") => self.doc.set_class(Plain::japanese()),
+                    Some("jbook") => self.doc.set_class(Book::japanese(cmd.option("layout") == Some("tate"))),
+                    Some("jplain") => self.doc.set_class(Plain::japanese(cmd.option("layout") == Some("tate"))),
                     _ => self.doc.set_class(Plain::new()),
                 };
                 if let Some(class) = cmd.option("class").filter(|c| c.starts_with('j')) {
@@ -1292,6 +1293,10 @@ impl<'a> Driver<'a> {
                 self.sync()?;
                 DocumentBuilder::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
             }
+            "latin-in-tate" => {
+                self.sync()?;
+                DocumentBuilder::add_latin_in_tate(self, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+            }
             "show-hanmen" => {
                 let grid = self.hanmen.ok_or("show-hanmen called on a frame with no hanmen")?;
                 self.doc.show_hanmen(&grid).map_err(err)?;
@@ -1662,7 +1667,8 @@ impl<'a> Driver<'a> {
     /// `packages.retrograde`: restore defaults from older SILE releases.
     fn retrograde(&mut self, target: &str) -> Result<(), String> {
         self.target = semver(target);
-        if self.target < (0, 15, 14) {
+        let family = self.defaults.get("font.family").map(String::as_str);
+        if self.target < (0, 15, 14) && family == Some("Gentium Book") {
             self.update_font(|f| f.family = Some("Gentium Plus".into()))?;
             self.defaults.insert("font.family".into(), "Gentium Plus".into());
         }
