@@ -125,6 +125,9 @@ const SETTINGS: &[&str] = &[
     "document.lskip",
     "document.rskip",
     "document.language",
+    "document.letterspaceglue",
+    "typesetter.obeyspaces",
+    "languages.fixedNbsp",
     "current.parindent",
     "typesetter.parfillskip",
     "linebreak.tolerance",
@@ -221,6 +224,9 @@ struct Settings {
     parskip: String,
     baselineskip: String,
     lineskip: String,
+    letterspace: Option<String>,
+    obey_spaces: bool,
+    fixed_nbsp: bool,
     skips: LineSkips,
 }
 
@@ -254,6 +260,9 @@ impl<'a> Driver<'a> {
                 parskip: "0pt plus 1pt".into(),
                 baselineskip: "1.2em plus 1pt".into(),
                 lineskip: "1pt".into(),
+                letterspace: None,
+                obey_spaces: false,
+                fixed_nbsp: false,
                 skips: LineSkips::default(),
             },
             registered: BTreeSet::new(),
@@ -307,6 +316,14 @@ impl<'a> Driver<'a> {
         self.doc.set_paragraph_skip(parskip);
         self.doc.set_line_skips(self.settings.skips);
         self.doc.set_language(self.settings.language.clone());
+        let letterspace = match self.settings.letterspace.clone() {
+            Some(l) => Some(self.length(&l)?),
+            None => None,
+        };
+        self.doc
+            .set_letter_space(letterspace)
+            .set_obey_spaces(self.settings.obey_spaces)
+            .set_fixed_nbsp(self.settings.fixed_nbsp);
         Ok(())
     }
 
@@ -329,7 +346,7 @@ impl<'a> Driver<'a> {
     fn text(&mut self, text: &str) -> Result<(), String> {
         let mut paragraphs = split_paragraphs(text).into_iter().peekable();
         while let Some(chunk) = paragraphs.next() {
-            self.add_text(&collapse_whitespace(&chunk))?;
+            self.add_text(&chunk)?;
             if paragraphs.peek().is_some() {
                 self.par()?;
             }
@@ -647,6 +664,9 @@ impl<'a> Driver<'a> {
             "document.parskip" => self.settings.parskip = value.to_string(),
             "document.baselineskip" => self.settings.baselineskip = value.to_string(),
             "document.lineskip" => self.settings.lineskip = value.to_string(),
+            "document.letterspaceglue" => self.settings.letterspace = Some(value.to_string()),
+            "typesetter.obeyspaces" => self.settings.obey_spaces = value == "true",
+            "languages.fixedNbsp" => self.settings.fixed_nbsp = value == "true",
             "document.lskip" => self.settings.skips.left = self.length(value)?,
             "document.rskip" => self.settings.skips.right = self.length(value)?,
             "typesetter.parfillskip" => self.settings.skips.par_fill = self.length(value)?,
@@ -801,26 +821,6 @@ fn split_paragraphs(text: &str) -> Vec<String> {
     out
 }
 
-fn collapse_whitespace(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut space = false;
-    for c in s.chars() {
-        if c.is_whitespace() {
-            space = true;
-        } else {
-            if space {
-                out.push(' ');
-                space = false;
-            }
-            out.push(c);
-        }
-    }
-    if space {
-        out.push(' ');
-    }
-    out
-}
-
 fn lorem(source: &str, words: usize) -> String {
     let all: Vec<&str> = source.split_whitespace().collect();
     if all.is_empty() {
@@ -908,11 +908,6 @@ mod tests {
     fn paragraphs_split_on_blank_lines() {
         assert_eq!(split_paragraphs("a\nb\n\n  \nc"), vec!["a\nb", "c"]);
         assert_eq!(split_paragraphs("\nHello\n"), vec!["\nHello\n"]);
-    }
-
-    #[test]
-    fn whitespace_collapses() {
-        assert_eq!(collapse_whitespace("\n a \n b  "), " a b ");
     }
 
     #[test]
