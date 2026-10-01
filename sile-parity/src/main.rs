@@ -1,6 +1,7 @@
 mod compare;
 mod driver;
 mod fonts;
+mod ports;
 mod report;
 mod sil;
 mod svg;
@@ -81,7 +82,7 @@ fn main() {
             eprintln!("no runnable source for {name}");
             std::process::exit(1);
         };
-        match driver::run(&src, format, &corpus) {
+        match driver::run(&name, &src, format, &corpus) {
             Ok(t) => print!("{t}"),
             Err(e) => {
                 eprintln!("{e:?}");
@@ -143,7 +144,7 @@ fn run_one(name: &str, dir: &std::path::Path, corpus: &Corpus) -> TestResult {
     let outcome = match source(dir, name) {
         Err(missing) => Outcome::Unsupported(vec![missing]),
         Ok((src, format)) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            driver::run(&src, format, corpus)
+            driver::run(name, &src, format, corpus)
         })) {
             Ok(Ok(ours)) => {
                 let mut ours = trace::parse(&ours);
