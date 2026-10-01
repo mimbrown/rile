@@ -1,0 +1,11 @@
+[package]
+name = "sile-parity"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Compares sile-core layouts with SILE's regression test expectations"
+
+[dependencies]
+sile-core = { path = "../sile-core" }
+fontdb = "0.22"
+ttf-parser = "0.25"
