@@ -122,6 +122,37 @@ impl RunningText {
     }
 }
 
+/// Baseline-to-baseline line spacing (`document.baselineskip` and
+/// `document.lineskip` in SILE).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BaselineSkip {
+    pub skip: Length,
+    /// Minimum gap between one line's depth and the next line's height.
+    pub lineskip: f64,
+}
+
+impl BaselineSkip {
+    fn leading_for(&self, height: f64, previous_depth: Option<f64>) -> Node {
+        let Some(previous_depth) = previous_depth else {
+            return Node::vglue(Length::zero());
+        };
+        let gap = self.skip.length.to_pt().unwrap_or(0.0) - height - previous_depth;
+        if gap > self.lineskip {
+            Node::vglue(Length::new(Measurement::pt(gap), self.skip.stretch, self.skip.shrink))
+        } else {
+            Node::vglue(Length::pt(self.lineskip))
+        }
+    }
+}
+
+struct LaidOut {
+    pages: Vec<crate::pagebuilder::Page>,
+    layout: PageLayout,
+    fonts: std::collections::BTreeMap<String, RegisteredFont>,
+    bookmarks: Vec<Bookmark>,
+    pdf_config: PdfConfig,
+}
+
 // ---------------------------------------------------------------------------
 // DocumentBuilder
 // ---------------------------------------------------------------------------
@@ -136,7 +167,7 @@ pub struct DocumentBuilder {
 
     // Font system
     font_db: FontDatabase,
-    fonts: std::collections::HashMap<String, RegisteredFont>,
+    fonts: std::collections::BTreeMap<String, RegisteredFont>,
     shaper: Box<dyn Shaper>,
     current_font: Option<String>,
 
@@ -154,6 +185,8 @@ pub struct DocumentBuilder {
     paragraph_indent: f64,
     paragraph_skip: f64,
     leading: f64,
+    baseline_skip: Option<BaselineSkip>,
+    previous_depth: Option<f64>,
     space_settings: SpaceSettings,
     first_paragraph: bool,
 
@@ -183,7 +216,7 @@ impl DocumentBuilder {
             footer_height: 0.0,
             frame_gap: 0.0,
             font_db: FontDatabase::new(),
-            fonts: std::collections::HashMap::new(),
+            fonts: std::collections::BTreeMap::new(),
             shaper: shaper::default_shaper(),
             current_font: None,
             hyphenation: HyphenationDictionary::new(),
@@ -195,6 +228,8 @@ impl DocumentBuilder {
             paragraph_indent: 20.0,
             paragraph_skip: 0.0,
             leading: 2.0,
+            baseline_skip: None,
+            previous_depth: None,
             space_settings: SpaceSettings::default(),
             first_paragraph: true,
             linebreak_settings: LinebreakSettings::default(),
@@ -331,6 +366,13 @@ impl DocumentBuilder {
         self
     }
 
+    /// Space lines TeX/SILE style, baseline to baseline, instead of adding a
+    /// fixed `leading` between them. Overrides `set_leading`.
+    pub fn set_baseline_skip(&mut self, baseline_skip: Option<BaselineSkip>) -> &mut Self {
+        self.baseline_skip = baseline_skip;
+        self
+    }
+
     pub fn set_leading(&mut self, leading: f64) -> &mut Self {
         self.leading = leading;
         self
@@ -458,7 +500,33 @@ impl DocumentBuilder {
 
     // -- Render --------------------------------------------------------------
 
-    pub fn render(mut self) -> Result<Vec<u8>, BuilderError> {
+    pub fn render(self) -> Result<Vec<u8>, BuilderError> {
+        let laid = self.lay_out()?;
+        let mut pdf = PdfOutputter::new(laid.pdf_config);
+        for (name, entry) in &laid.fonts {
+            pdf.register_font(name, Arc::clone(&entry.face));
+        }
+        for bm in laid.bookmarks {
+            pdf.add_bookmark(bm);
+        }
+        pdf.render_pages(&laid.pages, &laid.layout);
+        Ok(pdf.finish()?)
+    }
+
+    /// Lay the document out and describe it in SILE's debug outputter format,
+    /// for comparing layout against SILE's regression test expectations.
+    pub fn render_debug(self) -> Result<String, BuilderError> {
+        let laid = self.lay_out()?;
+        let mut trace = crate::trace::TraceCanvas::new(laid.layout.paper);
+        for (name, entry) in &laid.fonts {
+            let family = entry.spec.family.clone().unwrap_or_default();
+            trace.register_font(name, family, &entry.spec);
+        }
+        crate::render::draw_pages(&laid.pages, &laid.layout, &mut trace);
+        Ok(trace.finish())
+    }
+
+    fn lay_out(mut self) -> Result<LaidOut, BuilderError> {
         // Flush any pending paragraph
         if !self.paragraph_runs.is_empty() {
             // We need to move self to call new_paragraph, which takes &mut self
@@ -503,28 +571,18 @@ impl DocumentBuilder {
             for page in pages.iter_mut() {
                 let runs = running.resolved(page.number, total);
                 let nodes =
-                    self.typeset_runs(&runs, hsize, running.direction, running.align, 0.0)?;
+                    self.typeset_runs(&runs, hsize, running.direction, running.align, 0.0, &mut None)?;
                 page.add_frame_content(frame_id, nodes);
             }
         }
 
-        // Render to PDF
-        let mut pdf = PdfOutputter::new(self.pdf_config);
-
-        // Register fonts
-        for (name, entry) in &self.fonts {
-            pdf.register_font(name, Arc::clone(&entry.face));
-        }
-
-        // Add bookmarks
-        for bm in self.bookmarks {
-            pdf.add_bookmark(bm);
-        }
-
-        // Render pages
-        pdf.render_pages(&pages, &layout);
-
-        Ok(pdf.finish()?)
+        Ok(LaidOut {
+            pages,
+            layout,
+            fonts: self.fonts,
+            bookmarks: self.bookmarks,
+            pdf_config: self.pdf_config,
+        })
     }
 
     // -- Internal: paragraph typesetting ------------------------------------
@@ -539,7 +597,11 @@ impl DocumentBuilder {
             .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
         let hsize = layout.frame(content_frame_id).width();
         let (direction, alignment, indent) = (self.direction, self.alignment, self.paragraph_indent);
-        self.typeset_runs(runs, hsize, direction, alignment, indent)
+        let mut previous_depth = self.previous_depth;
+        let nodes =
+            self.typeset_runs(runs, hsize, direction, alignment, indent, &mut previous_depth)?;
+        self.previous_depth = previous_depth;
+        Ok(nodes)
     }
 
     /// Shape, break and package `runs` into lines of width `hsize`.
@@ -550,6 +612,7 @@ impl DocumentBuilder {
         direction: Direction,
         alignment: TextAlign,
         indent: f64,
+        previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
         // Build horizontal node list from text runs
         let mut h_nodes = Vec::new();
@@ -597,10 +660,10 @@ impl DocumentBuilder {
                 let seg_glyphs = &all_glyphs[seg_start..gi];
 
                 if is_space {
-                    let w: f64 = seg_glyphs.iter().map(|g| g.x_advance).sum::<f64>()
-                        * self.space_settings.enlargement_factor;
-                    let stretch = w * self.space_settings.stretch_factor;
-                    let shrink = w * self.space_settings.shrink_factor;
+                    let base: f64 = seg_glyphs.iter().map(|g| g.x_advance).sum();
+                    let w = base * self.space_settings.enlargement_factor;
+                    let stretch = base * self.space_settings.stretch_factor;
+                    let shrink = base * self.space_settings.shrink_factor;
                     segments.push(Node::glue(Length::new(
                         Measurement::pt(w),
                         Measurement::pt(stretch),
@@ -670,7 +733,8 @@ impl DocumentBuilder {
         );
 
         // Package lines into VBoxes
-        let v_nodes = self.build_lines(&h_nodes, &breaks, hsize, direction, alignment);
+        let v_nodes =
+            self.build_lines(&h_nodes, &breaks, hsize, direction, alignment, previous_depth);
         Ok(v_nodes)
     }
 
@@ -697,6 +761,7 @@ impl DocumentBuilder {
                 y_advance: g.y_advance,
                 x_offset: g.x_offset,
                 y_offset: g.y_offset,
+                text: g.text.clone(),
             });
         }
 
@@ -713,6 +778,7 @@ impl DocumentBuilder {
         hsize: f64,
         direction: Direction,
         alignment: TextAlign,
+        previous_depth: &mut Option<f64>,
     ) -> Vec<Node> {
         let mut v_nodes = Vec::new();
         let mut start = 0;
@@ -720,6 +786,11 @@ impl DocumentBuilder {
         for (line_idx, br) in breaks.iter().enumerate() {
             // Collect nodes for this line
             let end = br.position.min(h_nodes.len());
+            // A break inside material already consumed by the previous line
+            // (e.g. parfillskip after an overfull last word) yields no line.
+            if start > end {
+                continue;
+            }
             let mut line_nodes: Vec<Node> = Vec::new();
 
             // Left indent (LTR only; RTL handles alignment below)
@@ -834,8 +905,10 @@ impl DocumentBuilder {
                 explicit: false,
             };
 
-            // Inter-line glue (leading)
-            if line_idx > 0 && self.leading > 0.0 {
+            if let Some(bls) = self.baseline_skip {
+                v_nodes.push(bls.leading_for(line_height.to_pt().unwrap_or(0.0), *previous_depth));
+                *previous_depth = Some(line_depth.to_pt().unwrap_or(0.0));
+            } else if line_idx > 0 && self.leading > 0.0 {
                 v_nodes.push(Node::vglue(Length::new(
                     Measurement::pt(self.leading),
                     Measurement::pt(self.leading * 0.5),
@@ -965,7 +1038,7 @@ fn hyphenate_nodes(
     lang: &str,
     dict: &mut HyphenationDictionary,
     shaper: &dyn Shaper,
-    fonts: &std::collections::HashMap<String, RegisteredFont>,
+    fonts: &std::collections::BTreeMap<String, RegisteredFont>,
 ) -> Vec<Node> {
     let mut result = Vec::with_capacity(nodes.len());
 
@@ -1011,6 +1084,7 @@ fn hyphenate_nodes(
                         y_advance: g.y_advance,
                         x_offset: g.x_offset,
                         y_offset: g.y_offset,
+                        text: g.text.clone(),
                     });
                 }
 
@@ -1046,6 +1120,7 @@ fn hyphenate_nodes(
                             y_advance: g.y_advance,
                             x_offset: g.x_offset,
                             y_offset: g.y_offset,
+                            text: g.text.clone(),
                         });
                     }
 
@@ -1107,6 +1182,47 @@ mod tests {
         doc.load_font_data("body", data, spec).ok()?;
         doc.set_font("body");
         Some(doc)
+    }
+
+    // -- Robustness ----------------------------------------------------------
+
+    #[test]
+    fn overfull_word_does_not_panic() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.set_margins(72.0, 250.0, 72.0, 250.0);
+        doc.add_text("x".repeat(400));
+        doc.new_paragraph().unwrap();
+        doc.add_text(format!("a b {} c d", "y".repeat(400)));
+        assert!(doc.render().is_ok());
+    }
+
+    #[test]
+    fn output_is_deterministic_with_many_fonts() {
+        let render = || {
+            let (data, family) = load_any_system_font()?;
+            let mut doc = DocumentBuilder::new(PaperSize::A4);
+            for name in ["a", "b", "c", "d", "e"] {
+                let spec = FontSpec { family: Some(family.clone()), size: 12.0, ..Default::default() };
+                doc.load_font_data(name, data.clone(), spec).ok()?;
+                doc.set_font(name);
+                doc.add_text("Hello world ");
+            }
+            doc.render().ok()
+        };
+        let Some(first) = render() else { return };
+        for _ in 0..4 {
+            assert_eq!(render().unwrap(), first);
+        }
+    }
+
+    #[test]
+    fn debug_trace_lists_each_word() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.add_text("Hello world");
+        let trace = doc.render_debug().unwrap();
+        assert!(trace.starts_with("Set paper size"));
+        assert!(trace.contains("\t(Hello)\n") && trace.contains("\t(world)\n"), "{trace}");
+        assert!(trace.ends_with("End page\nFinish\n"));
     }
 
     // -- Construction --------------------------------------------------------

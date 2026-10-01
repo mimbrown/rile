@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-wasm = ["sile-core/wasm"]
+harfbuzz = ["sile-core/harfbuzz"]
 
 [dependencies]
 sile-core = { path = "../sile-core" }

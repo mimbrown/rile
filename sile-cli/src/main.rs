@@ -197,60 +197,62 @@ fn main() {
     doc.add_vskip(18.0);
 
     // Load Awami Nastaliq — a Graphite-enabled font from SIL
-    let awami_path = find_awami_nastaliq().expect(
-        "Awami Nastaliq not found — install from https://software.sil.org/awami/",
-    );
-    println!("Using Nastaliq font: {}", awami_path.display());
+    match find_awami_nastaliq() {
+        None => println!("Skipping Urdu section: Awami Nastaliq not found (https://software.sil.org/awami/)"),
+        Some(awami_path) => {
+            println!("Using Nastaliq font: {}", awami_path.display());
 
-    let awami_heading_spec = FontSpec {
-        family: Some("Awami Nastaliq".to_string()),
-        size: 22.0,
-        direction: Direction::RTL,
-        script: "Arab".to_string(),
-        language: "ur".to_string(),
-        ..Default::default()
-    };
-    doc.load_font_file("urdu-heading", &awami_path, awami_heading_spec)
-        .expect("failed to load Awami Nastaliq heading");
+            let awami_heading_spec = FontSpec {
+                family: Some("Awami Nastaliq".to_string()),
+                size: 22.0,
+                direction: Direction::RTL,
+                script: "Arab".to_string(),
+                language: "ur".to_string(),
+                ..Default::default()
+            };
+            doc.load_font_file("urdu-heading", &awami_path, awami_heading_spec)
+                .expect("failed to load Awami Nastaliq heading");
 
-    let awami_body_spec = FontSpec {
-        family: Some("Awami Nastaliq".to_string()),
-        size: 14.0,
-        direction: Direction::RTL,
-        script: "Arab".to_string(),
-        language: "ur".to_string(),
-        ..Default::default()
-    };
-    doc.load_font_file("urdu-body", &awami_path, awami_body_spec)
-        .expect("failed to load Awami Nastaliq body");
+            let awami_body_spec = FontSpec {
+                family: Some("Awami Nastaliq".to_string()),
+                size: 14.0,
+                direction: Direction::RTL,
+                script: "Arab".to_string(),
+                language: "ur".to_string(),
+                ..Default::default()
+            };
+            doc.load_font_file("urdu-body", &awami_path, awami_body_spec)
+                .expect("failed to load Awami Nastaliq body");
 
-    // Urdu heading
-    doc.set_font("urdu-heading");
-    doc.set_language("ur");
-    doc.set_direction(Direction::RTL);
-    doc.set_paragraph_indent(0.0);
-    doc.set_leading(8.0);
-    doc.add_text("\u{0628}\u{0648}\u{06C1}\u{06CC}\u{0645}\u{06CC}\u{0627} \u{0645}\u{06CC}\u{06BA} \u{0627}\u{06CC}\u{06A9} \u{0627}\u{0633}\u{06A9}\u{06CC}\u{0646}\u{0688}\u{0644}");
-    // "بوہیمیا میں ایک اسکینڈل" = "A Scandal in Bohemia"
-    doc.new_paragraph().expect("urdu title");
+            // Urdu heading
+            doc.set_font("urdu-heading");
+            doc.set_language("ur");
+            doc.set_direction(Direction::RTL);
+            doc.set_paragraph_indent(0.0);
+            doc.set_leading(8.0);
+            doc.add_text("\u{0628}\u{0648}\u{06C1}\u{06CC}\u{0645}\u{06CC}\u{0627} \u{0645}\u{06CC}\u{06BA} \u{0627}\u{06CC}\u{06A9} \u{0627}\u{0633}\u{06A9}\u{06CC}\u{0646}\u{0688}\u{0644}");
+            // "بوہیمیا میں ایک اسکینڈل" = "A Scandal in Bohemia"
+            doc.new_paragraph().expect("urdu title");
 
-    doc.add_vskip(8.0);
+            doc.add_vskip(8.0);
 
-    // Urdu body text — opening paragraph
-    doc.set_font("urdu-body");
-    doc.set_paragraph_indent(0.0);
+            // Urdu body text — opening paragraph
+            doc.set_font("urdu-body");
+            doc.set_paragraph_indent(0.0);
 
-    doc.add_text(
-        "\u{0634}\u{0631}\u{0644}\u{0627}\u{06A9} \u{06C1}\u{0648}\u{0645}\u{0632} \u{06A9}\u{06CC} \u{0646}\u{0638}\u{0631} \u{0645}\u{06CC}\u{06BA} \u{0648}\u{06C1} \u{06C1}\u{0645}\u{06CC}\u{0634}\u{06C1} \u{0027}\u{0627}\u{0633} \u{0639}\u{0648}\u{0631}\u{062A}\u{0027} \u{062A}\u{06BE}\u{06CC}\u{06D4} \u{0645}\u{06CC}\u{06BA} \u{0646}\u{06D2} \u{0627}\u{0633}\u{06D2} \u{06A9}\u{0628}\u{06BE}\u{06CC} \u{06A9}\u{0645} \u{06C1}\u{06CC} \u{06A9}\u{0633}\u{06CC} \u{0627}\u{0648}\u{0631} \u{0646}\u{0627}\u{0645} \u{0633}\u{06D2} \u{0627}\u{0633} \u{06A9}\u{0627} \u{0630}\u{06A9}\u{0631} \u{06A9}\u{0631}\u{062A}\u{06D2} \u{0633}\u{0646}\u{0627} \u{06C1}\u{06D2}\u{06D4} \u{0627}\u{0633} \u{06A9}\u{06CC} \u{0646}\u{0638}\u{0631}\u{0648}\u{06BA} \u{0645}\u{06CC}\u{06BA} \u{0648}\u{06C1} \u{067E}\u{0648}\u{0631}\u{06CC} \u{0639}\u{0648}\u{0631}\u{062A} \u{0630}\u{0627}\u{062A} \u{067E}\u{0631} \u{0686}\u{06BE}\u{0627} \u{062C}\u{0627}\u{062A}\u{06CC} \u{06C1}\u{06D2}\u{06D4}",
-    );
-    // "شرلاک ہومز کی نظر میں وہ ہمیشہ 'اس عورت' تھی۔ میں نے اسے کبھی کم ہی کسی اور نام سے اس کا ذکر کرتے سنا ہے۔ اس کی نظروں میں وہ پوری عورت ذات پر چھا جاتی ہے۔"
-    doc.new_paragraph().expect("urdu paragraph 1");
+            doc.add_text(
+                "\u{0634}\u{0631}\u{0644}\u{0627}\u{06A9} \u{06C1}\u{0648}\u{0645}\u{0632} \u{06A9}\u{06CC} \u{0646}\u{0638}\u{0631} \u{0645}\u{06CC}\u{06BA} \u{0648}\u{06C1} \u{06C1}\u{0645}\u{06CC}\u{0634}\u{06C1} \u{0027}\u{0627}\u{0633} \u{0639}\u{0648}\u{0631}\u{062A}\u{0027} \u{062A}\u{06BE}\u{06CC}\u{06D4} \u{0645}\u{06CC}\u{06BA} \u{0646}\u{06D2} \u{0627}\u{0633}\u{06D2} \u{06A9}\u{0628}\u{06BE}\u{06CC} \u{06A9}\u{0645} \u{06C1}\u{06CC} \u{06A9}\u{0633}\u{06CC} \u{0627}\u{0648}\u{0631} \u{0646}\u{0627}\u{0645} \u{0633}\u{06D2} \u{0627}\u{0633} \u{06A9}\u{0627} \u{0630}\u{06A9}\u{0631} \u{06A9}\u{0631}\u{062A}\u{06D2} \u{0633}\u{0646}\u{0627} \u{06C1}\u{06D2}\u{06D4} \u{0627}\u{0633} \u{06A9}\u{06CC} \u{0646}\u{0638}\u{0631}\u{0648}\u{06BA} \u{0645}\u{06CC}\u{06BA} \u{0648}\u{06C1} \u{067E}\u{0648}\u{0631}\u{06CC} \u{0639}\u{0648}\u{0631}\u{062A} \u{0630}\u{0627}\u{062A} \u{067E}\u{0631} \u{0686}\u{06BE}\u{0627} \u{062C}\u{0627}\u{062A}\u{06CC} \u{06C1}\u{06D2}\u{06D4}",
+            );
+            // "شرلاک ہومز کی نظر میں وہ ہمیشہ 'اس عورت' تھی۔ میں نے اسے کبھی کم ہی کسی اور نام سے اس کا ذکر کرتے سنا ہے۔ اس کی نظروں میں وہ پوری عورت ذات پر چھا جاتی ہے۔"
+            doc.new_paragraph().expect("urdu paragraph 1");
 
-    doc.add_text(
-        "\u{06CC}\u{06C1} \u{0627}\u{0633} \u{0644}\u{06CC}\u{06D2} \u{0646}\u{06C1}\u{06CC}\u{06BA} \u{062A}\u{06BE}\u{0627} \u{06A9}\u{06C1} \u{0627}\u{0633}\u{06D2} \u{0622}\u{0626}\u{0631}\u{06CC}\u{0646} \u{0627}\u{06CC}\u{0688}\u{0644}\u{0631} \u{0633}\u{06D2} \u{0645}\u{062D}\u{0628}\u{062A} \u{062C}\u{06CC}\u{0633}\u{06CC} \u{06A9}\u{0648}\u{0626}\u{06CC} \u{0686}\u{06CC}\u{0632} \u{062A}\u{06BE}\u{06CC}\u{06D4} \u{062A}\u{0645}\u{0627}\u{0645} \u{062C}\u{0630}\u{0628}\u{0627}\u{062A}\u{060C} \u{0627}\u{0648}\u{0631} \u{062E}\u{0627}\u{0635} \u{0637}\u{0648}\u{0631} \u{067E}\u{0631} \u{06CC}\u{06C1} \u{062C}\u{0630}\u{0628}\u{06C1}\u{060C} \u{0627}\u{0633} \u{06A9}\u{06D2} \u{0633}\u{0631}\u{062F} \u{0627}\u{0648}\u{0631} \u{062F}\u{0642}\u{06CC}\u{0642} \u{0644}\u{06CC}\u{06A9}\u{0646} \u{0642}\u{0627}\u{0628}\u{0644}\u{0650} \u{062A}\u{062D}\u{0633}\u{06CC}\u{0646} \u{0645}\u{062A}\u{0648}\u{0627}\u{0632}\u{0646} \u{0630}\u{06C1}\u{0646} \u{06A9}\u{06D2} \u{0644}\u{06CC}\u{06D2} \u{0646}\u{0627}\u{06AF}\u{0648}\u{0627}\u{0631} \u{062A}\u{06BE}\u{06D2}\u{06D4}",
-    );
-    // "یہ اس لیے نہیں تھا کہ اسے آئرین ایڈلر سے محبت جیسی کوئی چیز تھی۔ تمام جذبات، اور خاص طور پر یہ جذبہ، اس کے سرد اور دقیق لیکن قابلِ تحسین متوازن ذہن کے لیے ناگوار تھے۔"
-    doc.new_paragraph().expect("urdu paragraph 2");
+            doc.add_text(
+                "\u{06CC}\u{06C1} \u{0627}\u{0633} \u{0644}\u{06CC}\u{06D2} \u{0646}\u{06C1}\u{06CC}\u{06BA} \u{062A}\u{06BE}\u{0627} \u{06A9}\u{06C1} \u{0627}\u{0633}\u{06D2} \u{0622}\u{0626}\u{0631}\u{06CC}\u{0646} \u{0627}\u{06CC}\u{0688}\u{0644}\u{0631} \u{0633}\u{06D2} \u{0645}\u{062D}\u{0628}\u{062A} \u{062C}\u{06CC}\u{0633}\u{06CC} \u{06A9}\u{0648}\u{0626}\u{06CC} \u{0686}\u{06CC}\u{0632} \u{062A}\u{06BE}\u{06CC}\u{06D4} \u{062A}\u{0645}\u{0627}\u{0645} \u{062C}\u{0630}\u{0628}\u{0627}\u{062A}\u{060C} \u{0627}\u{0648}\u{0631} \u{062E}\u{0627}\u{0635} \u{0637}\u{0648}\u{0631} \u{067E}\u{0631} \u{06CC}\u{06C1} \u{062C}\u{0630}\u{0628}\u{06C1}\u{060C} \u{0627}\u{0633} \u{06A9}\u{06D2} \u{0633}\u{0631}\u{062F} \u{0627}\u{0648}\u{0631} \u{062F}\u{0642}\u{06CC}\u{0642} \u{0644}\u{06CC}\u{06A9}\u{0646} \u{0642}\u{0627}\u{0628}\u{0644}\u{0650} \u{062A}\u{062D}\u{0633}\u{06CC}\u{0646} \u{0645}\u{062A}\u{0648}\u{0627}\u{0632}\u{0646} \u{0630}\u{06C1}\u{0646} \u{06A9}\u{06D2} \u{0644}\u{06CC}\u{06D2} \u{0646}\u{0627}\u{06AF}\u{0648}\u{0627}\u{0631} \u{062A}\u{06BE}\u{06D2}\u{06D4}",
+            );
+            // "یہ اس لیے نہیں تھا کہ اسے آئرین ایڈلر سے محبت جیسی کوئی چیز تھی۔ تمام جذبات، اور خاص طور پر یہ جذبہ، اس کے سرد اور دقیق لیکن قابلِ تحسین متوازن ذہن کے لیے ناگوار تھے۔"
+            doc.new_paragraph().expect("urdu paragraph 2");
+        }
+    }
 
     // --- Render ---
 

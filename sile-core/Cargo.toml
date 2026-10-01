@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-wasm = []
+harfbuzz = ["dep:harfbuzz-sys"]
 
 [dependencies]
 ttf-parser = "0.25"
@@ -18,4 +18,4 @@ pdf-writer = "0.12"
 subsetter = "0.2"
 miniz_oxide = "0.8"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-harfbuzz-sys = { version = "0.6", default-features = false }
+harfbuzz-sys = { version = "0.6", default-features = false, optional = true }

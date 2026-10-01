@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
@@ -7,7 +7,6 @@ use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 use crate::color::Color;
 use crate::font::FontFace;
 use crate::frame::PageLayout;
-use crate::node::Node;
 use crate::pagebuilder::Page;
 
 // ---------------------------------------------------------------------------
@@ -113,7 +112,7 @@ impl RefAlloc {
 struct FontEntry {
     face: Arc<FontFace>,
     used_glyphs: BTreeSet<u16>,
-    gid_to_unicode: HashMap<u16, char>,
+    gid_to_unicode: BTreeMap<u16, String>,
     pdf_name: String,
 }
 
@@ -149,7 +148,7 @@ struct CurrentPage {
 
 pub struct PdfOutputter {
     config: PdfConfig,
-    fonts: HashMap<String, FontEntry>,
+    fonts: BTreeMap<String, FontEntry>,
     font_counter: usize,
     images: Vec<ImageEntry>,
     bookmarks: Vec<Bookmark>,
@@ -161,7 +160,7 @@ impl PdfOutputter {
     pub fn new(config: PdfConfig) -> Self {
         Self {
             config,
-            fonts: HashMap::new(),
+            fonts: BTreeMap::new(),
             font_counter: 0,
             images: Vec::new(),
             bookmarks: Vec::new(),
@@ -183,17 +182,17 @@ impl PdfOutputter {
             FontEntry {
                 face,
                 used_glyphs: BTreeSet::new(),
-                gid_to_unicode: HashMap::new(),
+                gid_to_unicode: BTreeMap::new(),
                 pdf_name,
             },
         );
     }
 
-    fn track_glyph(&mut self, font_key: &str, gid: u16, codepoint: Option<char>) {
+    fn track_glyph(&mut self, font_key: &str, gid: u16, text: &str) {
         if let Some(entry) = self.fonts.get_mut(font_key) {
             entry.used_glyphs.insert(gid);
-            if let Some(cp) = codepoint {
-                entry.gid_to_unicode.entry(gid).or_insert(cp);
+            if !text.is_empty() {
+                entry.gid_to_unicode.entry(gid).or_insert_with(|| text.to_string());
             }
         }
     }
@@ -424,70 +423,7 @@ impl PdfOutputter {
     // -- High-level: render from Page objects ---
 
     pub fn render_pages(&mut self, pages: &[Page], layout: &PageLayout) {
-        for page in pages {
-            self.begin_page(layout.paper.width, layout.paper.height);
-            self.render_page_content(page, layout);
-            self.end_page();
-        }
-    }
-
-    fn render_page_content(&mut self, page: &Page, layout: &PageLayout) {
-        for (frame_id, nodes) in &page.frames {
-            let frame = layout.frame(*frame_id);
-            let frame_x = frame.left;
-            let frame_top = frame.top;
-            let mut cursor_y = frame_top;
-
-            for node in nodes {
-                match node {
-                    Node::VBox(vbox) => {
-                        let line_height = vbox.height.to_pt().unwrap_or(0.0);
-                        let line_depth = vbox.depth.to_pt().unwrap_or(0.0);
-                        let baseline_y = cursor_y + line_height;
-                        let mut cursor_x = frame_x;
-
-                        for hnode in &vbox.nodes {
-                            match hnode {
-                                Node::NNode(nnode) => {
-                                    self.render_nnode(nnode, cursor_x, baseline_y);
-                                    cursor_x += nnode.width.to_pt().unwrap_or(0.0);
-                                }
-                                Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
-                                    let natural = g.width.length.to_pt().unwrap_or(0.0);
-                                    let scaled = if vbox.ratio > 0.0 {
-                                        natural + g.width.stretch.to_pt().unwrap_or(0.0) * vbox.ratio
-                                    } else if vbox.ratio < 0.0 {
-                                        natural + g.width.shrink.to_pt().unwrap_or(0.0) * vbox.ratio
-                                    } else {
-                                        natural
-                                    };
-                                    cursor_x += scaled.max(0.0);
-                                }
-                                Node::Kern(k) => {
-                                    cursor_x += k.width.to_pt().unwrap_or(0.0);
-                                }
-                                Node::HBox(hbox) => {
-                                    cursor_x += hbox.width.to_pt().unwrap_or(0.0);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        cursor_y += line_height + line_depth;
-                    }
-                    Node::VGlue(g)
-                    | Node::VFillGlue(g)
-                    | Node::VssGlue(g)
-                    | Node::ZeroVGlue(g) => {
-                        cursor_y += g.height.to_pt().unwrap_or(0.0);
-                    }
-                    Node::VKern(k) => {
-                        cursor_y += k.height.to_pt().unwrap_or(0.0);
-                    }
-                    _ => {}
-                }
-            }
-        }
+        crate::render::draw_pages(pages, layout, self);
     }
 
     fn render_nnode(&mut self, nnode: &crate::node::NNode, x: f64, baseline_y: f64) {
@@ -499,16 +435,8 @@ impl PdfOutputter {
         // earlier on the page would bleed into everything after it.
         self.set_color(nnode.color.unwrap_or(Color::Grayscale { l: 0.0 }));
 
-        // Track glyph usage
         for glyph in &nnode.glyphs {
-            self.track_glyph(&nnode.font_key, glyph.gid, None);
-        }
-        // Track unicode mappings from the text
-        let chars: Vec<char> = nnode.text.chars().collect();
-        for (i, glyph) in nnode.glyphs.iter().enumerate() {
-            if i < chars.len() {
-                self.track_glyph(&nnode.font_key, glyph.gid, Some(chars[i]));
-            }
+            self.track_glyph(&nnode.font_key, glyph.gid, &glyph.text);
         }
 
         let page = self.current.as_mut().expect("no current page");
@@ -553,7 +481,7 @@ impl PdfOutputter {
             .collect();
 
         // Allocate font refs
-        let font_refs: HashMap<String, FontRefs> = self
+        let font_refs: BTreeMap<String, FontRefs> = self
             .fonts
             .keys()
             .map(|key| {
@@ -747,6 +675,20 @@ struct FontRefs {
 // Font embedding
 // ---------------------------------------------------------------------------
 
+impl crate::render::Canvas for PdfOutputter {
+    fn begin_page(&mut self, width: f64, height: f64) {
+        PdfOutputter::begin_page(self, width, height);
+    }
+
+    fn end_page(&mut self) {
+        PdfOutputter::end_page(self);
+    }
+
+    fn glyphs(&mut self, nnode: &crate::node::NNode, x: f64, baseline_y: f64) {
+        self.render_nnode(nnode, x, baseline_y);
+    }
+}
+
 fn write_font(
     pdf: &mut Pdf,
     entry: &FontEntry,
@@ -909,7 +851,7 @@ fn try_subset(data: &[u8], _face_index: u32, gids: &[u16]) -> Option<SubsetResul
 // ToUnicode CMap
 // ---------------------------------------------------------------------------
 
-fn build_tounicode_cmap(gid_to_unicode: &HashMap<u16, char>) -> Vec<u8> {
+fn build_tounicode_cmap(gid_to_unicode: &BTreeMap<u16, String>) -> Vec<u8> {
     let mut cmap = String::new();
     cmap.push_str("/CIDInit /ProcSet findresource begin\n");
     cmap.push_str("12 dict begin\n");
@@ -926,22 +868,14 @@ fn build_tounicode_cmap(gid_to_unicode: &HashMap<u16, char>) -> Vec<u8> {
     cmap.push_str("endcodespacerange\n");
 
     if !gid_to_unicode.is_empty() {
-        let mut entries: Vec<(u16, char)> = gid_to_unicode.iter().map(|(&g, &c)| (g, c)).collect();
-        entries.sort_by_key(|&(g, _)| g);
+        let entries: Vec<(&u16, &String)> = gid_to_unicode.iter().collect();
 
         // Write in batches of 100 (PDF limit)
         for chunk in entries.chunks(100) {
             cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
-            for &(gid, cp) in chunk {
-                let cp_val = cp as u32;
-                if cp_val <= 0xFFFF {
-                    cmap.push_str(&format!("<{gid:04X}> <{cp_val:04X}>\n"));
-                } else {
-                    // Surrogate pair for supplementary planes
-                    let hi = ((cp_val - 0x10000) >> 10) + 0xD800;
-                    let lo = ((cp_val - 0x10000) & 0x3FF) + 0xDC00;
-                    cmap.push_str(&format!("<{gid:04X}> <{hi:04X}{lo:04X}>\n"));
-                }
+            for &(gid, text) in chunk {
+                let utf16: String = text.encode_utf16().map(|u| format!("{u:04X}")).collect();
+                cmap.push_str(&format!("<{gid:04X}> <{utf16}>\n"));
             }
             cmap.push_str("endbfchar\n");
         }
@@ -1114,6 +1048,7 @@ mod tests {
     use super::*;
     use crate::frame::PaperSize;
     use crate::length::Length;
+    use crate::node::Node;
     use crate::node::{GlyphData, NNode, VBox};
 
     #[test]
@@ -1385,13 +1320,17 @@ mod tests {
 
     #[test]
     fn tounicode_cmap_generation() {
-        let mut map = HashMap::new();
-        map.insert(72u16, 'H');
-        map.insert(105u16, 'i');
+        let mut map = BTreeMap::new();
+        map.insert(72u16, "H".to_string());
+        map.insert(105u16, "i".to_string());
+        map.insert(300u16, "fi".to_string());
+        map.insert(301u16, "\u{1D400}".to_string());
 
         let cmap = build_tounicode_cmap(&map);
         let cmap_str = String::from_utf8(cmap).unwrap();
 
+        assert!(cmap_str.contains("<012C> <00660069>"));
+        assert!(cmap_str.contains("<012D> <D835DC00>"));
         assert!(cmap_str.contains("beginbfchar"));
         assert!(cmap_str.contains("endbfchar"));
         assert!(cmap_str.contains("endcmap"));
