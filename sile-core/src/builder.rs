@@ -449,6 +449,7 @@ pub struct DocumentBuilder {
     // Page building
     vertical_queue: Vec<Node>,
     pub(crate) lists: crate::lists::Lists,
+    pub(crate) ruby: crate::ruby::Ruby,
     page: Option<PageState>,
     pages: Vec<Page>,
     last_penalty: i32,
@@ -496,6 +497,7 @@ impl DocumentBuilder {
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
             lists: Default::default(),
+            ruby: Default::default(),
             page: None,
             pages: Vec::new(),
             last_penalty: 0,
@@ -1093,6 +1095,50 @@ impl DocumentBuilder {
 
     fn current_list(&self) -> &[Inline] {
         self.open_boxes.last().map_or(&self.paragraph, |(_, list)| list)
+    }
+
+    /// Whether one of the last `n` things added to the paragraph or box is
+    /// a node `f` picks out.
+    pub(crate) fn recently_added(&self, n: usize, f: impl Fn(&Node) -> bool) -> bool {
+        self.current_list().iter().rev().take(n).any(|i| matches!(i, Inline::Node(node) if f(node)))
+    }
+
+    /// The width of a full-width character in the current font (SILE's
+    /// `zw` unit), or the font size if it has none.
+    pub fn zenkaku_width(&self) -> f64 {
+        let Some(font) = self.settings.font.as_ref().and_then(|name| self.fonts.get(name)) else {
+            return 10.0;
+        };
+        let glyphs = self.shaper.shape("あ", &font.face, &font.spec);
+        if glyphs.is_empty() || glyphs.iter().any(|g| g.gid == 0) {
+            return font.spec.size;
+        }
+        glyphs.iter().map(|g| g.width).sum::<f64>() * self.settings.tracking.unwrap_or(1.0)
+    }
+
+    /// Draw the character grid of the frame being filled under the page's
+    /// content (SILE's `\show-hanmen`).
+    pub fn show_hanmen(&mut self, hanmen: &crate::class::Hanmen) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let frame = self.current_frame().expect("current frame").clone();
+        let (grid, gap) = (hanmen.gridsize, hanmen.linegap);
+        let mut rules = Vec::new();
+        let mut g = frame.top;
+        while g < frame.bottom {
+            rules.push([frame.left, g - 0.25, frame.width(), 0.5]);
+            let mut l = frame.left;
+            while l <= frame.right {
+                rules.push([l - 0.25, g + grid - 0.25, 0.5, -grid]);
+                l += grid;
+            }
+            g += grid;
+            rules.push([frame.left, g - 0.25, frame.width(), 0.5]);
+            g += gap;
+        }
+        let color = Color::Rgb { r: 1.0, g: 0.9, b: 0.9 };
+        let page = &mut self.page.as_mut().expect("page").page;
+        page.underlay.push((color, rules));
+        Ok(self)
     }
 
     /// SILE's `initline`: a paragraph opens with a zero box and its indent.
@@ -2149,6 +2195,7 @@ impl DocumentBuilder {
             let hi = (lo..shaped.len()).find(|&i| (shaped[i].font, shaped[i].color) != (font, color)).unwrap_or(shaped.len());
             let (font_name, entry) = fonts[font];
             let (face, spec) = (&entry.face, &entry.spec);
+            let mut zenkaku = None;
             let space = || self.shaper.shape(" ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
             for token in nodemaker::tokenize(&items[lo..hi], run.tokens) {
                 match token {
@@ -2171,6 +2218,11 @@ impl DocumentBuilder {
                         nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
                     }
                     Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
+                    Token::Zenkaku { breakable, width, stretch, shrink } => {
+                        let zw = zenkaku.get_or_insert_with(|| self.zenkaku_width());
+                        let length = Length::new(Measurement::pt(width * *zw), Measurement::pt(stretch * *zw), Measurement::pt(shrink * *zw));
+                        nodes.push(if breakable { Node::glue(length) } else { Node::kern(length) });
+                    }
                     Token::PunctSpace(kind) => {
                         let spc = space();
                         let s = self.settings.space_settings;
@@ -2783,9 +2835,9 @@ fn resolve_em(length: Length, em: f64) -> Length {
 }
 
 fn natural_hbox(nodes: Vec<Node>) -> node::HBox {
-    let width: f64 = nodes.iter().map(|n| pt_of(&natural_width(n))).sum();
+    let width = nodes.iter().map(natural_width).fold(Length::zero(), |a, b| a + b);
     let mut hbox = node::HBox::new(
-        Length::pt(width),
+        width,
         node::max_node_dim(&nodes, node::Dim::Height),
         node::max_node_dim(&nodes, node::Dim::Depth),
     );
@@ -3080,6 +3132,21 @@ mod tests {
         };
         assert!(trace.find("(two)") < trace.find("(one)"), "{trace}");
         assert!(x("one") < x("two"), "{trace}");
+    }
+
+    #[test]
+    fn ruby_readings_sit_above_a_base_widened_to_fit() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.set_paragraph_indent(0.0);
+        DocumentBuilder::add_ruby(&mut doc, "reading", |d| Ok::<_, BuilderError>(d.add_text("x")).map(|_| ())).unwrap();
+        let trace = doc.render_debug().unwrap();
+        let y = |label: &str| {
+            let at = trace.find(&format!("({label})")).unwrap();
+            let my = trace[..at].rfind("My \t").unwrap();
+            trace[my + 4..].lines().next().unwrap().parse::<f64>().unwrap()
+        };
+        assert!(y("x") - y("reading") > 11.0, "{trace}");
+        assert!(trace.find("(reading)") < trace.find("(x)"), "{trace}");
     }
 
     #[test]

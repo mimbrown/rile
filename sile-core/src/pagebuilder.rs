@@ -1,3 +1,4 @@
+use crate::color::Color;
 use crate::frame::PaperSize;
 use crate::framespec::FrameGeometry;
 use crate::measurement::Measurement;
@@ -83,11 +84,14 @@ pub struct Page {
     pub content: Vec<(String, Vec<Node>)>,
     /// Frames to draw the outline of, as they were when asked for.
     pub outlines: Vec<FrameGeometry>,
+    /// Groups of rules (x, y, width, height) drawn in a colour before any
+    /// content.
+    pub underlay: Vec<(Color, Vec<[f64; 4]>)>,
 }
 
 impl Page {
     pub fn new(number: usize, paper: PaperSize, frames: Vec<FrameGeometry>) -> Self {
-        Self { number, paper, frames, content: Vec::new(), outlines: Vec::new() }
+        Self { number, paper, frames, content: Vec::new(), outlines: Vec::new(), underlay: Vec::new() }
     }
 
     pub fn frame(&self, id: &str) -> Option<&FrameGeometry> {

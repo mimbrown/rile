@@ -33,7 +33,7 @@ impl Fonts {
         self.db.faces().any(|f| {
             f.families
                 .iter()
-                .any(|(name, _)| name.eq_ignore_ascii_case(family))
+                .any(|(name, _)| squash(name) == squash(family))
         })
     }
 
@@ -114,4 +114,8 @@ impl Fonts {
             }
         }
     }
+}
+
+fn squash(name: &str) -> String {
+    name.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
 }

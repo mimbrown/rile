@@ -691,6 +691,20 @@ impl crate::render::Canvas for PdfOutputter {
         self.draw_rule(x, y, width, height);
     }
 
+    fn push_color(&mut self, color: Color) {
+        let page = self.current.as_mut().expect("no current page");
+        page.content.save_state();
+        match color {
+            Color::Rgb { r, g, b } => page.content.set_fill_rgb(r as f32, g as f32, b as f32),
+            Color::Cmyk { c, m, y, k } => page.content.set_fill_cmyk(c as f32, m as f32, y as f32, k as f32),
+            Color::Grayscale { l } => page.content.set_fill_gray(l as f32),
+        };
+    }
+
+    fn pop_color(&mut self) {
+        self.current.as_mut().expect("no current page").content.restore_state();
+    }
+
     fn frame_outline(&mut self, frame: &crate::framespec::FrameGeometry) {
         let page = self.current.as_mut().expect("no current page");
         let y = page.height - frame.bottom;

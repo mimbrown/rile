@@ -47,6 +47,7 @@ pub fn port(test: &str) -> Option<Port> {
         "bug-1317" => (&[bug_1317], &[]),
         "bug-1321" => (&[bug_1321], &[]),
         "sura-2" => (&[nothing], &[]),
+        "bug-926" => (&[nothing], &[]),
         _ => return None,
     };
     Some(Port { chunks, commands })

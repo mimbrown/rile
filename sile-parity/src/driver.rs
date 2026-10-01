@@ -9,7 +9,7 @@ use std::str::FromStr;
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
-use sile_core::class::{Book, Folio, FolioState, Heading, PageTemplate, Plain};
+use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{Node, Stroke};
 use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
@@ -111,6 +111,8 @@ fn expand_includes(tree: Vec<Content>, dir: &Path) -> Result<Vec<Content>, Strin
 
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
+    "ruby",
+    "show-hanmen",
     "bidi-off",
     "bidi-on",
     "thisframeRTL",
@@ -207,6 +209,9 @@ const FONT_OPTIONS: &[&str] =
     &["family", "size", "style", "weight", "language", "features", "variations", "filename", "adjust", "direction", "script"];
 
 const SETTINGS: &[&str] = &[
+    "ruby.opentype",
+    "ruby.height",
+    "ruby.latinspacer",
     "font.family",
     "font.size",
     "font.features",
@@ -283,7 +288,7 @@ fn check(
                 }
             }
             "document" => {
-                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book")) {
+                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "jplain" | "jbook")) {
                     missing.insert(format!("class={class}"));
                 }
                 if let Some(p) = cmd.option("papersize")
@@ -295,6 +300,7 @@ fn check(
                     match k.as_str() {
                         "class" | "papersize" | "landscape" => {}
                         "direction" if direction(v).is_some() => {}
+                        "layout" if v == "yoko" => {}
                         _ => {
                             missing.insert(format!("document[{k}={v}]"));
                         }
@@ -317,6 +323,8 @@ fn check(
                     | "packages.verbatim"
                     | "packages.linespacing"
                     | "packages.font-fallback"
+                    | "packages.ruby"
+                    | "packages.hanmenkyoshi"
                     | "packages.color-fonts"
                     | "packages.bidi",
                 ) => {}
@@ -485,6 +493,7 @@ pub(crate) struct Driver<'a> {
     counter_display: BTreeMap<String, String>,
     /// Font fallbacks in force (SILE switches shaper around these).
     fallbacks: usize,
+    hanmen: Option<Hanmen>,
     paper: PaperSize,
     settings: Settings,
     synced: Option<Synced>,
@@ -521,6 +530,7 @@ impl<'a> Driver<'a> {
             masters: BTreeMap::new(),
             counter_display: BTreeMap::new(),
             fallbacks: 0,
+            hanmen: None,
             defaults: [("font.family", "Gentium Book"), ("font.size", "10"), ("font.style", "normal"), ("font.weight", "400")]
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -842,8 +852,20 @@ impl<'a> Driver<'a> {
                 self.doc.set_page_size(self.paper);
                 match cmd.option("class") {
                     Some("book") => self.doc.set_class(Book::new()),
+                    Some("jbook") => self.doc.set_class(Book::japanese()),
+                    Some("jplain") => self.doc.set_class(Plain::japanese()),
                     _ => self.doc.set_class(Plain::new()),
                 };
+                if let Some(class) = cmd.option("class").filter(|c| c.starts_with('j')) {
+                    let grid = if class == "jbook" { Hanmen::BOOK } else { Hanmen::PLAIN };
+                    self.hanmen = Some(grid);
+                    self.doc.set_bidi(false);
+                    self.set("document.baselineskip", &format!("{}pt", grid.baseline_skip()))?;
+                    self.set("document.parskip", "0pt")?;
+                    self.set("document.parindent", "10pt")?;
+                    self.set_default("document.language", "ja")?;
+                    self.set_default("font.family", "Noto Sans CJK JP")?;
+                }
                 if let Some(dir) = cmd.option("direction").and_then(direction) {
                     self.doc.set_direction(dir);
                     self.update_font(|f| f.direction = dir)?;
@@ -852,6 +874,10 @@ impl<'a> Driver<'a> {
             }
             "use" => match cmd.option("module") {
                 Some("packages.retrograde") => self.retrograde(cmd.option("target").unwrap_or(""))?,
+                Some("packages.ruby") => {
+                    let fallback = FontFallback { family: Some("Noto Sans CJK JP".into()), ..Default::default() };
+                    self.add_fallback(fallback)?;
+                }
                 Some("packages.linespacing") => {
                     self.settings.line_spacing.get_or_insert_with(Default::default);
                 }
@@ -1261,11 +1287,16 @@ impl<'a> Driver<'a> {
                     d.doc.leave_hmode(false).map_err(err)
                 })?;
             }
-            "font:add-fallback" => {
+            "ruby" => {
+                let reading = opt("reading")?.to_string();
                 self.sync()?;
-                if self.fallbacks == 0 {
-                    self.doc.leave_hmode(true).map_err(err)?;
-                }
+                DocumentBuilder::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+            }
+            "show-hanmen" => {
+                let grid = self.hanmen.ok_or("show-hanmen called on a frame with no hanmen")?;
+                self.doc.show_hanmen(&grid).map_err(err)?;
+            }
+            "font:add-fallback" => {
                 let mut fallback = FontFallback::default();
                 for (k, v) in &cmd.options {
                     match k.as_str() {
@@ -1282,8 +1313,7 @@ impl<'a> Driver<'a> {
                         other => return Err(format!("fallback option {other}")),
                     }
                 }
-                self.doc.add_font_fallback(fallback).map_err(err)?;
-                self.fallbacks += 1;
+                self.add_fallback(fallback)?;
             }
             "font:remove-fallback" => {
                 self.doc.remove_font_fallback();
@@ -1485,6 +1515,16 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
+    fn add_fallback(&mut self, fallback: FontFallback) -> Result<(), String> {
+        self.sync()?;
+        if self.fallbacks == 0 {
+            self.doc.leave_hmode(true).map_err(|e| e.to_string())?;
+        }
+        self.doc.add_font_fallback(fallback).map_err(|e| e.to_string())?;
+        self.fallbacks += 1;
+        Ok(())
+    }
+
     /// SILE's `\font[adjust=...]`, applied after the font's other options:
     /// scale the font so its ex or cap height matches the previous font's.
     fn adjust_font_size(&mut self, adjust: &str, before: Option<FontSpec>) -> Result<(), String> {
@@ -1535,6 +1575,16 @@ impl<'a> Driver<'a> {
             "document.baselineskip" => self.settings.baselineskip = value.to_string(),
             "document.lineskip" => self.settings.lineskip = value.to_string(),
             "document.letterspaceglue" => self.settings.letterspace = Some(value.to_string()).filter(|v| !v.is_empty()),
+            "ruby.opentype" => self.doc.ruby_settings_mut().opentype = truthy(value),
+            "ruby.height" | "ruby.latinspacer" => {
+                let m = Measurement::from_str(value.trim()).map_err(|_| format!("bad {parameter} {value}"))?;
+                let settings = self.doc.ruby_settings_mut();
+                if parameter == "ruby.height" {
+                    settings.height = m;
+                } else {
+                    settings.latin_spacer = m;
+                }
+            }
             "lists.parskip" => {
                 let skip = self.length(value)?;
                 self.doc.list_settings_mut().parskip = skip;

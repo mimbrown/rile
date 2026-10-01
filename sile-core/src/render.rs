@@ -1,4 +1,5 @@
 use crate::node::{HBox, Ink, Leader, NNode, Node};
+use crate::color::Color;
 use crate::font::Direction;
 use crate::framespec::FrameGeometry;
 use crate::pagebuilder::Page;
@@ -13,12 +14,22 @@ pub trait Canvas {
     fn rule(&mut self, x: f64, y: f64, width: f64, height: f64);
     /// A frame's outline, for debugging layouts (SILE's `\showframe`).
     fn frame_outline(&mut self, _frame: &FrameGeometry) {}
+    /// Ink what follows in `color` until `pop_color`.
+    fn push_color(&mut self, _color: Color) {}
+    fn pop_color(&mut self) {}
 }
 
 /// Walk every page and draw its frames' content onto `canvas`.
 pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
     for page in pages {
         canvas.begin_page(page.paper.width, page.paper.height);
+        for (color, rules) in &page.underlay {
+            canvas.push_color(*color);
+            for [x, y, width, height] in rules {
+                canvas.rule(*x, *y, *width, *height);
+            }
+            canvas.pop_color();
+        }
         draw_page(page, canvas);
         for frame in &page.outlines {
             canvas.frame_outline(frame);
@@ -115,18 +126,22 @@ fn draw_hlist(nodes: &[Node], mut x: f64, mut baseline_y: f64, line: &Line, canv
                     canvas.rule(x, baseline_y - height, sign * width, height + depth);
                     x += sign * width;
                 }
+                Some(Ink::Ruby(raise)) => {
+                    let start = x + sign * pt(&hbox.width.length);
+                    draw_hlist(&hbox.nodes, start, baseline_y - raise, line, canvas);
+                }
                 Some(Ink::Liner(s)) => {
                     let end = draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
                     canvas.rule(x, baseline_y - s.raise, end - x, s.thickness);
                     x = end;
                 }
                 _ => {
-                    let width = pt(&hbox.width.length);
+                    let width = line.width(node);
                     if line.rtl {
                         x -= width;
-                        draw_hlist(&hbox.nodes, x, baseline_y, &line.natural(), canvas);
+                        draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
                     } else {
-                        draw_hlist(&hbox.nodes, x, baseline_y, &line.natural(), canvas);
+                        draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
                         x += width;
                     }
                     baseline_y -= hbox.raise;
