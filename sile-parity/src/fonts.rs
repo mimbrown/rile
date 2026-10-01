@@ -4,6 +4,11 @@ use std::sync::Arc;
 
 type FaceKey = (String, u16, bool);
 
+pub struct EmMetrics {
+    pub x_height: f64,
+    pub space: f64,
+}
+
 /// The pinned test fonts, looked up the way SILE's tests name them.
 pub struct Fonts {
     db: fontdb::Database,
@@ -63,6 +68,23 @@ impl Fonts {
             });
         self.cache.lock().unwrap().insert(key, data.clone());
         data
+    }
+
+    /// x-height and space advance as fractions of the em, for SILE's `ex`
+    /// and `spc` units.
+    pub fn em_metrics(&self, family: &str, weight: u16, italic: bool) -> Option<EmMetrics> {
+        let data = self.data(family, weight, italic)?;
+        let face = ttf_parser::Face::parse(&data, 0).ok()?;
+        let upem = face.units_per_em() as f64;
+        let x_height = match face.x_height() {
+            Some(h) if h > 0 => h as f64 / upem,
+            _ => 0.5,
+        };
+        let space = face
+            .glyph_index(' ')
+            .and_then(|g| face.glyph_hor_advance(g))
+            .map_or(0.25, |a| a as f64 / upem);
+        Some(EmMetrics { x_height, space })
     }
 
     /// Fill in per-glyph advances for runs SILE printed only a width for.

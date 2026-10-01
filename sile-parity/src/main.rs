@@ -5,11 +5,12 @@ mod report;
 mod sil;
 mod svg;
 mod trace;
+mod xml;
 
 use std::path::PathBuf;
 
 use compare::Comparison;
-use driver::{Corpus, Failure};
+use driver::{Corpus, Failure, Format};
 
 pub enum Outcome {
     Compared {
@@ -74,9 +75,11 @@ fn main() {
     };
 
     if let Some(name) = trace_only {
-        let src =
-            std::fs::read_to_string(tests_dir.join(format!("{name}.sil"))).expect("read test");
-        match driver::run(&src, &corpus) {
+        let Ok((src, format)) = source(&tests_dir, &name) else {
+            eprintln!("no runnable source for {name}");
+            std::process::exit(1);
+        };
+        match driver::run(&src, format, &corpus) {
             Ok(t) => print!("{t}"),
             Err(e) => {
                 eprintln!("{e:?}");
@@ -113,17 +116,33 @@ fn main() {
     }
 }
 
+/// The test's input and its format, or what is missing to run it.
+fn source(dir: &std::path::Path, name: &str) -> Result<(String, Format), String> {
+    let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).ok();
+    if let Some(src) = read("sil") {
+        return Ok((src, Format::Sil));
+    }
+    if let Some(src) = read("xml") {
+        return Ok((src, Format::Xml));
+    }
+    if let Some(src) = read("nil") {
+        return Format::detect(&src)
+            .map(|f| (src, f))
+            .ok_or_else(|| "Lua input".to_string());
+    }
+    Err("no source file".to_string())
+}
+
 fn run_one(name: &str, dir: &std::path::Path, corpus: &Corpus) -> TestResult {
     let expected_src =
         std::fs::read_to_string(dir.join(format!("{name}.expected"))).unwrap_or_default();
     let mut expected = trace::parse(&expected_src);
     corpus.fonts.fill_advances(&mut expected);
-    let sil = dir.join(format!("{name}.sil"));
-    let outcome = if !sil.exists() {
-        Outcome::Unsupported(vec!["XML input".to_string()])
-    } else {
-        let src = std::fs::read_to_string(&sil).unwrap_or_default();
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| driver::run(&src, corpus))) {
+    let outcome = match source(dir, name) {
+        Err(missing) => Outcome::Unsupported(vec![missing]),
+        Ok((src, format)) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            driver::run(&src, format, corpus)
+        })) {
             Ok(Ok(ours)) => {
                 let mut ours = trace::parse(&ours);
                 corpus.fonts.fill_advances(&mut ours);
@@ -142,7 +161,7 @@ fn run_one(name: &str, dir: &std::path::Path, corpus: &Corpus) -> TestResult {
                     .unwrap_or_default();
                 Outcome::Error(format!("panic: {msg}"))
             }
-        }
+        },
     };
     TestResult {
         name: name.to_string(),

@@ -5,11 +5,12 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use sile_core::builder::{BaselineSkip, DocumentBuilder, RunningText, TextAlign};
+use sile_core::builder::{BaselineSkip, DocumentBuilder, LineSkips, RunningText, TextAlign};
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::length::Length;
 use sile_core::measurement::{Measurement, Unit};
+use sile_core::node::INFINITY;
 use sile_core::shaper::SpaceSettings;
 
 use crate::fonts::Fonts;
@@ -27,9 +28,30 @@ pub struct Corpus<'a> {
     pub lorem: &'a str,
 }
 
-/// Typeset a SIL document and return its trace in SILE's debug format.
-pub fn run(src: &str, corpus: &Corpus) -> Result<String, Failure> {
-    let tree = sil::parse(src).map_err(|e| Failure::Error(format!("parse: {}", e.0)))?;
+#[derive(Debug, Clone, Copy)]
+pub enum Format {
+    Sil,
+    Xml,
+}
+
+impl Format {
+    /// SILE's content sniffing for inputs without a telling extension.
+    pub fn detect(src: &str) -> Option<Self> {
+        match src.trim_start().chars().next()? {
+            '<' => Some(Format::Xml),
+            '\\' => Some(Format::Sil),
+            _ => None,
+        }
+    }
+}
+
+/// Typeset a SIL or XML document and return its trace in SILE's debug format.
+pub fn run(src: &str, format: Format, corpus: &Corpus) -> Result<String, Failure> {
+    let tree = match format {
+        Format::Sil => sil::parse(src),
+        Format::Xml => crate::xml::parse(src),
+    }
+    .map_err(|e| Failure::Error(format!("parse: {}", e.0)))?;
     let mut missing = BTreeSet::new();
     check(&tree, corpus, &mut missing);
     if !missing.is_empty() {
@@ -47,6 +69,7 @@ pub fn run(src: &str, corpus: &Corpus) -> Result<String, Failure> {
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "em",
+    "strong",
     "noindent",
     "neverindent",
     "indent",
@@ -57,10 +80,29 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "framebreak",
     "eject",
     "supereject",
+    "break",
+    "cr",
+    "nobreak",
+    "novbreak",
+    "allowbreak",
+    "goodbreak",
+    "filbreak",
+    "penalty",
+    "glue",
+    "kern",
+    "hfill",
+    "vfill",
+    "skip",
+    "hbox",
+    "quad",
+    "qquad",
+    "thinspace",
+    "noop",
     "center",
     "raggedright",
     "raggedleft",
     "justified",
+    "ragged",
     "lorem",
     "nofolios",
     "folios",
@@ -77,7 +119,14 @@ const SETTINGS: &[&str] = &[
     "font.style",
     "font.weight",
     "document.parindent",
+    "document.parskip",
+    "document.baselineskip",
+    "document.lineskip",
+    "document.lskip",
+    "document.rskip",
     "document.language",
+    "current.parindent",
+    "typesetter.parfillskip",
     "linebreak.tolerance",
     "linebreak.pretolerance",
     "linebreak.emergencyStretch",
@@ -130,6 +179,7 @@ fn check(content: &[Content], corpus: &Corpus, missing: &mut BTreeSet<String>) {
                 Some(p) => {
                     missing.insert(format!("set {p}"));
                 }
+                None if cmd.content.is_some() => {}
                 None => {
                     missing.insert("set".into());
                 }
@@ -160,12 +210,18 @@ struct Style {
     italic: bool,
 }
 
+/// SILE settings that the driver tracks itself. Lengths SILE keeps relative
+/// (`1bs`, `1.2em`) stay as source text and are evaluated against the
+/// current font whenever they are handed to the builder, as SILE does.
 #[derive(Debug, Clone)]
 struct Settings {
     style: Style,
-    parindent: f64,
-    align: TextAlign,
     language: String,
+    parindent: String,
+    parskip: String,
+    baselineskip: String,
+    lineskip: String,
+    skips: LineSkips,
 }
 
 struct Driver<'a> {
@@ -174,18 +230,14 @@ struct Driver<'a> {
     paper: PaperSize,
     settings: Settings,
     registered: BTreeSet<String>,
-    /// Runs of the paragraph being collected: (font name, text).
-    par: Vec<(String, String)>,
-    /// Indent captured when the current paragraph started.
-    par_indent: Option<f64>,
-    skip_next_indent: bool,
     folios: bool,
     space_settings: SpaceSettings,
+    /// SILE release targeted by `packages.retrograde` (latest if unset).
+    target: (u32, u32, u32),
 }
 
 impl<'a> Driver<'a> {
     fn new(corpus: &'a Corpus<'a>) -> Self {
-        let size = 10.0;
         Self {
             corpus,
             doc: DocumentBuilder::new(PaperSize::A4),
@@ -193,25 +245,26 @@ impl<'a> Driver<'a> {
             settings: Settings {
                 style: Style {
                     family: "Gentium Book".into(),
-                    size,
+                    size: 10.0,
                     weight: 400,
                     italic: false,
                 },
-                parindent: 1.2 * size,
-                align: TextAlign::Justify,
                 language: "en".into(),
+                parindent: "1bs".into(),
+                parskip: "0pt plus 1pt".into(),
+                baselineskip: "1.2em plus 1pt".into(),
+                lineskip: "1pt".into(),
+                skips: LineSkips::default(),
             },
             registered: BTreeSet::new(),
-            par: Vec::new(),
-            par_indent: None,
-            skip_next_indent: false,
             folios: true,
             space_settings: SpaceSettings::default(),
+            target: (u32::MAX, 0, 0),
         }
     }
 
     fn finish(mut self) -> Result<String, String> {
-        self.end_paragraph()?;
+        self.par()?;
         self.apply_geometry()?;
         self.doc.render_debug().map_err(|e| e.to_string())
     }
@@ -240,6 +293,29 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
+    /// Hand the current settings to the builder before it uses them.
+    fn sync(&mut self) -> Result<(), String> {
+        let font = self.font_name(&self.settings.style.clone())?;
+        self.doc.set_font(font);
+        let skip = self.length(&self.settings.baselineskip.clone())?;
+        let lineskip = self.dimen(&self.settings.lineskip.clone())?;
+        self.doc
+            .set_baseline_skip(Some(BaselineSkip { skip, lineskip }));
+        let indent = self.dimen(&self.settings.parindent.clone())?;
+        self.doc.set_paragraph_indent(indent);
+        let parskip = self.length(&self.settings.parskip.clone())?;
+        self.doc.set_paragraph_skip(parskip);
+        self.doc.set_line_skips(self.settings.skips);
+        self.doc.set_language(self.settings.language.clone());
+        Ok(())
+    }
+
+    fn par(&mut self) -> Result<(), String> {
+        self.sync()?;
+        self.doc.new_paragraph().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn process(&mut self, content: &[Content]) -> Result<(), String> {
         for c in content {
             match c {
@@ -253,60 +329,17 @@ impl<'a> Driver<'a> {
     fn text(&mut self, text: &str) -> Result<(), String> {
         let mut paragraphs = split_paragraphs(text).into_iter().peekable();
         while let Some(chunk) = paragraphs.next() {
-            let collapsed = collapse_whitespace(&chunk);
-            if !collapsed.trim().is_empty() || !self.par.is_empty() {
-                self.add_text(&collapsed)?;
-            }
+            self.add_text(&collapse_whitespace(&chunk))?;
             if paragraphs.peek().is_some() {
-                self.end_paragraph()?;
+                self.par()?;
             }
         }
         Ok(())
     }
 
     fn add_text(&mut self, text: &str) -> Result<(), String> {
-        if self.par.is_empty() {
-            let text = text.trim_start();
-            if text.is_empty() {
-                return Ok(());
-            }
-            self.par_indent = Some(if self.skip_next_indent {
-                0.0
-            } else {
-                self.settings.parindent
-            });
-            self.skip_next_indent = false;
-            let font = self.font_name(&self.settings.style.clone())?;
-            self.par.push((font, text.to_string()));
-            return Ok(());
-        }
-        let font = self.font_name(&self.settings.style.clone())?;
-        match self.par.last_mut() {
-            Some((f, t)) if *f == font => t.push_str(text),
-            _ => self.par.push((font, text.to_string())),
-        }
-        Ok(())
-    }
-
-    fn end_paragraph(&mut self) -> Result<(), String> {
-        if let Some((_, last)) = self.par.last_mut() {
-            let trimmed = last.trim_end().len();
-            last.truncate(trimmed);
-        }
-        let runs = std::mem::take(&mut self.par);
-        if runs.iter().all(|(_, t)| t.is_empty()) {
-            self.par_indent = None;
-            return Ok(());
-        }
-        self.doc
-            .set_paragraph_indent(self.par_indent.take().unwrap_or(0.0));
-        self.doc.set_alignment(self.settings.align);
-        self.doc.set_language(self.settings.language.clone());
-        for (font, text) in runs {
-            self.doc.set_font(font);
-            self.doc.add_text(text);
-        }
-        self.doc.new_paragraph().map_err(|e| e.to_string())?;
+        self.sync()?;
+        self.doc.add_text(text);
         Ok(())
     }
 
@@ -346,8 +379,46 @@ impl<'a> Driver<'a> {
         r
     }
 
+    /// `\center`, `\raggedright` and friends: set the margins for the
+    /// content and end it as a paragraph.
+    fn aligned(&mut self, align: TextAlign, content: &[Content]) -> Result<(), String> {
+        self.scoped(|d| {
+            let legacy = d.target < (0, 15, 0) && align != TextAlign::Justify;
+            if legacy {
+                let fill = || {
+                    Length::new(
+                        Measurement::pt(0.0),
+                        Measurement::pt(INFINITY),
+                        Measurement::pt(0.0),
+                    )
+                };
+                let s = &mut d.settings.skips;
+                match align {
+                    TextAlign::Left => s.right = fill(),
+                    TextAlign::Right => s.left = fill(),
+                    _ => (s.left, s.right) = (fill(), fill()),
+                }
+                s.par_fill = Length::zero();
+                d.settings.parindent = "0pt".into();
+            } else {
+                d.settings.skips = d.settings.skips.aligned(align);
+                if align == TextAlign::Center {
+                    d.settings.parindent = "0pt".into();
+                    d.doc.set_current_indent(Some(0.0));
+                }
+            }
+            d.process(content)?;
+            d.par()
+        })
+    }
+
     fn command(&mut self, cmd: &Command) -> Result<(), String> {
         let content = cmd.content.as_deref().unwrap_or(&[]);
+        let opt = |k: &str| {
+            cmd.option(k)
+                .ok_or_else(|| format!("\\{} needs {k}", cmd.name))
+        };
+        let err = |e: sile_core::builder::BuilderError| e.to_string();
         match cmd.name.as_str() {
             "document" => {
                 if let Some(p) = cmd.option("papersize") {
@@ -355,15 +426,6 @@ impl<'a> Driver<'a> {
                     self.doc.set_page_size(self.paper);
                 }
                 self.apply_geometry()?;
-                let size = self.settings.style.size;
-                self.doc.set_baseline_skip(Some(BaselineSkip {
-                    skip: Length::new(
-                        Measurement::pt(1.2 * size),
-                        Measurement::pt(1.0),
-                        Measurement::pt(0.0),
-                    ),
-                    lineskip: 1.0,
-                }));
                 self.process(content)?;
             }
             "use" => {
@@ -371,50 +433,138 @@ impl<'a> Driver<'a> {
                     self.retrograde(cmd.option("target").unwrap_or(""));
                 }
             }
-            "par" => self.end_paragraph()?,
+            "par" => self.par()?,
             " " => self.add_text(" ")?,
             "comment" => {}
+            "noop" => self.process(content)?,
             "nofolios" => self.folios = false,
             "folios" => self.folios = true,
-            "noindent" => self.skip_next_indent = true,
-            "neverindent" => {
-                self.settings.parindent = 0.0;
-                self.skip_next_indent = true;
+            "noindent" => {
+                self.doc.set_current_indent(Some(0.0));
                 self.process(content)?;
             }
-            "indent" => self.process(content)?,
+            "neverindent" => {
+                self.settings.parindent = "0pt".into();
+                self.doc.set_current_indent(Some(0.0));
+                self.process(content)?;
+            }
+            "indent" => {
+                self.doc.set_current_indent(None);
+                self.process(content)?;
+            }
             "smallskip" | "medskip" | "bigskip" => {
-                self.end_paragraph()?;
                 let amount = match cmd.name.as_str() {
-                    "smallskip" => 3.0,
-                    "medskip" => 6.0,
-                    _ => 12.0,
+                    "smallskip" => "3pt plus 1pt minus 1pt",
+                    "medskip" => "6pt plus 2pt minus 2pt",
+                    _ => "12pt plus 4pt minus 4pt",
                 };
-                self.doc.add_vskip(amount);
+                let amount = self.length(amount)?;
+                self.sync()?;
+                self.doc.add_explicit_vskip(amount).map_err(err)?;
             }
-            "pagebreak" | "framebreak" | "eject" | "supereject" => {
-                self.end_paragraph()?;
-                self.doc.add_page_break();
+            "skip" => {
+                let height = self.length(opt("height")?)?;
+                self.sync()?;
+                if cmd.option("discardable").is_some_and(truthy) {
+                    self.doc.add_vskip(height).map_err(err)?;
+                } else {
+                    self.doc.add_explicit_vskip(height).map_err(err)?;
+                }
             }
-            "center" | "raggedright" | "raggedleft" | "justified" => {
-                self.end_paragraph()?;
-                let align = match cmd.name.as_str() {
-                    "center" => TextAlign::Center,
-                    "raggedright" => TextAlign::Left,
-                    "raggedleft" => TextAlign::Right,
+            "vfill" => {
+                self.sync()?;
+                self.doc.add_vfill().map_err(err)?;
+            }
+            "pagebreak" | "framebreak" => {
+                self.sync()?;
+                let penalty = if cmd.name == "pagebreak" {
+                    -20_000
+                } else {
+                    -10_000
+                };
+                self.doc.add_vertical_penalty(penalty).map_err(err)?;
+            }
+            "eject" | "supereject" | "filbreak" => {
+                self.sync()?;
+                self.doc.add_vfill().map_err(err)?;
+                let penalty = match cmd.name.as_str() {
+                    "eject" => -10_000,
+                    "supereject" => -20_000,
+                    _ => -200,
+                };
+                self.doc.add_penalty(penalty);
+            }
+            "novbreak" => {
+                self.sync()?;
+                self.doc.add_vertical_penalty(10_000).map_err(err)?;
+            }
+            "break" | "nobreak" | "allowbreak" | "goodbreak" | "cr" | "penalty" => {
+                let penalty = match cmd.name.as_str() {
+                    "break" | "cr" => -10_000,
+                    "nobreak" => 10_000,
+                    "allowbreak" => 0,
+                    "goodbreak" => -500,
+                    _ => opt("penalty")?
+                        .parse()
+                        .map_err(|_| "bad penalty".to_string())?,
+                };
+                self.sync()?;
+                if cmd.name == "cr" {
+                    self.doc.add_hfill();
+                }
+                if cmd.option("vertical").is_some_and(truthy) {
+                    self.doc.add_vertical_penalty(penalty).map_err(err)?;
+                } else {
+                    self.doc.add_penalty(penalty);
+                }
+            }
+            "glue" | "quad" | "qquad" | "thinspace" => {
+                let width = match cmd.name.as_str() {
+                    "glue" => opt("width")?,
+                    "quad" => "1em",
+                    "qquad" => "2em",
+                    _ => "0.16667em",
+                };
+                let width = self.length(width)?;
+                self.sync()?;
+                self.doc.add_glue(width);
+            }
+            "kern" => {
+                let width = self.length(opt("width")?)?;
+                self.sync()?;
+                self.doc.add_kern(width);
+            }
+            "hfill" => {
+                self.sync()?;
+                self.doc.add_hfill();
+            }
+            "hbox" => {
+                self.sync()?;
+                self.doc.start_hbox();
+                self.process(content)?;
+                self.doc.end_hbox();
+            }
+            "center" => self.aligned(TextAlign::Center, content)?,
+            "raggedright" => self.aligned(TextAlign::Left, content)?,
+            "raggedleft" => self.aligned(TextAlign::Right, content)?,
+            "justified" => self.aligned(TextAlign::Justify, content)?,
+            "ragged" => {
+                let left = cmd.option("left").is_some_and(truthy);
+                let right = cmd.option("right").is_some_and(truthy);
+                let align = match (left, right) {
+                    (true, true) => TextAlign::Center,
+                    (false, true) => TextAlign::Right,
+                    (true, false) => TextAlign::Left,
                     _ => TextAlign::Justify,
                 };
-                self.scoped(|d| {
-                    d.settings.align = align;
-                    if align == TextAlign::Center {
-                        d.settings.parindent = 0.0;
-                    }
-                    d.process(content)?;
-                    d.end_paragraph()
-                })?;
+                self.aligned(align, content)?;
             }
             "em" => self.scoped(|d| {
                 d.settings.style.italic = !d.settings.style.italic;
+                d.process(content)
+            })?,
+            "strong" => self.scoped(|d| {
+                d.settings.style.weight = 700;
                 d.process(content)
             })?,
             "font" => {
@@ -434,15 +584,17 @@ impl<'a> Driver<'a> {
                 }
             }
             "set" => {
-                let parameter = cmd.option("parameter").unwrap_or("");
+                let parameter = cmd.option("parameter");
                 let value = cmd.option("value").unwrap_or("");
                 if cmd.content.is_some() {
                     self.scoped(|d| {
-                        d.set(parameter, value)?;
+                        if let Some(p) = parameter {
+                            d.set(p, value)?;
+                        }
                         d.process(content)
                     })?;
-                } else {
-                    self.set(parameter, value)?;
+                } else if let Some(p) = parameter {
+                    self.set(p, value)?;
                 }
             }
             "language" => {
@@ -465,12 +617,14 @@ impl<'a> Driver<'a> {
     }
 
     fn set_font_option(&mut self, key: &str, value: &str) -> Result<(), String> {
-        let style = &mut self.settings.style;
         match key {
-            "family" => style.family = value.to_string(),
-            "size" => style.size = measure(value, style.size)?,
-            "style" => style.italic = value.eq_ignore_ascii_case("italic"),
-            "weight" => style.weight = value.parse().map_err(|_| format!("bad weight {value}"))?,
+            "family" => self.settings.style.family = value.to_string(),
+            "size" => self.settings.style.size = self.dimen(value)?,
+            "style" => self.settings.style.italic = value.eq_ignore_ascii_case("italic"),
+            "weight" => {
+                self.settings.style.weight =
+                    value.parse().map_err(|_| format!("bad weight {value}"))?
+            }
             "language" => self.settings.language = value.to_string(),
             _ => return Err(format!("font option {key}")),
         }
@@ -489,8 +643,16 @@ impl<'a> Driver<'a> {
             "font.style" => self.set_font_option("style", value)?,
             "font.weight" => self.set_font_option("weight", value)?,
             "document.language" => self.settings.language = value.to_string(),
-            "document.parindent" => {
-                self.settings.parindent = measure(value, self.settings.style.size)?
+            "document.parindent" => self.settings.parindent = value.to_string(),
+            "document.parskip" => self.settings.parskip = value.to_string(),
+            "document.baselineskip" => self.settings.baselineskip = value.to_string(),
+            "document.lineskip" => self.settings.lineskip = value.to_string(),
+            "document.lskip" => self.settings.skips.left = self.length(value)?,
+            "document.rskip" => self.settings.skips.right = self.length(value)?,
+            "typesetter.parfillskip" => self.settings.skips.par_fill = self.length(value)?,
+            "current.parindent" => {
+                let indent = self.dimen(value)?;
+                self.doc.set_current_indent(Some(indent));
             }
             "linebreak.tolerance" => self.doc.linebreak_settings_mut().tolerance = num()? as i64,
             "linebreak.pretolerance" => {
@@ -503,8 +665,7 @@ impl<'a> Driver<'a> {
                 self.doc.linebreak_settings_mut().adj_demerits = num()? as i64
             }
             "linebreak.emergencyStretch" => {
-                self.doc.linebreak_settings_mut().emergency_stretch =
-                    measure(value, self.settings.style.size)?
+                self.doc.linebreak_settings_mut().emergency_stretch = self.dimen(value)?
             }
             "shaper.spaceenlargementfactor"
             | "shaper.spacestretchfactor"
@@ -525,16 +686,92 @@ impl<'a> Driver<'a> {
 
     /// `packages.retrograde`: restore defaults from older SILE releases.
     fn retrograde(&mut self, target: &str) {
-        let target = semver(target);
-        if target < (0, 15, 14) {
+        self.target = semver(target);
+        if self.target < (0, 15, 14) {
             self.settings.style.family = "Gentium Plus".into();
         }
-        if target < (0, 15, 0) {
-            self.settings.parindent = 20.0;
+        if self.target < (0, 15, 0) {
+            self.settings.parindent = "20pt".into();
             self.space_settings.enlargement_factor = 1.2;
             self.doc.set_space_settings(self.space_settings);
         }
     }
+
+    /// A SILE length such as `2em plus 1em minus 0.5em`, absolutized against
+    /// the current font and page.
+    fn length(&mut self, value: &str) -> Result<Length, String> {
+        let (natural, rest) = match value.split_once(" plus ") {
+            Some((n, r)) => (n, Some(r)),
+            None => (value, None),
+        };
+        let (natural, shrink) = match natural.split_once(" minus ") {
+            Some((n, m)) => (n, Some(m)),
+            None => (natural, None),
+        };
+        let (stretch, shrink) = match rest.map(|r| r.split_once(" minus ")) {
+            Some(Some((p, m))) => (Some(p), Some(m)),
+            Some(None) => (rest, shrink),
+            None => (None, shrink),
+        };
+        let part = |d: &mut Self, v: Option<&str>| v.map_or(Ok(0.0), |v| d.dimen(v));
+        Ok(Length::new(
+            Measurement::pt(self.dimen(natural)?),
+            Measurement::pt(part(self, stretch)?),
+            Measurement::pt(part(self, shrink)?),
+        ))
+    }
+
+    /// One dimension in any of SILE's units, in points.
+    fn dimen(&mut self, value: &str) -> Result<f64, String> {
+        let value = value.trim();
+        let split = value
+            .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+')))
+            .unwrap_or(value.len());
+        let (n, unit) = value.split_at(split);
+        let n: f64 = if n.is_empty() && !unit.is_empty() {
+            1.0
+        } else {
+            n.parse().map_err(|_| format!("bad length {value}"))?
+        };
+        let style = self.settings.style.clone();
+        let size = style.size;
+        let metrics = || {
+            self.corpus
+                .fonts
+                .em_metrics(&style.family, style.weight, style.italic)
+                .ok_or_else(|| format!("no metrics for {}", style.family))
+        };
+        let frame_w = 0.9 * self.paper.width;
+        Ok(match unit.trim() {
+            "" | "pt" => n,
+            "mm" => n * 72.0 / 25.4,
+            "cm" => n * 72.0 / 2.54,
+            "in" => n * 72.0,
+            "em" => n * size,
+            "en" => n * size / 2.0,
+            "ex" => n * metrics()?.x_height * size,
+            "spc" => n * metrics()?.space * size,
+            "bs" => {
+                let bls = self.settings.baselineskip.clone();
+                n * self.dimen(bls.split(" plus ").next().unwrap_or("0"))?
+            }
+            "%pw" => n / 100.0 * self.paper.width,
+            "%ph" => n / 100.0 * self.paper.height,
+            "%fw" => n / 100.0 * frame_w,
+            "%fh" => n / 100.0 * 0.85 * self.paper.height,
+            "%lw" => {
+                let s = self.settings.skips;
+                n / 100.0 * frame_w
+                    - s.left.length.to_pt().unwrap_or(0.0)
+                    - s.right.length.to_pt().unwrap_or(0.0)
+            }
+            other => return Err(format!("unsupported unit {other} in {value}")),
+        })
+    }
+}
+
+fn truthy(v: &str) -> bool {
+    matches!(v, "true" | "yes" | "1")
 }
 
 // ---------------------------------------------------------------------------
