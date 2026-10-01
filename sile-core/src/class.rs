@@ -170,6 +170,8 @@ pub struct Book {
     pub right_head: Option<Material>,
     /// No running head on the current page (blank pages of a spread).
     pub skip_head_this_page: bool,
+    /// Chapters start on a new odd page.
+    pub chapters_open_spread: bool,
 }
 
 impl Book {
@@ -188,6 +190,7 @@ impl Book {
             left_head: None,
             right_head: None,
             skip_head_this_page: false,
+            chapters_open_spread: true,
         }
     }
 
@@ -342,7 +345,9 @@ impl Book {
     {
         let doc = ctx.as_mut();
         doc.new_paragraph()?;
-        Book::open_spread(doc, true, false, true)?;
+        if book(doc).chapters_open_spread {
+            Book::open_spread(doc, true, false, true)?;
+        }
         doc.set_current_indent(Some(0.0));
         book(doc).right_head = None;
         *doc.counter_mut("footnote") = 1;

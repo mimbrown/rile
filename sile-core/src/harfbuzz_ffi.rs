@@ -112,6 +112,11 @@ impl HbBuffer {
         }
     }
 
+    /// Fill in script, direction and language left unset from the text.
+    pub fn guess_segment_properties(&mut self) {
+        unsafe { hb::hb_buffer_guess_segment_properties(self.0) }
+    }
+
     pub fn as_ptr(&mut self) -> *mut hb::hb_buffer_t {
         self.0
     }

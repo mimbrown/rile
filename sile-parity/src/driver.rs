@@ -264,6 +264,9 @@ fn check(
                 }
             },
             "define" => match cmd.option("command") {
+                Some("open-spread") if !is_blank(cmd.content.as_deref().unwrap_or(&[])) => {
+                    missing.insert("\\define open-spread".into());
+                }
                 Some(name) => {
                     defined.insert(name.to_string());
                 }
@@ -687,6 +690,11 @@ impl<'a> Driver<'a> {
             "nofoliothispage" => self.set_folio_state(FolioState::OffThisPage),
             "define" => {
                 let name = opt("command")?;
+                if name == "open-spread"
+                    && let Some(book) = self.doc.class_mut::<Book>()
+                {
+                    book.chapters_open_spread = false;
+                }
                 self.defines.insert(name.to_string(), content.to_vec());
             }
             "process" => {
@@ -696,6 +704,7 @@ impl<'a> Driver<'a> {
                     r?;
                 }
             }
+            "open-spread" if self.defines.contains_key("open-spread") => {}
             "open-double-page" | "open-spread" => {
                 let flag = |k: &str, default: bool| cmd.option(k).map_or(default, truthy);
                 let (odd, double, blank) = if cmd.name == "open-spread" {
@@ -1269,6 +1278,10 @@ impl<'a> Driver<'a> {
             other => return Err(format!("unsupported unit {other} in {value}")),
         })
     }
+}
+
+fn is_blank(content: &[Content]) -> bool {
+    content.iter().all(|c| matches!(c, Content::Text(t) if t.trim().is_empty()))
 }
 
 fn truthy(v: &str) -> bool {
