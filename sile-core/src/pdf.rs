@@ -6,7 +6,6 @@ use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 
 use crate::color::Color;
 use crate::font::FontFace;
-use crate::frame::PageLayout;
 use crate::pagebuilder::Page;
 
 // ---------------------------------------------------------------------------
@@ -422,8 +421,8 @@ impl PdfOutputter {
 
     // -- High-level: render from Page objects ---
 
-    pub fn render_pages(&mut self, pages: &[Page], layout: &PageLayout) {
-        crate::render::draw_pages(pages, layout, self);
+    pub fn render_pages(&mut self, pages: &[Page]) {
+        crate::render::draw_pages(pages, self);
     }
 
     fn render_nnode(&mut self, nnode: &crate::node::NNode, x: f64, baseline_y: f64) {
@@ -1051,6 +1050,19 @@ mod tests {
     use crate::node::Node;
     use crate::node::{GlyphData, NNode, VBox};
 
+
+    fn test_page(number: usize) -> crate::pagebuilder::Page {
+        let content = crate::framespec::FrameGeometry {
+            id: "content".into(),
+            left: 72.0,
+            top: 72.0,
+            right: PaperSize::A4.width - 72.0,
+            bottom: PaperSize::A4.height - 72.0,
+            next: None,
+            direction: None,
+        };
+        crate::pagebuilder::Page::new(number, PaperSize::A4, vec![content])
+    }
     #[test]
     fn empty_document() {
         let out = PdfOutputter::new(PdfConfig::default());
@@ -1183,11 +1195,9 @@ mod tests {
 
     #[test]
     fn render_pages_from_page_builder() {
-        let layout = crate::frame::PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
 
         // Create a simple page with VBox content
-        let mut page = crate::pagebuilder::Page::new(1);
+        let mut page = test_page(1);
         let vbox = VBox {
             width: Length::pt(300.0),
             height: Length::pt(12.0),
@@ -1197,18 +1207,16 @@ mod tests {
             misfit: false,
             explicit: false,
         };
-        page.add_frame_content(frame_id, vec![Node::VBox(vbox)]);
+        page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
         let mut out = PdfOutputter::new(PdfConfig::default());
-        out.render_pages(&[page], &layout);
+        out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
         assert!(bytes.starts_with(b"%PDF"));
     }
 
     #[test]
     fn render_nnode_with_glyphs() {
-        let layout = crate::frame::PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
 
         // Load a system font for the test
         let face = match load_any_system_font() {
@@ -1251,12 +1259,12 @@ mod tests {
             explicit: false,
         };
 
-        let mut page = crate::pagebuilder::Page::new(1);
-        page.add_frame_content(frame_id, vec![Node::VBox(vbox)]);
+        let mut page = test_page(1);
+        page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
         let mut out = PdfOutputter::new(PdfConfig::default());
         out.register_font("body", face);
-        out.render_pages(&[page], &layout);
+        out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
 
         assert!(bytes.starts_with(b"%PDF"));
@@ -1265,8 +1273,6 @@ mod tests {
 
     #[test]
     fn render_colored_text() {
-        let layout = crate::frame::PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
 
         let face = match load_any_system_font() {
             Some(f) => f,
@@ -1308,12 +1314,12 @@ mod tests {
             explicit: false,
         };
 
-        let mut page = crate::pagebuilder::Page::new(1);
-        page.add_frame_content(frame_id, vec![Node::VBox(vbox)]);
+        let mut page = test_page(1);
+        page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
         let mut out = PdfOutputter::new(PdfConfig::default());
         out.register_font("body", face);
-        out.render_pages(&[page], &layout);
+        out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
         assert!(bytes.starts_with(b"%PDF"));
     }
@@ -1343,8 +1349,6 @@ mod tests {
             None => return,
         };
         let face = Arc::new(face);
-        let layout = crate::frame::PageLayout::plain(PaperSize::A4, 72.0);
-        let frame_id = layout.content_frame_id().unwrap();
 
         let gid = face.glyph_id('X').unwrap_or(0);
         let units_per_em = face.units_per_em() as f64;
@@ -1376,8 +1380,8 @@ mod tests {
                 misfit: false,
                 explicit: false,
             };
-            let mut page = crate::pagebuilder::Page::new(i + 1);
-            page.add_frame_content(frame_id, vec![Node::VBox(vbox)]);
+            let mut page = test_page(i + 1);
+            page.add_frame_content("content", vec![Node::VBox(vbox)]);
             pages.push(page);
         }
 
@@ -1386,7 +1390,7 @@ mod tests {
             ..Default::default()
         });
         out.register_font("body", face);
-        out.render_pages(&pages, &layout);
+        out.render_pages(&pages);
 
         out.add_bookmark(Bookmark {
             title: "Page 1".to_string(),

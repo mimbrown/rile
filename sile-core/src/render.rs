@@ -1,4 +1,3 @@
-use crate::frame::PageLayout;
 use crate::node::{NNode, Node};
 use crate::pagebuilder::Page;
 
@@ -11,17 +10,17 @@ pub trait Canvas {
 }
 
 /// Walk every page and draw its frames' content onto `canvas`.
-pub fn draw_pages(pages: &[Page], layout: &PageLayout, canvas: &mut impl Canvas) {
+pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
     for page in pages {
-        canvas.begin_page(layout.paper.width, layout.paper.height);
-        draw_page(page, layout, canvas);
+        canvas.begin_page(page.paper.width, page.paper.height);
+        draw_page(page, canvas);
         canvas.end_page();
     }
 }
 
-fn draw_page(page: &Page, layout: &PageLayout, canvas: &mut impl Canvas) {
-    for (frame_id, nodes) in &page.frames {
-        let frame = layout.frame(*frame_id);
+fn draw_page(page: &Page, canvas: &mut impl Canvas) {
+    for (frame_id, nodes) in &page.content {
+        let Some(frame) = page.frame(frame_id) else { continue };
         let mut cursor_y = frame.top;
 
         for node in nodes {

@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use crate::color::Color;
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec};
-use crate::frame::{FrameConstraint, PageLayout, PaperSize};
+use crate::class::{DocumentClass, PageTemplate};
+use crate::frame::PaperSize;
+use crate::framespec::{self, FrameGeometry, FrameSpec};
 use crate::hyphenation::HyphenationDictionary;
 use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
 use crate::node::{self, GlyphData, NNode, Node, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
-use crate::pagebuilder::{PageBreakSettings, PageBuilder};
+use crate::pagebuilder::{Page, PageBreakSettings, take_page};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
@@ -77,6 +79,7 @@ struct RegisteredFont {
 // TextRun (internal)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct TextRun {
     text: String,
     font_name: String,
@@ -88,6 +91,7 @@ struct TextRun {
 
 /// Paragraph material in the order it was added: text still to be shaped,
 /// ready-made nodes, and boxes of further material set at natural width.
+#[derive(Clone)]
 enum Inline {
     Text(TextRun),
     Node(Box<Node>),
@@ -198,12 +202,84 @@ impl LineSkips {
     }
 }
 
+/// SILE's `supereject` penalty: ends the page even when the frame has a
+/// `next` frame.
+pub const SUPER_EJECT: i32 = -20_000;
+
 struct LaidOut {
-    pages: Vec<crate::pagebuilder::Page>,
-    layout: PageLayout,
+    pages: Vec<Page>,
     fonts: std::collections::BTreeMap<String, RegisteredFont>,
     bookmarks: Vec<Bookmark>,
     pdf_config: PdfConfig,
+}
+
+/// The settings that shape text and paragraphs, which can be saved and
+/// restored as a whole (SILE's settings state).
+#[derive(Clone)]
+pub struct Settings {
+    font: Option<String>,
+    language: String,
+    color: Option<Color>,
+    direction: Direction,
+    skips: LineSkips,
+    paragraph_indent: f64,
+    paragraph_skip: Length,
+    leading: f64,
+    baseline_skip: Option<BaselineSkip>,
+    space_settings: SpaceSettings,
+    obey_spaces: bool,
+    fixed_nbsp: bool,
+    letter_space: Option<Length>,
+    linebreak_settings: LinebreakSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            font: None,
+            language: "en".to_string(),
+            color: None,
+            direction: Direction::LTR,
+            skips: LineSkips::default(),
+            paragraph_indent: 20.0,
+            paragraph_skip: Length::zero(),
+            leading: 2.0,
+            baseline_skip: None,
+            space_settings: SpaceSettings::default(),
+            obey_spaces: false,
+            fixed_nbsp: false,
+            letter_space: None,
+            linebreak_settings: LinebreakSettings::default(),
+        }
+    }
+}
+
+/// Material recorded by `begin_capture` to be typeset later, possibly
+/// elsewhere (a running head, say). Each paragraph keeps the settings it
+/// was ended under.
+#[derive(Clone, Default)]
+pub struct Material {
+    items: Vec<Captured>,
+}
+
+#[derive(Clone)]
+enum Captured {
+    Paragraph { inlines: Vec<Inline>, settings: Box<Settings> },
+    Inlines(Vec<Inline>),
+    Vertical(Box<Node>),
+}
+
+struct Capture {
+    items: Vec<Captured>,
+    paragraph: Vec<Inline>,
+    open_boxes: Vec<Vec<Inline>>,
+    current_indent: Option<f64>,
+}
+
+/// The page being filled: its frames and the frame content flows into.
+struct PageState {
+    page: Page,
+    frame: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,42 +293,35 @@ pub struct DocumentBuilder {
     header_height: f64,
     footer_height: f64,
     frame_gap: f64,
+    class: Option<Box<dyn DocumentClass>>,
 
     // Font system
     font_db: FontDatabase,
     fonts: std::collections::BTreeMap<String, RegisteredFont>,
     shaper: Box<dyn Shaper>,
-    current_font: Option<String>,
 
     // Hyphenation
     hyphenation: HyphenationDictionary,
-    language: String,
 
-    // Style state
-    current_color: Option<Color>,
-    direction: Direction,
-    skips: LineSkips,
+    settings: Settings,
+    toplevel: Option<Settings>,
 
     // Paragraph state
     paragraph: Vec<Inline>,
     open_boxes: Vec<Vec<Inline>>,
-    paragraph_indent: f64,
     current_indent: Option<f64>,
-    paragraph_skip: Length,
-    leading: f64,
-    baseline_skip: Option<BaselineSkip>,
     previous_depth: Option<f64>,
-    space_settings: SpaceSettings,
-    obey_spaces: bool,
-    fixed_nbsp: bool,
-    letter_space: Option<Length>,
+    captures: Vec<Capture>,
+    /// Inside `typeset_into`: lines are set but no page is built.
+    naturally: usize,
 
-    // Settings
-    linebreak_settings: LinebreakSettings,
     page_break_settings: PageBreakSettings,
 
-    // Accumulated vertical content
+    // Page building
     vertical_queue: Vec<Node>,
+    page: Option<PageState>,
+    pages: Vec<Page>,
+    last_penalty: i32,
 
     // Running header/footer (need header_height / footer_height > 0)
     header: Option<RunningText>,
@@ -261,7 +330,6 @@ pub struct DocumentBuilder {
     // PDF config
     pdf_config: PdfConfig,
     bookmarks: Vec<Bookmark>,
-    page_count: usize,
 }
 
 impl DocumentBuilder {
@@ -272,35 +340,28 @@ impl DocumentBuilder {
             header_height: 0.0,
             footer_height: 0.0,
             frame_gap: 0.0,
+            class: None,
             font_db: FontDatabase::new(),
             fonts: std::collections::BTreeMap::new(),
             shaper: shaper::default_shaper(),
-            current_font: None,
             hyphenation: HyphenationDictionary::new(),
-            language: "en".to_string(),
-            current_color: None,
-            direction: Direction::LTR,
-            skips: LineSkips::default(),
+            settings: Settings::default(),
+            toplevel: None,
             paragraph: Vec::new(),
             open_boxes: Vec::new(),
-            paragraph_indent: 20.0,
             current_indent: None,
-            paragraph_skip: Length::zero(),
-            leading: 2.0,
-            baseline_skip: None,
             previous_depth: None,
-            space_settings: SpaceSettings::default(),
-            obey_spaces: false,
-            fixed_nbsp: false,
-            letter_space: None,
-            linebreak_settings: LinebreakSettings::default(),
+            captures: Vec::new(),
+            naturally: 0,
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
+            page: None,
+            pages: Vec::new(),
+            last_penalty: 0,
             header: None,
             footer: None,
             pdf_config: PdfConfig::default(),
             bookmarks: Vec::new(),
-            page_count: 0,
         }
     }
 
@@ -383,12 +444,12 @@ impl DocumentBuilder {
     }
 
     pub fn set_font(&mut self, name: impl Into<String>) -> &mut Self {
-        self.current_font = Some(name.into());
+        self.settings.font = Some(name.into());
         self
     }
 
     pub fn set_font_size(&mut self, size: f64) -> &mut Self {
-        if let Some(ref name) = self.current_font.clone()
+        if let Some(ref name) = self.settings.font.clone()
             && let Some(entry) = self.fonts.get_mut(name) {
                 entry.spec.size = size;
             }
@@ -398,38 +459,38 @@ impl DocumentBuilder {
     // -- Language and hyphenation --------------------------------------------
 
     pub fn set_language(&mut self, lang: impl Into<String>) -> &mut Self {
-        self.language = lang.into();
-        self.hyphenation.load_language(&self.language);
+        self.settings.language = lang.into();
+        self.hyphenation.load_language(&self.settings.language);
         self
     }
 
     /// Keep every space as its own glue, including leading ones.
     pub fn set_obey_spaces(&mut self, obey: bool) -> &mut Self {
-        self.obey_spaces = obey;
+        self.settings.obey_spaces = obey;
         self
     }
 
     /// Treat U+00A0 as an ordinary glyph rather than a space-wide kern.
     pub fn set_fixed_nbsp(&mut self, fixed: bool) -> &mut Self {
-        self.fixed_nbsp = fixed;
+        self.settings.fixed_nbsp = fixed;
         self
     }
 
     /// Space added between every pair of characters.
     pub fn set_letter_space(&mut self, space: Option<Length>) -> &mut Self {
-        self.letter_space = space;
+        self.settings.letter_space = space;
         self
     }
 
     // -- Style ---------------------------------------------------------------
 
     pub fn set_color(&mut self, color: Color) -> &mut Self {
-        self.current_color = Some(color);
+        self.settings.color = Some(color);
         self
     }
 
     pub fn clear_color(&mut self) -> &mut Self {
-        self.current_color = None;
+        self.settings.color = None;
         self
     }
 
@@ -437,7 +498,7 @@ impl DocumentBuilder {
 
     /// Indent for paragraphs that start from now on.
     pub fn set_paragraph_indent(&mut self, indent: f64) -> &mut Self {
-        self.paragraph_indent = indent;
+        self.settings.paragraph_indent = indent;
         self
     }
 
@@ -450,48 +511,48 @@ impl DocumentBuilder {
 
     /// Vertical glue after each paragraph (SILE's `document.parskip`).
     pub fn set_paragraph_skip(&mut self, skip: impl Into<Length>) -> &mut Self {
-        self.paragraph_skip = skip.into();
+        self.settings.paragraph_skip = skip.into();
         self
     }
 
     /// Space lines TeX/SILE style, baseline to baseline, instead of adding a
     /// fixed `leading` between them. Overrides `set_leading`.
     pub fn set_baseline_skip(&mut self, baseline_skip: Option<BaselineSkip>) -> &mut Self {
-        self.baseline_skip = baseline_skip;
+        self.settings.baseline_skip = baseline_skip;
         self
     }
 
     pub fn set_leading(&mut self, leading: f64) -> &mut Self {
-        self.leading = leading;
+        self.settings.leading = leading;
         self
     }
 
     pub fn set_direction(&mut self, direction: Direction) -> &mut Self {
-        self.direction = direction;
+        self.settings.direction = direction;
         self
     }
 
     pub fn set_alignment(&mut self, alignment: TextAlign) -> &mut Self {
-        self.skips = self.skips.aligned(alignment);
+        self.settings.skips = self.settings.skips.aligned(alignment);
         self
     }
 
     pub fn line_skips(&self) -> LineSkips {
-        self.skips
+        self.settings.skips
     }
 
     pub fn set_line_skips(&mut self, skips: LineSkips) -> &mut Self {
-        self.skips = skips;
+        self.settings.skips = skips;
         self
     }
 
     pub fn set_space_settings(&mut self, settings: SpaceSettings) -> &mut Self {
-        self.space_settings = settings;
+        self.settings.space_settings = settings;
         self
     }
 
     pub fn linebreak_settings_mut(&mut self) -> &mut LinebreakSettings {
-        &mut self.linebreak_settings
+        &mut self.settings.linebreak_settings
     }
 
     pub fn page_break_settings_mut(&mut self) -> &mut PageBreakSettings {
@@ -504,25 +565,25 @@ impl DocumentBuilder {
     /// whitespace at the start of a paragraph or box is dropped.
     pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
         let mut text = text.into().replace("\r\n", " ").replace(['\n', '\t'], " ");
-        if self.current_list().is_empty() && !self.obey_spaces {
+        if self.current_list().is_empty() && !self.settings.obey_spaces {
             text = text.trim_start().to_string();
             if text.is_empty() {
                 return self;
             }
         }
         let tokens = NodeMakerOptions {
-            obey_spaces: self.obey_spaces,
-            fixed_nbsp: self.fixed_nbsp,
-            letterspace: self.letter_space.is_some(),
-            ..NodeMakerOptions::for_language(&self.language)
+            obey_spaces: self.settings.obey_spaces,
+            fixed_nbsp: self.settings.fixed_nbsp,
+            letterspace: self.settings.letter_space.is_some(),
+            ..NodeMakerOptions::for_language(&self.settings.language)
         };
         let run = TextRun {
             text,
-            font_name: self.current_font.clone().unwrap_or_default(),
-            color: self.current_color,
-            language: self.language.clone(),
+            font_name: self.settings.font.clone().unwrap_or_default(),
+            color: self.settings.color,
+            language: self.settings.language.clone(),
             tokens,
-            letter_space: self.letter_space,
+            letter_space: self.settings.letter_space,
         };
         self.push_inline(Inline::Text(run));
         self
@@ -554,7 +615,7 @@ impl DocumentBuilder {
     /// between paragraphs. `-10000` forces the break, `10000` forbids it.
     pub fn add_penalty(&mut self, penalty: i32) -> &mut Self {
         if self.paragraph.is_empty() && self.open_boxes.is_empty() {
-            self.vertical_queue.push(Node::penalty(penalty));
+            self.push_vertical(Node::penalty(penalty));
         } else {
             self.push_inline(Inline::Node(Box::new(Node::penalty(penalty))));
         }
@@ -586,67 +647,105 @@ impl DocumentBuilder {
             return;
         }
         if self.paragraph.is_empty() {
-            let indent = self.current_indent.take().unwrap_or(self.paragraph_indent);
+            let indent = self.current_indent.take().unwrap_or(self.settings.paragraph_indent);
             self.paragraph.push(Inline::Node(Box::new(Node::zerohbox())));
             self.paragraph.push(Inline::Node(Box::new(Node::glue(Length::pt(indent)))));
         }
         self.paragraph.push(item);
     }
 
-    /// End the paragraph and add the paragraph skip after it. Does nothing
-    /// right after vertical glue or a penalty, so skips are not doubled.
+    /// End the paragraph and add the paragraph skip after it (SILE's
+    /// `\par`). The skip is left out right after vertical glue or a
+    /// penalty, so skips are not doubled.
     pub fn new_paragraph(&mut self) -> Result<&mut Self, BuilderError> {
-        if self.paragraph.is_empty()
-            && self.vertical_queue.last().is_some_and(|n| n.is_vglue() || n.is_penalty())
-        {
-            return Ok(self);
+        let after_skip = self.paragraph.is_empty()
+            && self.last_vertical().is_some_and(|n| n.is_vglue() || n.is_penalty());
+        if !after_skip {
+            self.current_indent = None;
+            self.leave_hmode(false)?;
+            self.push_vertical(Node::vglue(self.settings.paragraph_skip));
         }
-        self.current_indent = None;
-        self.leave_hmode()?;
-        self.vertical_queue.push(Node::vglue(self.paragraph_skip));
+        self.leave_hmode(false)?;
         Ok(self)
     }
 
     /// Break the pending paragraph into lines without ending it as a
-    /// paragraph (no paragraph skip).
-    fn leave_hmode(&mut self) -> Result<(), BuilderError> {
+    /// paragraph (no paragraph skip), then fill the current frame if it is
+    /// full. `independent` only breaks the lines.
+    pub(crate) fn leave_hmode(&mut self, independent: bool) -> Result<(), BuilderError> {
         self.open_boxes.clear();
-        if self.paragraph.is_empty() {
+        if let Some(capture) = self.captures.last_mut() {
+            if !self.paragraph.is_empty() {
+                capture.items.push(Captured::Paragraph {
+                    inlines: std::mem::take(&mut self.paragraph),
+                    settings: Box::new(self.settings.clone()),
+                });
+            }
             return Ok(());
         }
-        let inlines = std::mem::take(&mut self.paragraph);
-        let nodes = self.typeset_paragraph(&inlines)?;
-        self.vertical_queue.extend(nodes);
+        if !self.paragraph.is_empty() {
+            let inlines = std::mem::take(&mut self.paragraph);
+            let nodes = self.typeset_paragraph(&inlines)?;
+            self.vertical_queue.extend(nodes);
+        }
+        if independent || self.naturally > 0 {
+            return Ok(());
+        }
+        if self.build_page()? {
+            self.init_next_frame()?;
+        }
         Ok(())
+    }
+
+    fn push_vertical(&mut self, node: Node) {
+        match self.captures.last_mut() {
+            Some(capture) => capture.items.push(Captured::Vertical(Box::new(node))),
+            None => self.vertical_queue.push(node),
+        }
+    }
+
+    fn last_vertical(&self) -> Option<&Node> {
+        match self.captures.last() {
+            Some(capture) => match capture.items.last() {
+                Some(Captured::Vertical(node)) => Some(&**node),
+                _ => None,
+            },
+            None => self.vertical_queue.last(),
+        }
+    }
+
+    /// Whether nothing is waiting to be set, horizontally or vertically.
+    pub fn is_queue_empty(&self) -> bool {
+        self.paragraph.is_empty() && self.vertical_queue.is_empty()
     }
 
     // -- Vertical material ---------------------------------------------------
 
     pub fn add_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode()?;
-        self.vertical_queue.push(Node::vglue(amount.into()));
+        self.leave_hmode(false)?;
+        self.push_vertical(Node::vglue(amount.into()));
         Ok(self)
     }
 
     /// Vertical space kept even at the top or bottom of a page (SILE's
     /// `\skip` and `\smallskip` family).
     pub fn add_explicit_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode()?;
+        self.leave_hmode(false)?;
         let mut glue = Node::vglue(amount.into());
         if let Node::VGlue(g) = &mut glue {
             g.explicit = true;
         }
-        self.vertical_queue.push(glue);
+        self.push_vertical(glue);
         Ok(self)
     }
 
     pub fn add_vfill(&mut self) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode()?;
+        self.leave_hmode(false)?;
         let mut fill = Node::vfillglue(Length::zero());
         if let Node::VFillGlue(g) = &mut fill {
             g.explicit = true;
         }
-        self.vertical_queue.push(fill);
+        self.push_vertical(fill);
         Ok(self)
     }
 
@@ -656,13 +755,22 @@ impl DocumentBuilder {
 
     /// A page break penalty, ending any pending paragraph first.
     pub fn add_vertical_penalty(&mut self, penalty: i32) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode()?;
-        self.vertical_queue.push(Node::penalty(penalty));
+        if !self.paragraph.is_empty() {
+            self.leave_hmode(false)?;
+        }
+        self.push_vertical(Node::penalty(penalty));
+        Ok(self)
+    }
+
+    /// Fill the page and force a new one (SILE's `\supereject`).
+    pub fn supereject(&mut self) -> Result<&mut Self, BuilderError> {
+        self.add_vfill()?;
+        self.add_penalty(SUPER_EJECT);
         Ok(self)
     }
 
     pub fn add_rule(&mut self, width: f64, height: f64) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode()?;
+        self.leave_hmode(false)?;
         let vbox = VBox {
             width: Length::pt(width),
             height: Length::pt(height),
@@ -672,7 +780,269 @@ impl DocumentBuilder {
             misfit: false,
             explicit: false,
         };
-        self.vertical_queue.push(Node::VBox(vbox));
+        self.push_vertical(Node::VBox(vbox));
+        Ok(self)
+    }
+
+    /// Drop everything waiting to go on the page.
+    pub fn clear_vertical_queue(&mut self) -> &mut Self {
+        self.vertical_queue.clear();
+        self
+    }
+
+    /// Number of items waiting to go on the page.
+    pub fn vertical_queue_len(&self) -> usize {
+        self.vertical_queue.len()
+    }
+
+    // -- Pages and frames ----------------------------------------------------
+
+    /// Lay pages out with `class`: its page template, and its hooks at
+    /// every page start and end. Set before adding content.
+    pub fn set_class(&mut self, class: impl DocumentClass) -> &mut Self {
+        self.class = Some(Box::new(class));
+        self
+    }
+
+    pub fn class_mut<C: DocumentClass>(&mut self) -> Option<&mut C> {
+        self.class.as_deref_mut()?.as_any_mut().downcast_mut::<C>()
+    }
+
+    /// Number of the page being filled, counting from 1.
+    pub fn page_number(&self) -> usize {
+        self.pages.len() + 1
+    }
+
+    /// Width and height of the frame content is flowing into.
+    pub fn frame_size(&mut self) -> Result<(f64, f64), BuilderError> {
+        self.ensure_page()?;
+        let frame = self.current_frame().expect("current frame");
+        Ok((frame.width(), frame.height()))
+    }
+
+    fn ensure_page(&mut self) -> Result<(), BuilderError> {
+        if self.page.is_none() {
+            self.start_page()?;
+        }
+        Ok(())
+    }
+
+    fn start_page(&mut self) -> Result<(), BuilderError> {
+        let template = match &self.class {
+            Some(class) => class.page_template(),
+            None => self.default_template(),
+        };
+        let frames = framespec::solve(self.paper, &template.frames)
+            .map_err(|e| BuilderError::Layout(e.to_string()))?;
+        if !frames.iter().any(|f| f.id == template.first_content_frame) {
+            return Err(BuilderError::Layout(format!(
+                "no frame {}",
+                template.first_content_frame
+            )));
+        }
+        self.page = Some(PageState {
+            page: Page::new(self.page_number(), self.paper, frames),
+            frame: template.first_content_frame,
+        });
+        Ok(())
+    }
+
+    fn current_frame(&self) -> Option<&FrameGeometry> {
+        let state = self.page.as_ref()?;
+        state.page.frame(&state.frame)
+    }
+
+    /// Fill the current frame if the queue holds enough to (SILE's
+    /// `buildPage`).
+    fn build_page(&mut self) -> Result<bool, BuilderError> {
+        if self.vertical_queue.is_empty() {
+            return Ok(false);
+        }
+        self.ensure_page()?;
+        let frame = self.current_frame().expect("current frame");
+        let (id, target) = (frame.id.clone(), frame.height());
+        let Some((nodes, penalty)) = take_page(&mut self.vertical_queue, target, false) else {
+            return Ok(false);
+        };
+        self.last_penalty = penalty;
+        self.output(&id, nodes);
+        Ok(true)
+    }
+
+    fn output(&mut self, frame: &str, nodes: Vec<Node>) {
+        if let Some(state) = self.page.as_mut() {
+            state.page.add_frame_content(frame, nodes);
+        }
+    }
+
+    /// Move on to the next frame, or end the page and start a new one.
+    fn init_next_frame(&mut self) -> Result<(), BuilderError> {
+        if self.vertical_queue.is_empty() {
+            self.previous_depth = None;
+        }
+        let next = self.current_frame().and_then(|f| f.next.clone());
+        match next {
+            Some(next) if self.last_penalty > SUPER_EJECT => {
+                self.page.as_mut().expect("page").frame = next;
+            }
+            _ => {
+                self.end_page()?;
+                self.new_page()?;
+            }
+        }
+        if !self.vertical_queue.is_empty() {
+            self.vertical_queue.insert(0, Node::vglue(Length::zero()));
+        }
+        Ok(())
+    }
+
+    fn end_page(&mut self) -> Result<(), BuilderError> {
+        self.ensure_page()?;
+        if let Some(mut class) = self.class.take() {
+            let result = class.end_page(self);
+            self.class = Some(class);
+            result?;
+        }
+        if let Some(state) = self.page.take() {
+            self.pages.push(state.page);
+        }
+        Ok(())
+    }
+
+    fn new_page(&mut self) -> Result<(), BuilderError> {
+        if let Some(mut class) = self.class.take() {
+            let result = class.new_page(self);
+            self.class = Some(class);
+            result?;
+        }
+        self.start_page()
+    }
+
+    /// Fill the last page and end it (SILE's `class:finish`).
+    fn finish(&mut self) -> Result<(), BuilderError> {
+        self.ensure_page()?;
+        self.new_paragraph()?;
+        self.add_vfill()?;
+        while !self.is_queue_empty() {
+            self.supereject()?;
+            self.leave_hmode(true)?;
+            self.build_page()?;
+            if !self.is_queue_empty() {
+                self.init_next_frame()?;
+            }
+        }
+        self.end_page()
+    }
+
+    /// Typeset whatever `f` adds straight into `frame` on the current page,
+    /// apart from the main flow, with settings restored afterwards (SILE's
+    /// `typesetNaturally`).
+    pub fn typeset_into(
+        &mut self,
+        frame: &str,
+        f: impl FnOnce(&mut Self) -> Result<(), BuilderError>,
+    ) -> Result<(), BuilderError> {
+        self.ensure_page()?;
+        let settings = self.settings.clone();
+        let paragraph = std::mem::take(&mut self.paragraph);
+        let open_boxes = std::mem::take(&mut self.open_boxes);
+        let current_indent = self.current_indent.take();
+        let previous_depth = self.previous_depth.take();
+        let queue = std::mem::take(&mut self.vertical_queue);
+        let captures = std::mem::take(&mut self.captures);
+        let flow = std::mem::replace(&mut self.page.as_mut().expect("page").frame, frame.to_string());
+        self.naturally += 1;
+
+        let result = f(self).and_then(|_| self.leave_hmode(true));
+
+        self.naturally -= 1;
+        let nodes = std::mem::replace(&mut self.vertical_queue, queue);
+        self.page.as_mut().expect("page").frame = flow;
+        self.settings = settings;
+        self.paragraph = paragraph;
+        self.open_boxes = open_boxes;
+        self.current_indent = current_indent;
+        self.previous_depth = previous_depth;
+        self.captures = captures;
+        result?;
+        let top = nodes
+            .iter()
+            .position(|n| !n.is_discardable() && !n.is_explicit())
+            .unwrap_or(nodes.len());
+        self.output(frame, nodes.into_iter().skip(top).collect());
+        Ok(())
+    }
+
+    // -- Settings and captured material ---------------------------------------
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub fn restore_settings(&mut self, settings: Settings) -> &mut Self {
+        self.settings = settings;
+        self
+    }
+
+    /// Remember the current settings as the document's own, for material
+    /// set outside the flow (folios, running heads) to start from.
+    pub fn mark_toplevel(&mut self) -> &mut Self {
+        self.toplevel = Some(self.settings.clone());
+        self
+    }
+
+    /// Switch to the document's own settings (SILE's `toplevelState`).
+    pub fn use_toplevel(&mut self) -> &mut Self {
+        if let Some(settings) = self.toplevel.clone() {
+            self.settings = settings;
+        }
+        self
+    }
+
+    /// Record what is added from here on instead of typesetting it, until
+    /// `end_capture`.
+    pub fn begin_capture(&mut self) -> &mut Self {
+        self.captures.push(Capture {
+            items: Vec::new(),
+            paragraph: std::mem::take(&mut self.paragraph),
+            open_boxes: std::mem::take(&mut self.open_boxes),
+            current_indent: self.current_indent.take(),
+        });
+        self
+    }
+
+    pub fn end_capture(&mut self) -> Material {
+        let Some(capture) = self.captures.pop() else {
+            return Material::default();
+        };
+        let mut items = capture.items;
+        while let Some(open) = self.open_boxes.pop() {
+            self.push_inline(Inline::Box(open));
+        }
+        let pending = std::mem::replace(&mut self.paragraph, capture.paragraph);
+        if !pending.is_empty() {
+            items.push(Captured::Inlines(pending));
+        }
+        self.open_boxes = capture.open_boxes;
+        self.current_indent = capture.current_indent;
+        Material { items }
+    }
+
+    /// Add captured material here, as it was added where it was recorded.
+    pub fn add_material(&mut self, material: &Material) -> Result<&mut Self, BuilderError> {
+        for item in &material.items {
+            match item {
+                Captured::Paragraph { inlines, settings } => {
+                    let current = std::mem::replace(&mut self.settings, (**settings).clone());
+                    self.paragraph.extend(inlines.iter().cloned());
+                    let result = self.leave_hmode(false);
+                    self.settings = current;
+                    result?;
+                }
+                Captured::Inlines(inlines) => self.paragraph.extend(inlines.iter().cloned()),
+                Captured::Vertical(node) => self.push_vertical((**node).clone()),
+            }
+        }
         Ok(self)
     }
 
@@ -681,7 +1051,7 @@ impl DocumentBuilder {
     pub fn add_bookmark(&mut self, title: impl Into<String>, level: u32) -> &mut Self {
         self.bookmarks.push(Bookmark {
             title: title.into(),
-            page_index: self.page_count,
+            page_index: self.pages.len(),
             level,
             y_position: self.margins[0],
         });
@@ -721,61 +1091,48 @@ impl DocumentBuilder {
         for bm in laid.bookmarks {
             pdf.add_bookmark(bm);
         }
-        pdf.render_pages(&laid.pages, &laid.layout);
+        pdf.render_pages(&laid.pages);
         Ok(pdf.finish()?)
     }
 
     /// Lay the document out and describe it in SILE's debug outputter format,
     /// for comparing layout against SILE's regression test expectations.
     pub fn render_debug(self) -> Result<String, BuilderError> {
+        let paper = self.paper;
         let laid = self.lay_out()?;
-        let mut trace = crate::trace::TraceCanvas::new(laid.layout.paper);
+        let mut trace = crate::trace::TraceCanvas::new(paper);
         for (name, entry) in &laid.fonts {
             let family = entry.spec.family.clone().unwrap_or_default();
             trace.register_font(name, family, &entry.spec);
         }
-        crate::render::draw_pages(&laid.pages, &laid.layout, &mut trace);
+        crate::render::draw_pages(&laid.pages, &mut trace);
         Ok(trace.finish())
     }
 
+    /// Lay the document out and hand back its pages.
+    pub fn into_pages(self) -> Result<Vec<Page>, BuilderError> {
+        Ok(self.lay_out()?.pages)
+    }
+
     fn lay_out(mut self) -> Result<LaidOut, BuilderError> {
-        self.leave_hmode()?;
-
-        // SILE's class:finish fills the last page and ejects it.
-        self.add_vfill()?;
-        self.vertical_queue.push(Node::penalty(-20_000));
-
-        // Build page layout (header/footer frames included when reserved)
-        let layout = self.build_layout()?;
-
-        let content_frame_id = layout
-            .content_frame_id()
-            .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
-
-
-        // Build pages
-        let mut page_builder = PageBuilder::new(self.page_break_settings.clone());
-        page_builder.enqueue_many(std::mem::take(&mut self.vertical_queue));
-        let mut pages = page_builder.build_pages(&layout, content_frame_id);
+        self.finish()?;
+        let mut pages = std::mem::take(&mut self.pages);
 
         // Running header/footer: typeset per page (page numbers differ)
         let total = pages.len();
         for (name, running) in [("header", self.header.clone()), ("footer", self.footer.clone())] {
-            let (Some(running), Some(frame_id)) = (running, layout.frame_id_by_name(name)) else {
-                continue;
-            };
-            let hsize = layout.frame(frame_id).width();
+            let Some(running) = running else { continue };
             for page in pages.iter_mut() {
-                let line = running.resolved(page.number, total, &self.language);
+                let Some(hsize) = page.frame(name).map(|f| f.width()) else { continue };
+                let line = running.resolved(page.number, total, &self.settings.language);
                 let skips = LineSkips::default().aligned(running.align);
                 let nodes = self.typeset_inlines(&line, hsize, running.direction, skips, &mut None)?;
-                page.add_frame_content(frame_id, nodes);
+                page.add_frame_content(name, nodes);
             }
         }
 
         Ok(LaidOut {
             pages,
-            layout,
             fonts: self.fonts,
             bookmarks: self.bookmarks,
             pdf_config: self.pdf_config,
@@ -785,14 +1142,16 @@ impl DocumentBuilder {
     // -- Internal: paragraph typesetting ------------------------------------
 
     fn typeset_paragraph(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
-        let layout = self.build_layout()?;
-        let content_frame_id = layout
-            .content_frame_id()
-            .ok_or_else(|| BuilderError::Layout("no content frame".to_string()))?;
-        let hsize = layout.frame(content_frame_id).width();
+        self.ensure_page()?;
+        let hsize = self.current_frame().map_or(0.0, |f| f.width());
         let mut previous_depth = self.previous_depth;
-        let nodes =
-            self.typeset_inlines(inlines, hsize, self.direction, self.skips, &mut previous_depth)?;
+        let nodes = self.typeset_inlines(
+            inlines,
+            hsize,
+            self.settings.direction,
+            self.settings.skips,
+            &mut previous_depth,
+        )?;
         self.previous_depth = previous_depth;
         Ok(nodes)
     }
@@ -830,7 +1189,7 @@ impl DocumentBuilder {
         // incompatible with the original. By pre-hyphenating we avoid that.
         let h_nodes = self.hyphenate(h_nodes);
 
-        let mut lb_settings = self.linebreak_settings.clone();
+        let mut lb_settings = self.settings.linebreak_settings.clone();
         lb_settings.left_skip = skips.left;
         lb_settings.right_skip = skips.right;
         let breaks = linebreak::do_break(&h_nodes, hsize, &lb_settings, None);
@@ -900,10 +1259,10 @@ impl DocumentBuilder {
                     nnode.language = run.language.clone();
                     nodes.push(Node::NNode(nnode));
                 }
-                Token::Space(i) => nodes.push(Node::glue(self.space_settings.space(glyphs[i].x_advance))),
+                Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.space(glyphs[i].x_advance))),
                 Token::NonBreakingSpace => {
                     let width = self.shaper.shape(" ", &face, &spec).iter().map(|g| g.x_advance).sum();
-                    nodes.push(Node::kern(self.space_settings.space(width)));
+                    nodes.push(Node::kern(self.settings.space_settings.space(width)));
                 }
                 Token::Penalty(p) => nodes.push(Node::penalty(p)),
                 Token::RepeatedHyphen => {
@@ -915,7 +1274,7 @@ impl DocumentBuilder {
                 Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
                 Token::PunctSpace(kind) => {
                     let spc: f64 = self.shaper.shape(" ", &face, &spec).iter().map(|g| g.x_advance).sum();
-                    let s = self.space_settings;
+                    let s = self.settings.space_settings;
                     let (w, stretch, shrink) = match kind {
                         PunctSpace::Thin => (0.5 * s.enlargement_factor, 0.0, 0.0),
                         PunctSpace::Colon => (s.enlargement_factor, s.stretch_factor, s.shrink_factor),
@@ -941,7 +1300,7 @@ impl DocumentBuilder {
                 out.push(node);
                 continue;
             };
-            let lang = if word.language.is_empty() { self.language.clone() } else { word.language.clone() };
+            let lang = if word.language.is_empty() { self.settings.language.clone() } else { word.language.clone() };
             let mut segments = if word.text.chars().count() < self.hyphenation.min_word
                 || !word.text.chars().any(char::is_alphabetic)
             {
@@ -1018,7 +1377,7 @@ impl DocumentBuilder {
 
         let mut nnode = NNode::with_glyphs(text, glyph_data, font_name, spec.size, width, height, depth);
         nnode.color = color;
-        nnode.language = self.language.clone();
+        nnode.language = self.settings.language.clone();
         nnode
     }
 
@@ -1097,14 +1456,14 @@ impl DocumentBuilder {
         let mut v_nodes = Vec::new();
         for (index, (vbox, broken)) in lines.into_iter().enumerate() {
             let (height, depth) = (pt_of(&vbox.height), pt_of(&vbox.depth));
-            if let Some(bls) = self.baseline_skip {
+            if let Some(bls) = self.settings.baseline_skip {
                 v_nodes.push(bls.leading_for(height, *previous_depth));
                 *previous_depth = Some(depth);
-            } else if index > 0 && self.leading > 0.0 {
+            } else if index > 0 && self.settings.leading > 0.0 {
                 v_nodes.push(Node::vglue(Length::new(
-                    Measurement::pt(self.leading),
-                    Measurement::pt(self.leading * 0.5),
-                    Measurement::pt(self.leading * 0.3),
+                    Measurement::pt(self.settings.leading),
+                    Measurement::pt(self.settings.leading * 0.5),
+                    Measurement::pt(self.settings.leading * 0.3),
                 )));
             }
             v_nodes.push(Node::VBox(vbox));
@@ -1125,47 +1484,45 @@ impl DocumentBuilder {
         v_nodes
     }
 
-    /// The page layout from the margins: a content frame, plus a header
+    /// The page template from the margins: a content frame, plus a header
     /// frame inside the top margin area and/or a footer frame inside the
     /// bottom one when heights were reserved (each pushes the content frame
     /// inward by its height plus the gap).
-    fn build_layout(&self) -> Result<PageLayout, BuilderError> {
+    fn default_template(&self) -> PageTemplate {
         let [top, right, bottom, left] = self.margins;
-        let mut layout = PageLayout::new(self.paper);
-        let mut constraints = Vec::new();
+        let pt = |v: f64| format!("{v}pt");
+        let (left, right) = (pt(left), pt(self.paper.width - right));
+        let mut frames = Vec::new();
         let mut body_top = top;
         let mut body_bottom = self.paper.height - bottom;
         if self.header_height > 0.0 {
-            let header = layout.add_frame("header");
-            constraints.extend([
-                FrameConstraint::Left(header, left),
-                FrameConstraint::Top(header, top),
-                FrameConstraint::Right(header, self.paper.width - right),
-                FrameConstraint::Height(header, self.header_height),
-            ]);
+            frames.push(
+                FrameSpec::new("header")
+                    .left(&left)
+                    .right(&right)
+                    .top(pt(top))
+                    .height(pt(self.header_height)),
+            );
             body_top += self.header_height + self.frame_gap;
         }
         if self.footer_height > 0.0 {
-            let footer = layout.add_frame("footer");
-            constraints.extend([
-                FrameConstraint::Left(footer, left),
-                FrameConstraint::Bottom(footer, self.paper.height - bottom),
-                FrameConstraint::Right(footer, self.paper.width - right),
-                FrameConstraint::Height(footer, self.footer_height),
-            ]);
+            frames.push(
+                FrameSpec::new("footer")
+                    .left(&left)
+                    .right(&right)
+                    .bottom(pt(body_bottom))
+                    .height(pt(self.footer_height)),
+            );
             body_bottom -= self.footer_height + self.frame_gap;
         }
-        let content_id = layout.add_frame("content");
-        constraints.extend([
-            FrameConstraint::Left(content_id, left),
-            FrameConstraint::Top(content_id, body_top),
-            FrameConstraint::Right(content_id, self.paper.width - right),
-            FrameConstraint::Bottom(content_id, body_bottom),
-        ]);
-        layout
-            .solve(&constraints)
-            .map_err(|e| BuilderError::Layout(format!("constraint solver failed: {e:?}")))?;
-        Ok(layout)
+        frames.push(
+            FrameSpec::new("content")
+                .left(left)
+                .right(right)
+                .top(pt(body_top))
+                .bottom(pt(body_bottom)),
+        );
+        PageTemplate { frames, first_content_frame: "content".to_string() }
     }
 }
 

@@ -1,11 +1,13 @@
 //! Interprets a SIL tree by calling sile-core's `DocumentBuilder`, emulating
-//! SILE's `plain` class closely enough to compare layouts. Anything outside
-//! the supported subset is reported rather than approximated.
+//! SILE's `plain` and `book` classes closely enough to compare layouts.
+//! Anything outside the supported subset is reported rather than approximated.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
-use sile_core::builder::{BaselineSkip, DocumentBuilder, LineSkips, RunningText, TextAlign};
+use sile_core::builder::{BaselineSkip, DocumentBuilder, LineSkips, TextAlign};
+use sile_core::class::{Book, Folio, FolioState, Plain};
+use sile_core::counter::MultilevelCounter;
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::length::Length;
@@ -53,7 +55,7 @@ pub fn run(src: &str, format: Format, corpus: &Corpus) -> Result<String, Failure
     }
     .map_err(|e| Failure::Error(format!("parse: {}", e.0)))?;
     let mut missing = BTreeSet::new();
-    check(&tree, corpus, &mut missing);
+    check(&tree, corpus, &mut BTreeSet::new(), &mut missing);
     if !missing.is_empty() {
         return Err(Failure::Unsupported(missing));
     }
@@ -108,6 +110,15 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "folios",
     "comment",
     "language",
+    "nofoliothispage",
+    "process",
+    "open-double-page",
+    "open-spread",
+    "left-running-head",
+    "right-running-head",
+    "increment-multilevel-counter",
+    "set-multilevel-counter",
+    "show-multilevel-counter",
     " ",
 ];
 
@@ -140,12 +151,17 @@ const SETTINGS: &[&str] = &[
     "shaper.spaceshrinkfactor",
 ];
 
-fn check(content: &[Content], corpus: &Corpus, missing: &mut BTreeSet<String>) {
+fn check(
+    content: &[Content],
+    corpus: &Corpus,
+    defined: &mut BTreeSet<String>,
+    missing: &mut BTreeSet<String>,
+) {
     for c in content {
         let Content::Command(cmd) = c else { continue };
         match cmd.name.as_str() {
             "document" => {
-                if let Some(class) = cmd.option("class").filter(|c| *c != "plain") {
+                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book")) {
                     missing.insert(format!("class={class}"));
                 }
                 if let Some(p) = cmd.option("papersize")
@@ -187,7 +203,15 @@ fn check(content: &[Content], corpus: &Corpus, missing: &mut BTreeSet<String>) {
                     missing.insert("set".into());
                 }
             },
-            name if SIMPLE_COMMANDS.contains(&name) => {}
+            "define" => match cmd.option("command") {
+                Some(name) => {
+                    defined.insert(name.to_string());
+                }
+                None => {
+                    missing.insert("define".into());
+                }
+            },
+            name if SIMPLE_COMMANDS.contains(&name) || defined.contains(name) => {}
             name if cmd.raw.is_some() => {
                 missing.insert(format!("\\begin{{{name}}}"));
             }
@@ -196,7 +220,7 @@ fn check(content: &[Content], corpus: &Corpus, missing: &mut BTreeSet<String>) {
             }
         }
         if let Some(inner) = &cmd.content {
-            check(inner, corpus, missing);
+            check(inner, corpus, defined, missing);
         }
     }
 }
@@ -236,7 +260,12 @@ struct Driver<'a> {
     paper: PaperSize,
     settings: Settings,
     registered: BTreeSet<String>,
-    folios: bool,
+    /// Settings scopes entered; settings at depth 0 are the document's own.
+    depth: usize,
+    defines: BTreeMap<String, Vec<Content>>,
+    /// Content of the `\define`d commands being expanded, for `\process`.
+    macro_content: Vec<Vec<Content>>,
+    counters: BTreeMap<String, MultilevelCounter>,
     space_settings: SpaceSettings,
     /// SILE release targeted by `packages.retrograde` (latest if unset).
     target: (u32, u32, u32),
@@ -266,7 +295,10 @@ impl<'a> Driver<'a> {
                 skips: LineSkips::default(),
             },
             registered: BTreeSet::new(),
-            folios: true,
+            depth: 0,
+            defines: BTreeMap::new(),
+            macro_content: Vec::new(),
+            counters: BTreeMap::new(),
             space_settings: SpaceSettings::default(),
             target: (u32::MAX, 0, 0),
         }
@@ -274,32 +306,24 @@ impl<'a> Driver<'a> {
 
     fn finish(mut self) -> Result<String, String> {
         self.par()?;
-        self.apply_geometry()?;
         self.doc.render_debug().map_err(|e| e.to_string())
     }
 
-    /// SILE's plain class: content 5%..95% wide and 5%..90% high, folio frame
-    /// 92%..97% high. The content frame is the same with or without folios.
-    fn apply_geometry(&mut self) -> Result<(), String> {
-        let [w, h] = [self.paper.width, self.paper.height];
-        if self.folios {
-            self.doc.set_margins(0.05 * h, 0.05 * w, 0.03 * h, 0.05 * w);
-            self.doc.set_footer_height(0.05 * h, 0.02 * h);
-            let default = Style {
-                family: self.settings.style.family.clone(),
-                size: 10.0,
-                weight: 400,
-                italic: false,
-            };
-            let font = self.font_name(&default)?;
-            let mut folio = RunningText::new(font, "{page}");
-            folio.align = TextAlign::Center;
-            self.doc.set_footer(folio);
-        } else {
-            self.doc.set_margins(0.05 * h, 0.05 * w, 0.10 * h, 0.05 * w);
-            self.doc.set_footer_height(0.0, 0.0);
+    fn folio(&mut self) -> Option<&mut Folio> {
+        if self.doc.class_mut::<Book>().is_some() {
+            return self.doc.class_mut::<Book>().map(|b| &mut b.folio);
         }
-        Ok(())
+        self.doc.class_mut::<Plain>().map(|p| &mut p.folio)
+    }
+
+    fn set_folio_state(&mut self, state: FolioState) {
+        if let Some(folio) = self.folio() {
+            folio.state = state;
+        }
+    }
+
+    fn book(&mut self) -> Result<&mut Book, String> {
+        self.doc.class_mut::<Book>().ok_or_else(|| "not a book".to_string())
     }
 
     /// Hand the current settings to the builder before it uses them.
@@ -324,6 +348,9 @@ impl<'a> Driver<'a> {
             .set_letter_space(letterspace)
             .set_obey_spaces(self.settings.obey_spaces)
             .set_fixed_nbsp(self.settings.fixed_nbsp);
+        if self.depth == 0 {
+            self.doc.mark_toplevel();
+        }
         Ok(())
     }
 
@@ -390,8 +417,13 @@ impl<'a> Driver<'a> {
     }
 
     fn scoped(&mut self, f: impl FnOnce(&mut Self) -> Result<(), String>) -> Result<(), String> {
+        if self.depth == 0 {
+            self.sync()?;
+        }
         let saved = self.settings.clone();
+        self.depth += 1;
         let r = f(self);
+        self.depth -= 1;
         self.settings = saved;
         r
     }
@@ -442,7 +474,10 @@ impl<'a> Driver<'a> {
                     self.paper = paper_size(p).ok_or("bad papersize")?;
                     self.doc.set_page_size(self.paper);
                 }
-                self.apply_geometry()?;
+                match cmd.option("class") {
+                    Some("book") => self.doc.set_class(Book::new()),
+                    _ => self.doc.set_class(Plain::new()),
+                };
                 self.process(content)?;
             }
             "use" => {
@@ -454,8 +489,60 @@ impl<'a> Driver<'a> {
             " " => self.add_text(" ")?,
             "comment" => {}
             "noop" => self.process(content)?,
-            "nofolios" => self.folios = false,
-            "folios" => self.folios = true,
+            "nofolios" => self.set_folio_state(FolioState::Off),
+            "folios" => self.set_folio_state(FolioState::On),
+            "nofoliothispage" => self.set_folio_state(FolioState::OffThisPage),
+            "define" => {
+                let name = opt("command")?;
+                self.defines.insert(name.to_string(), content.to_vec());
+            }
+            "process" => {
+                if let Some(inner) = self.macro_content.pop() {
+                    let r = self.process(&inner);
+                    self.macro_content.push(inner);
+                    r?;
+                }
+            }
+            "open-double-page" | "open-spread" => {
+                let flag = |k: &str, default: bool| cmd.option(k).map_or(default, truthy);
+                let (odd, double, blank) = if cmd.name == "open-spread" {
+                    (flag("odd", true), flag("double", true), flag("blank", true))
+                } else {
+                    (true, false, false)
+                };
+                self.sync()?;
+                Book::open_spread(&mut self.doc, odd, double, blank).map_err(err)?;
+            }
+            "left-running-head" | "right-running-head" => {
+                self.book()?;
+                self.doc.begin_capture();
+                let r = self.scoped(|d| d.process(content));
+                let material = self.doc.end_capture();
+                r?;
+                let book = self.book()?;
+                if cmd.name == "left-running-head" {
+                    book.left_head = Some(material);
+                } else {
+                    book.right_head = Some(material);
+                }
+            }
+            "increment-multilevel-counter" | "set-multilevel-counter" | "show-multilevel-counter" => {
+                let level = cmd.option("level").map(|l| l.parse::<usize>()).transpose().map_err(|_| "bad level")?;
+                let counter = self.counters.entry(opt("id")?.to_string()).or_default();
+                match cmd.name.as_str() {
+                    "increment-multilevel-counter" => {
+                        counter.increment(level, cmd.option("reset").is_none_or(truthy))
+                    }
+                    "set-multilevel-counter" => {
+                        let value = opt("value")?.parse().map_err(|_| "bad value")?;
+                        counter.set(level.ok_or("set-multilevel-counter needs level")?, value);
+                    }
+                    _ => {
+                        let text = counter.format(level);
+                        self.add_text(&text)?;
+                    }
+                }
+            }
             "noindent" => {
                 self.doc.set_current_indent(Some(0.0));
                 self.process(content)?;
@@ -628,6 +715,13 @@ impl<'a> Driver<'a> {
                 let text = lorem(self.corpus.lorem, words);
                 self.add_text(&text)?;
             }
+            name if self.defines.contains_key(name) => {
+                let body = self.defines[name].clone();
+                self.macro_content.push(content.to_vec());
+                let r = self.process(&body);
+                self.macro_content.pop();
+                r?;
+            }
             other => return Err(format!("unhandled command \\{other}")),
         }
         Ok(())
@@ -761,7 +855,7 @@ impl<'a> Driver<'a> {
                 .em_metrics(&style.family, style.weight, style.italic)
                 .ok_or_else(|| format!("no metrics for {}", style.family))
         };
-        let frame_w = 0.9 * self.paper.width;
+        let (frame_w, frame_h) = self.doc.frame_size().map_err(|e| e.to_string())?;
         Ok(match unit.trim() {
             "" | "pt" => n,
             "mm" => n * 72.0 / 25.4,
@@ -778,7 +872,7 @@ impl<'a> Driver<'a> {
             "%pw" => n / 100.0 * self.paper.width,
             "%ph" => n / 100.0 * self.paper.height,
             "%fw" => n / 100.0 * frame_w,
-            "%fh" => n / 100.0 * 0.85 * self.paper.height,
+            "%fh" => n / 100.0 * frame_h,
             "%lw" => {
                 let s = self.settings.skips;
                 n / 100.0 * frame_w
