@@ -1089,6 +1089,7 @@ mod tests {
             bottom: PaperSize::A4.height - 72.0,
             next: None,
             direction: None,
+            tate: false,
         };
         crate::pagebuilder::Page::new(number, PaperSize::A4, vec![content])
     }

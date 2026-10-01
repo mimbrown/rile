@@ -7,7 +7,7 @@ use crate::counter::MultilevelCounter;
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
-use crate::framespec::{self, FrameGeometry, FrameSpec};
+use crate::framespec::{self, FrameDirection, FrameGeometry, FrameSpec};
 use crate::hyphenation::HyphenationDictionary;
 use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
@@ -419,10 +419,10 @@ pub struct DocumentBuilder {
     class: Option<Box<dyn DocumentClass>>,
     /// Frames used instead of the class's (SILE's `\switch-master`).
     master: Option<PageTemplate>,
-    /// Writing direction of frames that don't set their own.
-    direction: Direction,
+    /// Direction of frames that don't set their own.
+    direction: FrameDirection,
     /// Directions set on frames while typesetting (SILE's `\thisframeRTL`).
-    frame_directions: BTreeMap<String, Direction>,
+    frame_directions: BTreeMap<String, FrameDirection>,
     bidi: bool,
 
     // Font system
@@ -479,7 +479,7 @@ impl DocumentBuilder {
             frame_gap: 0.0,
             class: None,
             master: None,
-            direction: Direction::LTR,
+            direction: FrameDirection::LTR,
             frame_directions: BTreeMap::new(),
             bidi: true,
             font_db: FontDatabase::new(),
@@ -801,8 +801,9 @@ impl DocumentBuilder {
         self
     }
 
-    /// The writing direction of every frame that doesn't set its own.
-    pub fn set_direction(&mut self, direction: Direction) -> &mut Self {
+    /// The direction of every frame that doesn't set its own.
+    pub fn set_direction(&mut self, direction: impl Into<FrameDirection>) -> &mut Self {
+        let direction = direction.into();
         self.direction = direction;
         let template = self.page_template();
         if let Some(state) = self.page.as_mut() {
@@ -819,7 +820,7 @@ impl DocumentBuilder {
 
     /// Set the writing direction of the frame being filled, here and on
     /// later pages.
-    pub fn set_frame_direction(&mut self, direction: Direction) -> &mut Self {
+    pub fn set_frame_direction(&mut self, direction: FrameDirection) -> &mut Self {
         if let Some(state) = self.page.as_mut() {
             self.frame_directions.insert(state.frame.clone(), direction);
             if let Some(frame) = state.page.frames.iter_mut().find(|f| f.id == state.frame) {
@@ -833,9 +834,14 @@ impl DocumentBuilder {
         frame.direction = self.frame_directions.get(&frame.id).copied().or(frame.direction).or(Some(self.direction));
     }
 
-    /// The writing direction of the frame being filled.
-    pub fn writing_direction(&self) -> Direction {
+    /// The direction of the frame being filled.
+    pub fn frame_direction(&self) -> FrameDirection {
         self.current_frame().and_then(|f| f.direction).unwrap_or(self.direction)
+    }
+
+    /// The direction text runs in the frame being filled.
+    pub fn writing_direction(&self) -> Direction {
+        self.frame_direction().text()
     }
 
     /// Reorder mixed-direction paragraphs with the Unicode bidi algorithm
@@ -2514,8 +2520,8 @@ impl DocumentBuilder {
             }
 
             let (start_skip, end_skip, start_hang, end_hang) = match direction {
-                Direction::RTL => (skips.right, skips.left, br.right, br.left),
-                _ => (skips.left, skips.right, br.left, br.right),
+                Direction::LTR => (skips.left, skips.right, br.left, br.right),
+                _ => (skips.right, skips.left, br.right, br.left),
             };
             let hung = |skip: Length, hang: f64| {
                 if hang > 0.0 { Length::pt(pt_of(&skip) + hang) } else { skip }

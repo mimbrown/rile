@@ -14,7 +14,7 @@ use sile_core::insertion::InsertionClass;
 use sile_core::node::{Node, Stroke};
 use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
-use sile_core::framespec::FrameSpec;
+use sile_core::framespec::{FrameDirection, FrameSpec};
 use sile_core::length::Length;
 use sile_core::lists::{ListKind, ListOptions};
 use sile_core::measurement::{Measurement, Unit};
@@ -270,7 +270,7 @@ fn check(
                 for (k, v) in &cmd.options {
                     match k.as_str() {
                         "id" | "left" | "right" | "top" | "bottom" | "width" | "height" | "next" => {}
-                        "direction" if matches!(v.as_str(), "LTR-TTB" | "RTL-TTB") => {}
+                        "direction" if FrameDirection::parse(v).is_some() => {}
                         "direction" => {
                             missing.insert(format!("frame[direction={v}]"));
                         }
@@ -890,7 +890,7 @@ impl<'a> Driver<'a> {
             "thisframeRTL" | "thisframeLTR" => {
                 let dir = if cmd.name == "thisframeRTL" { Direction::RTL } else { Direction::LTR };
                 self.sync()?;
-                self.doc.set_frame_direction(dir);
+                self.doc.set_frame_direction(dir.into());
                 self.update_font(|f| f.direction = dir)?;
                 self.doc.leave_hmode(false).map_err(err)?;
             }
@@ -1135,7 +1135,7 @@ impl<'a> Driver<'a> {
                         "width" => spec.width = v,
                         "height" => spec.height = v,
                         "next" => spec.next = v,
-                        "direction" if v.as_deref() == Some("RTL-TTB") => spec.direction = Some(Direction::RTL),
+                        "direction" => spec.direction = v.as_deref().and_then(FrameDirection::parse),
                         _ => {}
                     }
                 }

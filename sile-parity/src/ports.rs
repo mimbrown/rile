@@ -4,8 +4,8 @@
 
 use sile_core::builder::{BuilderError, DocumentBuilder};
 use sile_core::class::{bigskip, smallskip, with_font};
-use sile_core::font::{Direction, FontStyle, FontWeight};
-use sile_core::framespec::FrameSpec;
+use sile_core::font::{FontStyle, FontWeight};
+use sile_core::framespec::{FrameDirection, FrameSpec};
 use sile_core::linebreak::ParShape;
 use sile_core::textcase;
 
@@ -206,13 +206,13 @@ fn parshaping(d: &mut Driver) -> Result<(), String> {
     d.lorem(30)
 }
 
-fn arabic_frame(id: &str, top: &str, bottom: &str, direction: Option<Direction>) -> FrameSpec {
+fn arabic_frame(id: &str, top: &str, bottom: &str, direction: Option<FrameDirection>) -> FrameSpec {
     FrameSpec { direction, ..FrameSpec::new(id).left("left(content)").right("right(content)").top(top).bottom(bottom) }
 }
 
 fn bug_1317(d: &mut Driver) -> Result<(), String> {
     with_doc(d, |doc| {
-        doc.declare_page_frames(&[arabic_frame("other", "top(content) + 50%ph", "bottom(content)", Some(Direction::RTL))])?;
+        doc.declare_page_frames(&[arabic_frame("other", "top(content) + 50%ph", "bottom(content)", Some(FrameDirection::RTL))])?;
         doc.typeset_into("other", |doc| Ok(doc.add_text("عَرَبي pass")).map(|_| ()))?;
         doc.add_text("عَرَبي pass");
         doc.add_explicit_vskip(bigskip())?;
@@ -225,7 +225,7 @@ fn bug_1321(d: &mut Driver) -> Result<(), String> {
     with_doc(d, |doc| {
         doc.declare_page_frames(&[
             arabic_frame("inherit", "top(content) + 20%ph", "top(content) + 30%ph", None),
-            arabic_frame("setleft", "top(content) + 40%ph", "top(content) + 50%ph", Some(Direction::LTR)),
+            arabic_frame("setleft", "top(content) + 40%ph", "top(content) + 50%ph", Some(FrameDirection::LTR)),
         ])?;
         for (frame, text) in [("folio", "عَرَبي"), ("setleft", "foo"), ("inherit", "عَرَبي")] {
             doc.typeset_into(frame, |doc| Ok(doc.add_text(text)).map(|_| ()))?;
