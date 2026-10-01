@@ -55,6 +55,10 @@ pub struct NodeMakerOptions {
     pub fixed_nbsp: bool,
     pub obey_spaces: bool,
     pub letterspace: bool,
+    /// Ethiopic word separators break and stretch (Amharic).
+    pub ethiopic: bool,
+    /// Space on both sides of Ethiopic separators, not just after.
+    pub ethiopic_centered: bool,
 }
 
 impl NodeMakerOptions {
@@ -64,6 +68,7 @@ impl NodeMakerOptions {
             repeated_hyphen: matches!(base, "cs" | "es" | "gl" | "hr" | "pl" | "pt" | "sk"),
             split_quotes: matches!(base, "fr" | "ca"),
             french: base == "fr",
+            ethiopic: base == "am",
             ..Self::default()
         }
     }
@@ -105,6 +110,10 @@ pub fn tokenize(items: &[Item], options: NodeMakerOptions) -> Vec<Token> {
         last: Last::Nothing,
         last_class: None,
     };
+    if options.ethiopic {
+        maker.ethiopic();
+        return maker.out;
+    }
     let boundaries = boundaries(&text);
     let mut next = 0;
     let first = clean.iter().take_while(|i| is_space(i)).count();
@@ -326,6 +335,35 @@ impl Maker<'_> {
         self.last_class = this;
     }
 
+    /// SILE's Amharic node maker: word space and full stop end a word and
+    /// are followed by space, the full stop by a break as well.
+    fn ethiopic(&mut self) {
+        let items = self.items;
+        for (i, item) in items.iter().enumerate() {
+            let separator = match item.text.chars().next() {
+                Some('\u{1361}') => Some(false),
+                Some('\u{1362}') => Some(true),
+                _ => None,
+            };
+            let Some(full_stop) = separator else {
+                self.deal_with(i, item);
+                continue;
+            };
+            if self.options.ethiopic_centered {
+                self.flush();
+                self.glue(i);
+            }
+            self.add(i);
+            self.flush();
+            self.glue(i);
+            if full_stop {
+                self.penalty(0);
+                self.glue(i);
+            }
+        }
+        self.flush();
+    }
+
     fn word_break(&mut self, i: usize, item: &Item) {
         if self.french_spacing(i, item) {
             return;
@@ -395,6 +433,14 @@ mod tests {
                 Token::PunctSpace(PunctSpace::Guillemet) => "g".into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn ethiopic_separators_end_words() {
+        let am = NodeMakerOptions::for_language("am");
+        assert_eq!(render("ሰው፡ልጅ።ሁሉ", am), "[ሰው፡]_[ልጅ።]__[ሁሉ]");
+        let centered = NodeMakerOptions { ethiopic_centered: true, ..am };
+        assert_eq!(render("ሰው፡ልጅ", centered), "[ሰው]_[፡]_[ልጅ]");
     }
 
     #[test]
