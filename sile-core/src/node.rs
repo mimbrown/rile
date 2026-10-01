@@ -102,6 +102,7 @@ pub enum Node {
     Penalty(Penalty),
     VBox(VBox),
     Migrating(Migrating),
+    Insertion(Insertion),
 }
 
 impl Node {
@@ -126,6 +127,7 @@ impl Node {
             Node::Penalty(_) => "penalty",
             Node::VBox(_) => "vbox",
             Node::Migrating(_) => "migrating",
+            Node::Insertion(_) => "insertion",
         }
     }
 
@@ -145,6 +147,7 @@ impl Node {
             Node::Penalty(n) => n.width,
             Node::VBox(n) => n.width,
             Node::Migrating(n) => n.width,
+            Node::Insertion(_) => Length::zero(),
         }
     }
 
@@ -164,6 +167,7 @@ impl Node {
             Node::Penalty(n) => n.height,
             Node::VBox(n) => n.height,
             Node::Migrating(n) => n.height,
+            Node::Insertion(_) => Length::zero(),
         }
     }
 
@@ -183,6 +187,7 @@ impl Node {
             Node::Penalty(n) => n.depth,
             Node::VBox(n) => n.depth,
             Node::Migrating(n) => n.depth,
+            Node::Insertion(_) => Length::zero(),
         }
     }
 
@@ -207,7 +212,7 @@ impl Node {
             Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
                 !g.explicit
             }
-            Node::Penalty(_) => true,
+            Node::Penalty(_) | Node::Insertion(_) => true,
             _ => false,
         }
     }
@@ -282,6 +287,10 @@ impl Node {
         matches!(self, Node::Migrating(_))
     }
 
+    pub fn is_insertion(&self) -> bool {
+        matches!(self, Node::Insertion(_))
+    }
+
     pub fn is_zerohbox(&self) -> bool {
         matches!(self, Node::ZeroHBox(_))
     }
@@ -315,6 +324,7 @@ impl Node {
             | Node::VKern(_) => " ".to_string(),
             Node::Alternative(_) => "alternative".to_string(),
             Node::Migrating(_) => "migrating".to_string(),
+            Node::Insertion(_) => "insertion".to_string(),
         }
     }
 }
@@ -353,6 +363,7 @@ impl std::fmt::Display for Node {
             Node::Penalty(n) => write!(f, "{n}"),
             Node::VBox(n) => write!(f, "{n}"),
             Node::Migrating(n) => write!(f, "<M: {:?}>", n.material),
+            Node::Insertion(n) => write!(f, "I<{}>", n.class),
         }
     }
 }
@@ -369,6 +380,9 @@ pub struct HBox {
     pub explicit: bool,
     /// Horizontal content drawn inside the box (empty for plain spacers).
     pub nodes: Vec<Node>,
+    /// Moves the baseline of everything after the box up by this much
+    /// (SILE's `\raise`).
+    pub raise: f64,
 }
 
 impl HBox {
@@ -818,6 +832,18 @@ pub struct Migrating {
     pub depth: Length,
     pub material: Vec<Node>,
     pub nodes: Vec<Node>,
+}
+
+/// Material bound for another frame (a footnote, say), held in the vertical
+/// list after the line it came from until the page builder places it.
+#[derive(Debug, Clone, Default)]
+pub struct Insertion {
+    pub class: String,
+    pub nodes: Vec<Node>,
+    pub content_height: f64,
+    pub content_depth: f64,
+    /// Already accounted for on the page being built.
+    pub seen: bool,
 }
 
 // ─── Constructor helpers (mirrors SILE.types.node.xxx({...})) ────────────────

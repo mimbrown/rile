@@ -43,7 +43,7 @@ fn draw_page(page: &Page, canvas: &mut impl Canvas) {
 
 /// Draw a line's nodes from `x`, scaling glue by the line's `ratio` the way
 /// SILE's `rationWidth` does.
-fn draw_hlist(nodes: &[Node], mut x: f64, baseline_y: f64, ratio: f64, canvas: &mut impl Canvas) -> f64 {
+fn draw_hlist(nodes: &[Node], mut x: f64, mut baseline_y: f64, ratio: f64, canvas: &mut impl Canvas) -> f64 {
     for node in nodes {
         match node {
             Node::NNode(nnode) => {
@@ -64,6 +64,7 @@ fn draw_hlist(nodes: &[Node], mut x: f64, baseline_y: f64, ratio: f64, canvas: &
             Node::HBox(hbox) => {
                 draw_hlist(&hbox.nodes, x, baseline_y, 0.0, canvas);
                 x += pt(&hbox.width.length);
+                baseline_y -= hbox.raise;
             }
             _ => {}
         }

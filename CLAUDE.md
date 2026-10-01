@@ -18,7 +18,10 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 scripts/fetch-parity-corpus.sh          # pinned SILE tests + fonts into .parity/
 cargo run --release -p sile-parity      # summary table, HTML report in target/parity/
 cargo run --release -p sile-parity -- --trace italic   # our debug trace for one test
+cargo run --release -p sile-parity --features sile-core/harfbuzz   # shape like SILE
 ```
+
+SILE shapes Gentium Plus with Graphite, which doesn't kern, so the pure Rust shaper's kerning shows up as glyph width differences. Run with `--features sile-core/harfbuzz` for comparable widths.
 
 Comparison is deliberately fuzzy: glyphs, line/page breaks, and positions within 0.5pt are scored separately. `sile-parity/src/driver.rs` maps the SIL subset onto `DocumentBuilder`; unsupported commands are reported, never approximated.
 

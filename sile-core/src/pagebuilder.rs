@@ -9,6 +9,9 @@ use crate::node::Node;
 
 const INF_BAD: i64 = 10_000;
 const EJECT_PENALTY: i32 = -10_000;
+/// SILE's `supereject` penalty: ends the page even when the frame has a
+/// `next` frame.
+pub const SUPER_EJECT: i32 = -20_000;
 const AWFUL_BAD: i64 = 1_073_741_823;
 const DEPLORABLE: i64 = 100_000;
 
@@ -121,8 +124,8 @@ impl PageBuilder {
         &self.queue
     }
 
-    pub fn find_break(&self, target_height: f64) -> Option<PageBreakResult> {
-        find_break(&self.queue, target_height)
+    pub fn find_break(&mut self, target_height: f64) -> Option<PageBreakResult> {
+        find_break(&mut self.queue, target_height, false, &mut no_insertions)
     }
 
     pub fn take_page(&mut self, target_height: f64, flush: bool) -> Option<Vec<Node>> {
@@ -130,28 +133,46 @@ impl PageBuilder {
     }
 }
 
+/// Called when the page builder meets an insertion at `index`, with the
+/// height so far and the current target. It may rewrite the queue (to
+/// force a break before the insertion) and returns the new target.
+pub type InsertionHook<'a> = dyn FnMut(&mut Vec<Node>, usize, f64, f64) -> f64 + 'a;
+
+pub fn no_insertions(_: &mut Vec<Node>, _: usize, _: f64, target: f64) -> f64 {
+    target
+}
+
 /// Find the best page break in the queue for a frame of `target_height`
 /// (SILE's `findBestBreak`). Legal breaks are penalties below 10000 and
 /// glue after non-discardable material. Returns `None` until the queue
-/// holds a forced break or overflows the frame.
-pub fn find_break(queue: &[Node], target_height: f64) -> Option<PageBreakResult> {
+/// holds a forced break or overflows the frame, unless `force` asks for the
+/// best break so far.
+pub fn find_break(
+    queue: &mut Vec<Node>,
+    target_height: f64,
+    force: bool,
+    on_insertion: &mut InsertionHook,
+) -> Option<PageBreakResult> {
+    let mut target = target_height;
     let mut i = queue.iter().position(|n| !n.is_vglue()).unwrap_or(queue.len());
     let (mut height, mut stretch, mut shrink) = (0.0_f64, 0.0_f64, 0.0_f64);
     let mut least_cost = INF_BAD;
     let mut best: Option<PageBreakResult> = None;
+    let mut pi = 0;
 
     while i < queue.len() {
-        let node = &queue[i];
-        match node {
-            Node::VBox(_) => height += pt(node.height()) + pt(node.depth()),
+        match &queue[i] {
+            node @ Node::VBox(_) => height += pt(node.height()) + pt(node.depth()),
             Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
                 height += g.height.length.to_pt().unwrap_or(0.0);
                 stretch += g.height.stretch.to_pt().unwrap_or(0.0);
                 shrink += g.height.shrink.to_pt().unwrap_or(0.0);
             }
+            Node::Insertion(_) => target = on_insertion(queue, i, height, target),
             _ => {}
         }
-        let pi = match node {
+        let node = &queue[i];
+        pi = match node {
             Node::Penalty(p) => p.penalty,
             _ => 0,
         };
@@ -160,8 +181,8 @@ pub fn find_break(queue: &[Node], target_height: f64) -> Option<PageBreakResult>
             n => n.is_vglue() && i > 0 && !queue[i - 1].is_discardable(),
         };
         if legal {
-            let left = target_height - height;
-            let badness = if height < target_height {
+            let left = target - height;
+            let badness = if height < target {
                 rate_badness(left, stretch)
             } else if left < shrink {
                 AWFUL_BAD
@@ -190,25 +211,37 @@ pub fn find_break(queue: &[Node], target_height: f64) -> Option<PageBreakResult>
         }
         i += 1;
     }
+    if force {
+        return best.map(|b| PageBreakResult { trigger_penalty: pi, ..b });
+    }
     None
 }
 
+/// Take the material up to and including the break off the queue, without
+/// the discardables it ends with.
+pub fn split_page(queue: &mut Vec<Node>, br: &PageBreakResult) -> Vec<Node> {
+    let mut content: Vec<Node> = queue.drain(..=br.break_index).collect();
+    while content.len() > 1 && content.last().is_some_and(Node::is_discardable) {
+        content.pop();
+    }
+    content
+}
+
 /// Take a frame's worth of material off the queue, glue set to fill
-/// `target_height`, with the penalty that ended the search. With `flush`, everything
-/// goes when there is no break yet.
+/// `target_height`, with the penalty that ended the search. With `flush`,
+/// everything goes when there is no break yet.
 pub fn take_page(queue: &mut Vec<Node>, target_height: f64, flush: bool) -> Option<(Vec<Node>, i32)> {
     if queue.is_empty() {
         return None;
     }
-    let (end, penalty) = match find_break(queue, target_height) {
-        Some(br) => (br.break_index + 1, br.trigger_penalty),
-        None if flush => (queue.len(), 0),
+    let (content, penalty) = match find_break(queue, target_height, false, &mut no_insertions) {
+        Some(br) => (split_page(queue, &br), br.trigger_penalty),
+        None if flush => {
+            let all = PageBreakResult { break_index: queue.len() - 1, badness: 0, penalty: 0, cost: 0, trigger_penalty: 0 };
+            (split_page(queue, &all), 0)
+        }
         None => return None,
     };
-    let mut content: Vec<Node> = queue.drain(..end).collect();
-    while content.len() > 1 && content.last().is_some_and(Node::is_discardable) {
-        content.pop();
-    }
     Some((set_vertical_glue(content, target_height), penalty))
 }
 
@@ -227,7 +260,7 @@ fn rate_badness(shortfall: f64, spring: f64) -> i64 {
 /// Drop the material SILE skips at the top of a frame (discardable or
 /// explicit glue and penalties), then stretch or shrink the page's glue to
 /// fill `target` (SILE's `setVerticalGlue`).
-fn set_vertical_glue(content: Vec<Node>, target: f64) -> Vec<Node> {
+pub fn set_vertical_glue(content: Vec<Node>, target: f64) -> Vec<Node> {
     let top = content
         .iter()
         .position(|n| !n.is_discardable() && !n.is_explicit())
@@ -308,7 +341,7 @@ mod tests {
 
     #[test]
     fn find_break_empty() {
-        let pb = PageBuilder::new(PageBreakSettings::default());
+        let mut pb = PageBuilder::new(PageBreakSettings::default());
         assert!(pb.find_break(600.0).is_none());
     }
 

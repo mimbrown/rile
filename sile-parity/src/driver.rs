@@ -8,6 +8,8 @@ use std::str::FromStr;
 use sile_core::builder::{BaselineSkip, DocumentBuilder, LineSkips, TextAlign};
 use sile_core::class::{Book, Folio, FolioState, Plain};
 use sile_core::counter::MultilevelCounter;
+use sile_core::insertion::InsertionClass;
+use sile_core::node::Node;
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::length::Length;
@@ -119,6 +121,11 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "increment-multilevel-counter",
     "set-multilevel-counter",
     "show-multilevel-counter",
+    "footnote",
+    "footnote:separator",
+    "footnote:options",
+    "raise",
+    "lower",
     " ",
 ];
 
@@ -176,7 +183,7 @@ fn check(
                 }
             }
             "use" => match cmd.option("module") {
-                Some("packages.retrograde" | "packages.lorem") => {}
+                Some("packages.retrograde" | "packages.lorem" | "packages.footnotes") => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
                 }
@@ -266,6 +273,10 @@ struct Driver<'a> {
     /// Content of the `\define`d commands being expanded, for `\process`.
     macro_content: Vec<Vec<Content>>,
     counters: BTreeMap<String, MultilevelCounter>,
+    /// The settings at depth 0, for material set with the document's own
+    /// settings (SILE's `toplevelState`).
+    toplevel: Option<Settings>,
+    footnote: i64,
     space_settings: SpaceSettings,
     /// SILE release targeted by `packages.retrograde` (latest if unset).
     target: (u32, u32, u32),
@@ -299,6 +310,8 @@ impl<'a> Driver<'a> {
             defines: BTreeMap::new(),
             macro_content: Vec::new(),
             counters: BTreeMap::new(),
+            toplevel: None,
+            footnote: 1,
             space_settings: SpaceSettings::default(),
             target: (u32::MAX, 0, 0),
         }
@@ -320,6 +333,55 @@ impl<'a> Driver<'a> {
         if let Some(folio) = self.folio() {
             folio.state = state;
         }
+    }
+
+    /// SILE's `footnotes` package: insertions into the `footnotes` frame,
+    /// taken from `content`. Its skips are relative to the font in use when
+    /// it is first needed.
+    fn footnote_class(&mut self) -> Result<(), String> {
+        if self.doc.insertion_class_mut("footnote").is_some() {
+            return Ok(());
+        }
+        let mut class = InsertionClass::new("footnotes", "content", 0.75 * self.paper.height);
+        class.top_box = vec![Node::vglue(Length::pt(self.dimen("2ex")?))];
+        class.inter_skip = self.dimen("1ex")?;
+        self.doc.set_insertion_class("footnote", class);
+        Ok(())
+    }
+
+    /// `\footnote`: a raised mark here, and the note, numbered and set with
+    /// the document's own settings at 90% size, sent to the footnotes frame.
+    fn footnote(&mut self, content: &[Content]) -> Result<(), String> {
+        let err = |e: sile_core::builder::BuilderError| e.to_string();
+        self.footnote_class()?;
+        let number = self.footnote.to_string();
+        self.scoped(|d| {
+            let raise = d.dimen("0.7ex")?;
+            d.settings.style.size = d.dimen("1.5ex")?;
+            d.sync()?;
+            d.doc.add_baseline_shift(raise);
+            d.add_text(&number)?;
+            d.doc.add_baseline_shift(-raise);
+            Ok(())
+        })?;
+        let toplevel = self.toplevel.clone();
+        let nodes = self.scoped(|d| {
+            if let Some(toplevel) = toplevel {
+                d.settings = toplevel;
+            }
+            d.settings.style.size *= 0.9;
+            d.sync()?;
+            d.doc.push_typesetter(Some("footnotes")).map_err(err)?;
+            d.doc.set_current_indent(Some(0.0));
+            d.add_text(&format!("{number}."))?;
+            let qquad = d.length("2em")?;
+            d.doc.add_glue(qquad);
+            d.process(content)?;
+            d.doc.pop_typesetter().map_err(err)
+        })?;
+        self.doc.insert("footnote", nodes);
+        self.footnote += 1;
+        Ok(())
     }
 
     fn book(&mut self) -> Result<&mut Book, String> {
@@ -350,6 +412,7 @@ impl<'a> Driver<'a> {
             .set_fixed_nbsp(self.settings.fixed_nbsp);
         if self.depth == 0 {
             self.doc.mark_toplevel();
+            self.toplevel = Some(self.settings.clone());
         }
         Ok(())
     }
@@ -371,6 +434,9 @@ impl<'a> Driver<'a> {
     }
 
     fn text(&mut self, text: &str) -> Result<(), String> {
+        if matches!(text, "\n" | "\r\n") {
+            return Ok(());
+        }
         let mut paragraphs = split_paragraphs(text).into_iter().peekable();
         while let Some(chunk) = paragraphs.next() {
             self.add_text(&chunk)?;
@@ -416,7 +482,7 @@ impl<'a> Driver<'a> {
         Ok(name)
     }
 
-    fn scoped(&mut self, f: impl FnOnce(&mut Self) -> Result<(), String>) -> Result<(), String> {
+    fn scoped<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
         if self.depth == 0 {
             self.sync()?;
         }
@@ -714,6 +780,38 @@ impl<'a> Driver<'a> {
                     .unwrap_or(50);
                 let text = lorem(self.corpus.lorem, words);
                 self.add_text(&text)?;
+            }
+            "raise" | "lower" => {
+                let height = self.dimen(opt("height")?)?;
+                let height = if cmd.name == "raise" { height } else { -height };
+                self.doc.add_baseline_shift(height);
+                self.process(content)?;
+                self.doc.add_baseline_shift(-height);
+            }
+            "footnote" => self.footnote(content)?,
+            "footnote:separator" => {
+                self.footnote_class()?;
+                let nodes = self.scoped(|d| {
+                    d.sync()?;
+                    d.doc.push_typesetter(None).map_err(err)?;
+                    d.process(content)?;
+                    d.doc.pop_typesetter().map_err(err)
+                })?;
+                if let Some(class) = self.doc.insertion_class_mut("footnote") {
+                    class.top_box = nodes;
+                }
+            }
+            "footnote:options" => {
+                self.footnote_class()?;
+                let max = cmd.option("maxHeight").map(|v| self.dimen(v)).transpose()?;
+                let skip = cmd.option("interInsertionSkip").map(|v| self.dimen(v)).transpose()?;
+                let class = self.doc.insertion_class_mut("footnote").expect("footnote class");
+                if let Some(max) = max {
+                    class.max_height = max;
+                }
+                if let Some(skip) = skip {
+                    class.inter_skip = skip;
+                }
             }
             name if self.defines.contains_key(name) => {
                 let body = self.defines[name].clone();
