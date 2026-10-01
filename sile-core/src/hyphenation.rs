@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::hyphenation_data;
+use crate::language_data;
 
 #[derive(Default)]
 struct TrieNode {
@@ -23,7 +23,7 @@ impl Patterns {
     }
 
     fn load(lang: &str) -> Option<Self> {
-        let source = hyphenation_data::source(lang)?;
+        let source = language_data::hyphenation(lang)?;
         let mut patterns = Self::empty();
         let mut section = "";
         for line in source.lines() {

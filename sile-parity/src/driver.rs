@@ -3,11 +3,11 @@
 //! Anything outside the supported subset is reported rather than approximated.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::str::FromStr;
 
-use sile_core::builder::{BaselineSkip, DocumentBuilder, LineSkips, TextAlign};
-use sile_core::class::{Book, Folio, FolioState, Plain};
-use sile_core::counter::MultilevelCounter;
+use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, TextAlign};
+use sile_core::class::{Book, Folio, FolioState, Heading, Plain};
 use sile_core::insertion::InsertionClass;
 use sile_core::node::Node;
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
@@ -29,6 +29,7 @@ pub enum Failure {
 
 pub struct Corpus<'a> {
     pub fonts: &'a Fonts,
+    pub font_dir: &'a Path,
     pub lorem: &'a str,
 }
 
@@ -61,7 +62,7 @@ pub fn run(src: &str, format: Format, corpus: &Corpus) -> Result<String, Failure
     if !missing.is_empty() {
         return Err(Failure::Unsupported(missing));
     }
-    let mut d = Driver::new(corpus);
+    let mut d = Driver::new(corpus).map_err(Failure::Error)?;
     d.process(&tree).map_err(Failure::Error)?;
     d.finish().map_err(Failure::Error)
 }
@@ -127,6 +128,9 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "raise",
     "lower",
     "hyphenator:add-exceptions",
+    "chapter",
+    "section",
+    "subsection",
     " ",
 ];
 
@@ -237,20 +241,12 @@ fn check(
 // Driver
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
-struct Style {
-    family: String,
-    size: f64,
-    weight: u16,
-    italic: bool,
-}
-
 /// SILE settings that the driver tracks itself. Lengths SILE keeps relative
 /// (`1bs`, `1.2em`) stay as source text and are evaluated against the
 /// current font whenever they are handed to the builder, as SILE does.
+/// The font itself is the builder's.
 #[derive(Debug, Clone)]
 struct Settings {
-    style: Style,
     language: String,
     parindent: String,
     parskip: String,
@@ -262,40 +258,64 @@ struct Settings {
     skips: LineSkips,
 }
 
+/// Settings as last handed to the builder.
+#[derive(Debug, Clone, PartialEq)]
+struct Synced {
+    baseline_skip: BaselineSkip,
+    indent: f64,
+    parskip: Length,
+    skips: LineSkips,
+    language: String,
+    letterspace: Option<Length>,
+    obey_spaces: bool,
+    fixed_nbsp: bool,
+}
+
+/// A driver error passed through a class's typesetting callbacks.
+struct Failed(String);
+
+impl From<BuilderError> for Failed {
+    fn from(e: BuilderError) -> Self {
+        Self(e.to_string())
+    }
+}
+
 struct Driver<'a> {
     corpus: &'a Corpus<'a>,
     doc: DocumentBuilder,
     paper: PaperSize,
     settings: Settings,
-    registered: BTreeSet<String>,
+    synced: Option<Synced>,
     /// Settings scopes entered; settings at depth 0 are the document's own.
     depth: usize,
     defines: BTreeMap<String, Vec<Content>>,
     /// Content of the `\define`d commands being expanded, for `\process`.
     macro_content: Vec<Vec<Content>>,
-    counters: BTreeMap<String, MultilevelCounter>,
     /// The settings at depth 0, for material set with the document's own
     /// settings (SILE's `toplevelState`).
     toplevel: Option<Settings>,
-    footnote: i64,
     space_settings: SpaceSettings,
     /// SILE release targeted by `packages.retrograde` (latest if unset).
     target: (u32, u32, u32),
 }
 
+impl AsMut<DocumentBuilder> for Driver<'_> {
+    fn as_mut(&mut self) -> &mut DocumentBuilder {
+        &mut self.doc
+    }
+}
+
 impl<'a> Driver<'a> {
-    fn new(corpus: &'a Corpus<'a>) -> Self {
-        Self {
+    fn new(corpus: &'a Corpus<'a>) -> Result<Self, String> {
+        let mut doc = DocumentBuilder::new(PaperSize::A4);
+        doc.load_fonts_dir(corpus.font_dir);
+        let spec = FontSpec { family: Some("Gentium Book".into()), ..Default::default() };
+        doc.set_font_spec(spec).map_err(|e| e.to_string())?;
+        Ok(Self {
             corpus,
-            doc: DocumentBuilder::new(PaperSize::A4),
+            doc,
             paper: PaperSize::A4,
             settings: Settings {
-                style: Style {
-                    family: "Gentium Book".into(),
-                    size: 10.0,
-                    weight: 400,
-                    italic: false,
-                },
                 language: "en".into(),
                 parindent: "1bs".into(),
                 parskip: "0pt plus 1pt".into(),
@@ -306,16 +326,14 @@ impl<'a> Driver<'a> {
                 fixed_nbsp: false,
                 skips: LineSkips::default(),
             },
-            registered: BTreeSet::new(),
+            synced: None,
             depth: 0,
             defines: BTreeMap::new(),
             macro_content: Vec::new(),
-            counters: BTreeMap::new(),
             toplevel: None,
-            footnote: 1,
             space_settings: SpaceSettings::default(),
             target: (u32::MAX, 0, 0),
-        }
+        })
     }
 
     fn finish(mut self) -> Result<String, String> {
@@ -343,6 +361,7 @@ impl<'a> Driver<'a> {
         if self.doc.insertion_class_mut("footnote").is_some() {
             return Ok(());
         }
+        *self.doc.counter_mut("footnote") = 1;
         let mut class = InsertionClass::new("footnotes", "content", 0.75 * self.paper.height);
         class.top_box = vec![Node::vglue(Length::pt(self.dimen("2ex")?))];
         class.inter_skip = self.dimen("1ex")?;
@@ -355,10 +374,11 @@ impl<'a> Driver<'a> {
     fn footnote(&mut self, content: &[Content]) -> Result<(), String> {
         let err = |e: sile_core::builder::BuilderError| e.to_string();
         self.footnote_class()?;
-        let number = self.footnote.to_string();
+        let number = self.doc.counter_mut("footnote").to_string();
         self.scoped(|d| {
             let raise = d.dimen("0.7ex")?;
-            d.settings.style.size = d.dimen("1.5ex")?;
+            let size = d.dimen("1.5ex")?;
+            d.update_font(|f| f.size = size)?;
             d.sync()?;
             d.doc.add_baseline_shift(raise);
             d.add_text(&number)?;
@@ -370,7 +390,9 @@ impl<'a> Driver<'a> {
             if let Some(toplevel) = toplevel {
                 d.settings = toplevel;
             }
-            d.settings.style.size *= 0.9;
+            d.doc.use_toplevel();
+            d.synced = None;
+            d.update_font(|f| f.size *= 0.9)?;
             d.sync()?;
             d.doc.push_typesetter(Some("footnotes")).map_err(err)?;
             d.doc.set_current_indent(Some(0.0));
@@ -381,7 +403,7 @@ impl<'a> Driver<'a> {
             d.doc.pop_typesetter().map_err(err)
         })?;
         self.doc.insert("footnote", nodes);
-        self.footnote += 1;
+        *self.doc.counter_mut("footnote") += 1;
         Ok(())
     }
 
@@ -391,26 +413,44 @@ impl<'a> Driver<'a> {
 
     /// Hand the current settings to the builder before it uses them.
     fn sync(&mut self) -> Result<(), String> {
-        let font = self.font_name(&self.settings.style.clone())?;
-        self.doc.set_font(font);
-        let skip = self.length(&self.settings.baselineskip.clone())?;
-        let lineskip = self.dimen(&self.settings.lineskip.clone())?;
-        self.doc
-            .set_baseline_skip(Some(BaselineSkip { skip, lineskip }));
-        let indent = self.dimen(&self.settings.parindent.clone())?;
-        self.doc.set_paragraph_indent(indent);
-        let parskip = self.length(&self.settings.parskip.clone())?;
-        self.doc.set_paragraph_skip(parskip);
-        self.doc.set_line_skips(self.settings.skips);
-        self.doc.set_language(self.settings.language.clone());
+        let bls = self.settings.baselineskip.clone();
+        let lineskip = self.settings.lineskip.clone();
+        let parindent = self.settings.parindent.clone();
+        let parskip = self.settings.parskip.clone();
         let letterspace = match self.settings.letterspace.clone() {
             Some(l) => Some(self.length(&l)?),
             None => None,
         };
-        self.doc
-            .set_letter_space(letterspace)
-            .set_obey_spaces(self.settings.obey_spaces)
-            .set_fixed_nbsp(self.settings.fixed_nbsp);
+        let now = Synced {
+            baseline_skip: BaselineSkip { skip: self.length(&bls)?, lineskip: self.dimen(&lineskip)? },
+            indent: self.dimen(&parindent)?,
+            parskip: self.length(&parskip)?,
+            skips: self.settings.skips,
+            language: self.settings.language.clone(),
+            letterspace,
+            obey_spaces: self.settings.obey_spaces,
+            fixed_nbsp: self.settings.fixed_nbsp,
+        };
+        // Only what changed, so that settings a class made around content
+        // it hands back to us stay in force.
+        let last = self.synced.take();
+        macro_rules! push {
+            ($field:ident, $apply:expr) => {
+                if last.as_ref().is_none_or(|l| l.$field != now.$field) {
+                    $apply;
+                }
+            };
+        }
+        let doc = &mut self.doc;
+        push!(baseline_skip, doc.set_baseline_skip(Some(now.baseline_skip)));
+        push!(indent, doc.set_paragraph_indent(now.indent));
+        push!(parskip, doc.set_paragraph_skip(now.parskip));
+        push!(skips, doc.set_line_skips(now.skips));
+        push!(language, doc.set_language(now.language.clone()));
+        push!(letterspace, doc.set_letter_space(now.letterspace));
+        push!(obey_spaces, doc.set_obey_spaces(now.obey_spaces));
+        push!(fixed_nbsp, doc.set_fixed_nbsp(now.fixed_nbsp));
+        self.synced = Some(now);
         if self.depth == 0 {
             self.doc.mark_toplevel();
             self.toplevel = Some(self.settings.clone());
@@ -454,33 +494,8 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
-    fn font_name(&mut self, style: &Style) -> Result<String, String> {
-        let name = format!(
-            "{}|{}|{}|{}",
-            style.family, style.weight, style.italic, style.size
-        );
-        if self.registered.insert(name.clone()) {
-            let data = self
-                .corpus
-                .fonts
-                .data(&style.family, style.weight, style.italic)
-                .ok_or_else(|| format!("font not available: {style:?}"))?;
-            let spec = FontSpec {
-                family: Some(style.family.clone()),
-                size: style.size,
-                weight: FontWeight(style.weight),
-                style: if style.italic {
-                    FontStyle::Italic
-                } else {
-                    FontStyle::Normal
-                },
-                ..Default::default()
-            };
-            self.doc
-                .load_font_data(name.clone(), data.as_ref().clone(), spec)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(name)
+    fn update_font(&mut self, f: impl FnOnce(&mut FontSpec)) -> Result<(), String> {
+        self.doc.update_font(f).map(|_| ()).map_err(|e| e.to_string())
     }
 
     fn scoped<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
@@ -488,10 +503,14 @@ impl<'a> Driver<'a> {
             self.sync()?;
         }
         let saved = self.settings.clone();
+        let font = self.doc.font_spec().cloned();
         self.depth += 1;
         let r = f(self);
         self.depth -= 1;
         self.settings = saved;
+        if let Some(font) = font {
+            self.doc.set_font_spec(font).map_err(|e| e.to_string())?;
+        }
         r
     }
 
@@ -549,7 +568,7 @@ impl<'a> Driver<'a> {
             }
             "use" => {
                 if cmd.option("module") == Some("packages.retrograde") {
-                    self.retrograde(cmd.option("target").unwrap_or(""));
+                    self.retrograde(cmd.option("target").unwrap_or(""))?;
                 }
             }
             "par" => self.par()?,
@@ -595,7 +614,7 @@ impl<'a> Driver<'a> {
             }
             "increment-multilevel-counter" | "set-multilevel-counter" | "show-multilevel-counter" => {
                 let level = cmd.option("level").map(|l| l.parse::<usize>()).transpose().map_err(|_| "bad level")?;
-                let counter = self.counters.entry(opt("id")?.to_string()).or_default();
+                let counter = self.doc.multilevel_counter_mut(opt("id")?);
                 match cmd.name.as_str() {
                     "increment-multilevel-counter" => {
                         counter.increment(level, cmd.option("reset").is_none_or(truthy))
@@ -731,11 +750,13 @@ impl<'a> Driver<'a> {
                 self.aligned(align, content)?;
             }
             "em" => self.scoped(|d| {
-                d.settings.style.italic = !d.settings.style.italic;
+                d.update_font(|f| {
+                    f.style = if f.style == FontStyle::Italic { FontStyle::Normal } else { FontStyle::Italic }
+                })?;
                 d.process(content)
             })?,
             "strong" => self.scoped(|d| {
-                d.settings.style.weight = 700;
+                d.update_font(|f| f.weight = FontWeight(700))?;
                 d.process(content)
             })?,
             "font" => {
@@ -803,6 +824,18 @@ impl<'a> Driver<'a> {
                     .collect();
                 self.doc.add_hyphenation_exceptions(&lang, words.split_whitespace());
             }
+            "chapter" | "section" | "subsection" => {
+                self.book()?;
+                self.sync()?;
+                let heading = Heading { numbering: cmd.option("numbering").is_none_or(truthy) };
+                let title = |d: &mut Self| d.scoped(|d| d.process(content)).map_err(Failed);
+                match cmd.name.as_str() {
+                    "chapter" => Book::chapter(self, heading, title),
+                    "section" => Book::section(self, heading, title),
+                    _ => Book::subsection(self, heading, title),
+                }
+                .map_err(|Failed(e)| e)?;
+            }
             "footnote" => self.footnote(content)?,
             "footnote:separator" => {
                 self.footnote_class()?;
@@ -842,12 +875,18 @@ impl<'a> Driver<'a> {
 
     fn set_font_option(&mut self, key: &str, value: &str) -> Result<(), String> {
         match key {
-            "family" => self.settings.style.family = value.to_string(),
-            "size" => self.settings.style.size = self.dimen(value)?,
-            "style" => self.settings.style.italic = value.eq_ignore_ascii_case("italic"),
+            "family" => self.update_font(|f| f.family = Some(value.to_string()))?,
+            "size" => {
+                let size = self.dimen(value)?;
+                self.update_font(|f| f.size = size)?
+            }
+            "style" => {
+                let style = if value.eq_ignore_ascii_case("italic") { FontStyle::Italic } else { FontStyle::Normal };
+                self.update_font(|f| f.style = style)?
+            }
             "weight" => {
-                self.settings.style.weight =
-                    value.parse().map_err(|_| format!("bad weight {value}"))?
+                let weight = value.parse().map_err(|_| format!("bad weight {value}"))?;
+                self.update_font(|f| f.weight = FontWeight(weight))?
             }
             "language" => self.settings.language = value.to_string(),
             _ => return Err(format!("font option {key}")),
@@ -912,16 +951,17 @@ impl<'a> Driver<'a> {
     }
 
     /// `packages.retrograde`: restore defaults from older SILE releases.
-    fn retrograde(&mut self, target: &str) {
+    fn retrograde(&mut self, target: &str) -> Result<(), String> {
         self.target = semver(target);
         if self.target < (0, 15, 14) {
-            self.settings.style.family = "Gentium Plus".into();
+            self.update_font(|f| f.family = Some("Gentium Plus".into()))?;
         }
         if self.target < (0, 15, 0) {
             self.settings.parindent = "20pt".into();
             self.space_settings.enlargement_factor = 1.2;
             self.doc.set_space_settings(self.space_settings);
         }
+        Ok(())
     }
 
     /// A SILE length such as `2em plus 1em minus 0.5em`, absolutized against
@@ -960,13 +1000,14 @@ impl<'a> Driver<'a> {
         } else {
             n.parse().map_err(|_| format!("bad length {value}"))?
         };
-        let style = self.settings.style.clone();
-        let size = style.size;
+        let font = self.doc.font_spec().cloned().unwrap_or_default();
+        let family = font.family.unwrap_or_default();
+        let size = font.size;
         let metrics = || {
             self.corpus
                 .fonts
-                .em_metrics(&style.family, style.weight, style.italic)
-                .ok_or_else(|| format!("no metrics for {}", style.family))
+                .em_metrics(&family, font.weight.0, font.style == FontStyle::Italic)
+                .ok_or_else(|| format!("no metrics for {family}"))
         };
         let (frame_w, frame_h) = self.doc.frame_size().map_err(|e| e.to_string())?;
         Ok(match unit.trim() {

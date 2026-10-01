@@ -58,7 +58,8 @@ fn main() {
     }
 
     let tests_dir = corpus_dir.join("sile/tests");
-    let fonts = fonts::Fonts::load(&corpus_dir.join("fonts"));
+    let font_dir = corpus_dir.join("fonts");
+    let fonts = fonts::Fonts::load(&font_dir);
     if !tests_dir.is_dir() || fonts.is_empty() {
         eprintln!(
             "corpus not found in {}; run scripts/fetch-parity-corpus.sh",
@@ -71,6 +72,7 @@ fn main() {
     let lorem = driver::lorem_source(&lorem_lua);
     let corpus = Corpus {
         fonts: &fonts,
+        font_dir: &font_dir,
         lorem: &lorem,
     };
 

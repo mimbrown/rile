@@ -4,8 +4,11 @@
 use std::any::Any;
 
 use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
+use crate::font::{FontSpec, FontStyle, FontWeight};
 use crate::framespec::FrameSpec;
 use crate::length::Length;
+use crate::measurement::Measurement;
+use crate::messages;
 
 /// The frames of a page and the one content starts in.
 #[derive(Debug, Clone, PartialEq)]
@@ -259,6 +262,190 @@ impl Book {
     }
 }
 
+/// How a heading is set (SILE's `numbering` option).
+#[derive(Debug, Clone, Copy)]
+pub struct Heading {
+    pub numbering: bool,
+}
+
+impl Default for Heading {
+    fn default() -> Self {
+        Self { numbering: true }
+    }
+}
+
+/// SILE's `plain.bigskipamount` and friends.
+pub fn bigskip() -> Length {
+    Length::new(Measurement::pt(12.0), Measurement::pt(4.0), Measurement::pt(4.0))
+}
+
+pub fn medskip() -> Length {
+    Length::new(Measurement::pt(6.0), Measurement::pt(2.0), Measurement::pt(2.0))
+}
+
+pub fn smallskip() -> Length {
+    Length::new(Measurement::pt(3.0), Measurement::pt(1.0), Measurement::pt(1.0))
+}
+
+/// Run `body` with the font changed by `font`, then put the font back.
+pub fn with_font<C, E>(
+    ctx: &mut C,
+    font: impl FnOnce(&mut FontSpec),
+    body: impl FnOnce(&mut C) -> Result<(), E>,
+) -> Result<(), E>
+where
+    C: AsMut<DocumentBuilder>,
+    E: From<BuilderError>,
+{
+    let saved = ctx.as_mut().font_spec().cloned();
+    ctx.as_mut().update_font(font)?;
+    let result = body(ctx);
+    if let Some(saved) = saved {
+        ctx.as_mut().set_font_spec(saved)?;
+    }
+    result
+}
+
+fn bold(size: f64) -> impl FnOnce(&mut FontSpec) {
+    move |f| {
+        f.weight = FontWeight(800);
+        f.size = size;
+    }
+}
+
+/// Number a heading at `level` and set the number, through the localized
+/// message `msg` when given (SILE's `book:sectioning`).
+fn sectioning(doc: &mut DocumentBuilder, heading: Heading, level: usize, msg: Option<&str>) {
+    if !heading.numbering {
+        return;
+    }
+    let counter = doc.multilevel_counter_mut("sectioning");
+    counter.increment(Some(level), true);
+    let number = counter.format(None);
+    let text = msg
+        .and_then(|id| messages::message(doc.language(), id, &[("number", &number)]))
+        .unwrap_or(number);
+    doc.add_text(text);
+}
+
+fn book(doc: &mut DocumentBuilder) -> &mut Book {
+    doc.class_mut::<Book>().expect("book class")
+}
+
+impl Book {
+    /// Start a chapter on a new odd page, titled by what `title` adds, and
+    /// make the title the left running head (SILE's `\chapter`).
+    pub fn chapter<C, E>(ctx: &mut C, heading: Heading, mut title: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: AsMut<DocumentBuilder>,
+        E: From<BuilderError>,
+    {
+        let doc = ctx.as_mut();
+        doc.new_paragraph()?;
+        Book::open_spread(doc, true, false, true)?;
+        doc.set_current_indent(Some(0.0));
+        book(doc).right_head = None;
+        *doc.counter_mut("footnote") = 1;
+        with_font(ctx, bold(22.0), |ctx| {
+            sectioning(ctx.as_mut(), heading, 1, Some("book-chapter-title"));
+            Ok(())
+        })?;
+        let doc = ctx.as_mut();
+        book(doc).folio.state = FolioState::OffThisPage;
+        doc.new_paragraph()?;
+        doc.set_current_indent(Some(0.0));
+        with_font(ctx, bold(22.0), &mut title)?;
+        ctx.as_mut().begin_capture();
+        let captured = with_font(ctx, |f| f.size = 9.0, &mut title);
+        let doc = ctx.as_mut();
+        let head = doc.end_capture();
+        captured?;
+        book(doc).left_head = Some(head);
+        doc.add_vertical_penalty(10_000)?;
+        doc.new_paragraph()?;
+        doc.add_vertical_penalty(10_000)?;
+        doc.add_explicit_vskip(bigskip())?;
+        doc.add_vertical_penalty(10_000)?;
+        doc.set_current_indent(Some(0.0));
+        Ok(())
+    }
+
+    /// A numbered section heading, which also becomes the right running
+    /// head while folios are shown (SILE's `\section`).
+    pub fn section<C, E>(ctx: &mut C, heading: Heading, mut title: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: AsMut<DocumentBuilder>,
+        E: From<BuilderError>,
+    {
+        Self::heading_start(ctx.as_mut(), bigskip())?;
+        with_font(ctx, bold(15.0), |ctx| {
+            sectioning(ctx.as_mut(), heading, 2, None);
+            ctx.as_mut().add_text(" ");
+            title(ctx)
+        })?;
+        if book(ctx.as_mut()).folio.state == FolioState::On {
+            ctx.as_mut().begin_capture();
+            let captured = with_font(
+                ctx,
+                |f| {
+                    f.size = 9.0;
+                    f.style = FontStyle::Italic;
+                },
+                |ctx| {
+                    let doc = ctx.as_mut();
+                    let skips = doc.line_skips();
+                    doc.set_line_skips(skips.aligned(TextAlign::Right));
+                    if heading.numbering {
+                        let number = doc.multilevel_counter_mut("sectioning").format(Some(2));
+                        doc.add_text(number).add_text(" ");
+                    }
+                    let result = title(ctx);
+                    let doc = ctx.as_mut();
+                    doc.new_paragraph()?;
+                    doc.set_line_skips(skips);
+                    result
+                },
+            );
+            let head = ctx.as_mut().end_capture();
+            captured?;
+            book(ctx.as_mut()).right_head = Some(head);
+        }
+        Ok(Self::heading_end(ctx.as_mut())?)
+    }
+
+    /// A numbered subsection heading (SILE's `\subsection`).
+    pub fn subsection<C, E>(ctx: &mut C, heading: Heading, mut title: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: AsMut<DocumentBuilder>,
+        E: From<BuilderError>,
+    {
+        Self::heading_start(ctx.as_mut(), medskip())?;
+        with_font(ctx, bold(12.0), |ctx| {
+            sectioning(ctx.as_mut(), heading, 3, None);
+            ctx.as_mut().add_text(" ");
+            title(ctx)
+        })?;
+        Ok(Self::heading_end(ctx.as_mut())?)
+    }
+
+    fn heading_start(doc: &mut DocumentBuilder, skip: Length) -> Result<(), BuilderError> {
+        doc.new_paragraph()?;
+        doc.set_current_indent(Some(0.0));
+        doc.add_explicit_vskip(skip)?;
+        doc.add_penalty(-500);
+        Ok(())
+    }
+
+    fn heading_end(doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+        doc.new_paragraph()?;
+        doc.add_vertical_penalty(10_000)?;
+        doc.add_explicit_vskip(smallskip())?;
+        doc.add_vertical_penalty(10_000)?;
+        doc.set_current_indent(Some(0.0));
+        Ok(())
+    }
+}
+
 impl Default for Book {
     fn default() -> Self {
         Self::new()
@@ -312,6 +499,7 @@ mod tests_support {
         let mut doc = DocumentBuilder::new(PaperSize::A5);
         let spec = FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() };
         doc.load_font_data("body", gentium(), spec).unwrap();
+        doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts/gentium-plus-5.000"));
         doc.set_font("body").set_class(class);
         doc
     }
@@ -447,5 +635,75 @@ mod footnote_tests {
         assert!(!text_in(&pages[0], "footnotes").is_empty());
         assert!(!text_in(&pages[1], "footnotes").is_empty());
         assert_eq!(text_in(&pages[0], "content"), "Body.");
+    }
+}
+
+#[cfg(test)]
+mod heading_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    fn title(text: &'static str) -> impl FnMut(&mut DocumentBuilder) -> Result<(), BuilderError> {
+        move |d| {
+            d.add_text(text);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn chapters_open_an_odd_page_and_head_the_left_pages() {
+        let mut d = doc(Book::new());
+        d.add_text("Intro.");
+        Book::chapter(&mut d, Heading::default(), title("Begin")).unwrap();
+        d.add_text("Body.");
+        d.supereject().unwrap();
+        d.add_text("More.");
+        let pages = d.into_pages().unwrap();
+        assert_eq!(pages.len(), 4);
+        assert_eq!(text_in(&pages[1], "content"), "");
+        assert_eq!(text_in(&pages[2], "content"), "Chapter1BeginBody.");
+        assert_eq!(text_in(&pages[2], "folio"), "");
+        assert_eq!(text_in(&pages[3], "runningHead"), "Begin");
+        assert_eq!(text_in(&pages[3], "folio"), "4");
+    }
+
+    #[test]
+    fn sections_are_numbered_within_their_chapter() {
+        let mut d = doc(Book::new());
+        Book::chapter(&mut d, Heading::default(), title("One")).unwrap();
+        Book::section(&mut d, Heading::default(), title("A")).unwrap();
+        Book::section(&mut d, Heading::default(), title("B")).unwrap();
+        Book::subsection(&mut d, Heading::default(), title("b")).unwrap();
+        Book::chapter(&mut d, Heading { numbering: false }, title("Two")).unwrap();
+        Book::chapter(&mut d, Heading::default(), title("Three")).unwrap();
+        Book::section(&mut d, Heading::default(), title("C")).unwrap();
+        d.add_text("End.");
+        let text: String = d.into_pages().unwrap().iter().map(|p| text_in(p, "content")).collect();
+        assert_eq!(text, "Chapter1One1.1A1.2B1.2.1bTwoChapter2Three2.1CEnd.");
+    }
+
+    #[test]
+    fn sections_head_right_pages_while_folios_show() {
+        let mut d = doc(Book::new());
+        d.add_text("Intro.");
+        Book::section(&mut d, Heading::default(), title("Methods")).unwrap();
+        d.add_text("Text.");
+        d.supereject().unwrap();
+        d.add_text("Even.");
+        d.supereject().unwrap();
+        d.add_text("Odd.");
+        let pages = d.into_pages().unwrap();
+        assert_eq!(text_in(&pages[0], "runningHead"), "0.1Methods");
+        assert_eq!(text_in(&pages[1], "runningHead"), "");
+        assert_eq!(text_in(&pages[2], "runningHead"), "0.1Methods");
+    }
+
+    #[test]
+    fn chapter_titles_are_localized() {
+        let mut d = doc(Book::new());
+        d.set_language("tr");
+        Book::chapter(&mut d, Heading::default(), title("Selam")).unwrap();
+        let pages = d.into_pages().unwrap();
+        assert_eq!(text_in(pages.last().unwrap(), "content"), "Bölüm1Selam");
     }
 }
