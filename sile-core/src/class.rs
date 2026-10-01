@@ -5,7 +5,7 @@ use std::any::Any;
 
 use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
 use crate::font::{FontSpec, FontStyle, FontWeight};
-use crate::framespec::FrameSpec;
+use crate::framespec::{FrameDirection, FrameSpec};
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::messages;
@@ -133,10 +133,11 @@ impl Plain {
 }
 
 impl Plain {
-    /// SILE's `jplain`: a content frame on a 50 by 30 character grid.
-    pub fn japanese() -> Self {
+    /// SILE's `jplain`: a content frame on a 50 by 30 character grid, set
+    /// vertically if `tate`.
+    pub fn japanese(tate: bool) -> Self {
         let mut frames = Self::frameset();
-        frames[0] = Hanmen::PLAIN.frame("content", "8.3%pw", "11.6%ph");
+        frames[0] = Hanmen::PLAIN.frame("content", "8.3%pw", "11.6%ph", tate);
         Self { folio: Folio::default(), frames }
     }
 }
@@ -180,11 +181,17 @@ impl Hanmen {
     pub const PLAIN: Hanmen = Hanmen { gridsize: 10.0, linegap: 7.0, linelength: 50, linecount: 30 };
     pub const BOOK: Hanmen = Hanmen { gridsize: 10.0, linegap: 7.0, linelength: 40, linecount: 35 };
 
-    /// A horizontal frame exactly one grid in size.
-    pub fn frame(&self, id: &str, left: &str, top: &str) -> FrameSpec {
-        let width = self.gridsize * self.linelength as f64;
-        let height = self.gridsize * self.linecount as f64 + self.linegap * (self.linecount as f64 - 1.0);
-        FrameSpec::new(id).left(left).top(top).width(format!("{width}pt")).height(format!("{height}pt"))
+    /// A frame exactly one grid in size, of vertical lines from right to
+    /// left if `tate`.
+    pub fn frame(&self, id: &str, left: &str, top: &str, tate: bool) -> FrameSpec {
+        let length = self.gridsize * self.linelength as f64;
+        let breadth = self.gridsize * self.linecount as f64 + self.linegap * (self.linecount as f64 - 1.0);
+        let (width, height) = if tate { (breadth, length) } else { (length, breadth) };
+        let frame = FrameSpec::new(id).left(left).top(top).width(format!("{width}pt")).height(format!("{height}pt"));
+        match tate {
+            true => FrameSpec { direction: Some(FrameDirection::TATE), tate: true, ..frame },
+            false => frame,
+        }
     }
 
     /// From one line's baseline to the next.
@@ -234,15 +241,16 @@ impl Book {
         }
     }
 
-    /// SILE's `jbook`: a content frame on a 40 by 35 character grid.
-    pub fn japanese() -> Self {
+    /// SILE's `jbook`: a content frame on a 40 by 35 character grid, set
+    /// vertically if `tate`.
+    pub fn japanese(tate: bool) -> Self {
         Self::with_frames(vec![
             FrameSpec::new("runningHead")
                 .left("left(content) + 9pt")
                 .right("right(content) - 9pt")
                 .height("20pt")
                 .bottom("top(content)-9pt"),
-            Hanmen::BOOK.frame("content", "8.3%pw", "12%ph"),
+            Hanmen::BOOK.frame("content", "8.3%pw", "12%ph", tate),
             FrameSpec::new("folio")
                 .left("left(content)")
                 .right("right(content)")

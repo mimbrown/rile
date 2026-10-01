@@ -507,7 +507,7 @@ mod japanese {
         let mut out = Vec::new();
         let mut last = -1;
         for (i, item) in items.iter().enumerate() {
-            let this = item.text.chars().next().map_or(0, |c| c as i64);
+            let this = item.text.chars().next().map_or(-1, |c| c as i64);
             if item.text.contains([' ', '\t', '\n', '\r', '\x0b', '\x0c']) {
                 out.push(Token::Space(i));
             } else {

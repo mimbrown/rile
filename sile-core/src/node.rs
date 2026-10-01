@@ -412,6 +412,9 @@ pub enum Ink {
     /// width on from where it stands, and the pen goes back to where it was
     /// (SILE's `ruby` package).
     Ruby(f64),
+    /// Latin text set on its side in vertical Japanese, shifted by this
+    /// zenkaku width (SILE's `\\latin-in-tate`).
+    LatinInTate(f64),
 }
 
 impl HBox {

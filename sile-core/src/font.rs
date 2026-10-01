@@ -89,6 +89,9 @@ pub enum Direction {
     LTR,
     RTL,
     TTB,
+    /// Whatever way the frame the text is set in writes (SILE's empty
+    /// `font.direction`).
+    Frame,
 }
 
 impl fmt::Display for Direction {
@@ -97,6 +100,7 @@ impl fmt::Display for Direction {
             Self::LTR => write!(f, "LTR"),
             Self::RTL => write!(f, "RTL"),
             Self::TTB => write!(f, "TTB"),
+            Self::Frame => Ok(()),
         }
     }
 }

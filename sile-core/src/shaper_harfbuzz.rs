@@ -30,7 +30,7 @@ impl Shaper for HarfBuzzShaper {
         buffer.add_str(text);
 
         buffer.set_direction(match spec.direction {
-            Direction::LTR => hb::HB_DIRECTION_LTR,
+            Direction::LTR | Direction::Frame => hb::HB_DIRECTION_LTR,
             Direction::RTL => hb::HB_DIRECTION_RTL,
             Direction::TTB => hb::HB_DIRECTION_TTB,
         });
@@ -85,7 +85,9 @@ impl Shaper for HarfBuzzShaper {
                 font_index: 0,
             });
         }
-
+        if spec.direction == Direction::TTB {
+            items.iter_mut().for_each(crate::shaper::set_upright);
+        }
         items
     }
 }
