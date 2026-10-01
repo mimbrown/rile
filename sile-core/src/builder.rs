@@ -93,6 +93,8 @@ struct TextRun {
     tracking: Option<f64>,
     /// Fonts tried in turn for characters the font lacks.
     fallbacks: Vec<String>,
+    /// Opens a paragraph with a dialogue dash whose space is fixed.
+    speaker_change: bool,
 }
 
 /// Paragraph material in the order it was added: text still to be shaped,
@@ -155,6 +157,7 @@ impl RunningText {
                 letter_space: None,
                 tracking: None,
                 fallbacks: Vec::new(),
+                speaker_change: false,
             })
         }));
         line
@@ -326,6 +329,8 @@ pub struct Settings {
     fixed_nbsp: bool,
     letter_space: Option<Length>,
     tracking: Option<f64>,
+    ethiopic_centered: bool,
+    fixed_space_after_dash: bool,
     fallbacks: Vec<FontFallback>,
     /// The fallbacks applied to the current font, as registered fonts.
     fallback_fonts: Vec<String>,
@@ -350,6 +355,8 @@ impl Default for Settings {
             fixed_nbsp: false,
             letter_space: None,
             tracking: None,
+            ethiopic_centered: false,
+            fixed_space_after_dash: true,
             fallbacks: Vec::new(),
             fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
@@ -701,6 +708,13 @@ impl DocumentBuilder {
         self
     }
 
+    /// Space Ethiopic word separators on both sides rather than after
+    /// (SILE's `languages.am.justification` "centered").
+    pub fn set_ethiopic_centered(&mut self, centered: bool) -> &mut Self {
+        self.settings.ethiopic_centered = centered;
+        self
+    }
+
     /// Scale every glyph's advance (SILE's `shaper.tracking`).
     pub fn set_tracking(&mut self, tracking: Option<f64>) -> &mut Self {
         self.settings.tracking = tracking;
@@ -814,14 +828,32 @@ impl DocumentBuilder {
     /// whitespace at the start of a paragraph or box is dropped.
     pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
         let mut text = text.into().replace("\r\n", " ").replace(['\n', '\t'], " ");
+        let mut speaker_change = false;
         if self.current_list().is_empty() && !self.settings.obey_spaces {
             text = text.trim_start().to_string();
             if text.is_empty() {
                 return self;
             }
+            if self.settings.fixed_space_after_dash
+                && self.open_boxes.is_empty()
+                && let Some(rest) = text.strip_prefix('\u{2014}')
+                && rest.starts_with([' ', '\u{00A0}', '\u{202F}'])
+            {
+                text = format!("\u{2014} {}", rest.trim_start_matches([' ', '\u{00A0}', '\u{202F}']));
+                speaker_change = true;
+            }
         }
-        let run = self.text_run(text);
+        let mut run = self.text_run(text);
+        run.speaker_change = speaker_change;
         self.push_inline(Inline::Text(run));
+        self
+    }
+
+    /// Whether a paragraph opening with an em dash and a space, marking a
+    /// change of speaker, keeps that space fixed (SILE's
+    /// `typesetter.fixedSpacingAfterInitialEmdash`, on by default).
+    pub fn set_fixed_space_after_dash(&mut self, fixed: bool) -> &mut Self {
+        self.settings.fixed_space_after_dash = fixed;
         self
     }
 
@@ -850,6 +882,7 @@ impl DocumentBuilder {
             obey_spaces: self.settings.obey_spaces,
             fixed_nbsp: self.settings.fixed_nbsp,
             letterspace: self.settings.letter_space.is_some(),
+            ethiopic_centered: self.settings.ethiopic_centered,
             ..NodeMakerOptions::for_language(&self.settings.language)
         };
         TextRun {
@@ -861,6 +894,7 @@ impl DocumentBuilder {
             letter_space: self.settings.letter_space,
             tracking: self.settings.tracking,
             fallbacks: self.settings.fallback_fonts.clone(),
+            speaker_change: false,
         }
     }
 
@@ -2049,6 +2083,11 @@ impl DocumentBuilder {
             }
             lo = hi;
         }
+        if run.speaker_change
+            && let Some(Node::Glue(g)) = nodes.get(1)
+        {
+            nodes[1] = Node::kern(Length::new(g.width.length, Measurement::pt(0.0), Measurement::pt(0.0)));
+        }
         Ok(nodes)
     }
 
@@ -2155,6 +2194,7 @@ impl DocumentBuilder {
             letter_space: None,
             tracking: None,
             fallbacks: Vec::new(),
+            speaker_change: false,
         };
         self.shape_run(&run).unwrap_or_default()
     }

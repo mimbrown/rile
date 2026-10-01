@@ -62,6 +62,8 @@ pub fn run(name: &str, src: &str, format: Format, corpus: &Corpus) -> Result<Str
         Format::Xml => crate::xml::parse(src),
     }
     .map_err(|e| Failure::Error(format!("parse: {}", e.0)))?;
+    let tree = expand_includes(tree, &corpus.font_dir.with_file_name("sile").join("tests"))
+        .map_err(Failure::Error)?;
     let mut missing = BTreeSet::new();
     let port = ports::port(name);
     check(&tree, corpus, port.as_ref(), &mut BTreeSet::new(), &mut missing);
@@ -74,12 +76,42 @@ pub fn run(name: &str, src: &str, format: Format, corpus: &Corpus) -> Result<Str
     d.finish().map_err(Failure::Error)
 }
 
+/// Replace `\include[src=...]` with the content of the file it names
+/// (an included `\document` contributes its content only).
+fn expand_includes(tree: Vec<Content>, dir: &Path) -> Result<Vec<Content>, String> {
+    let mut out = Vec::with_capacity(tree.len());
+    for item in tree {
+        match item {
+            Content::Command(cmd) if cmd.name == "include" => {
+                let src = cmd.option("src").ok_or("include without src")?;
+                let text = std::fs::read_to_string(dir.join(src)).map_err(|e| format!("include {src}: {e}"))?;
+                let included = sil::parse(&text).map_err(|e| format!("parse {src}: {}", e.0))?;
+                for c in expand_includes(included, dir)? {
+                    match c {
+                        Content::Command(doc) if doc.name == "document" => out.extend(doc.content.unwrap_or_default()),
+                        other => out.push(other),
+                    }
+                }
+            }
+            Content::Command(mut cmd) => {
+                if let Some(content) = cmd.content.take() {
+                    cmd.content = Some(expand_includes(content, dir)?);
+                }
+                out.push(Content::Command(cmd));
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Support check
 // ---------------------------------------------------------------------------
 
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
+    "bidi-off",
     "verbatim",
     "font:add-fallback",
     "font:remove-fallback",
@@ -188,6 +220,8 @@ const SETTINGS: &[&str] = &[
     "document.letterspaceglue",
     "shaper.tracking",
     "shaper.variablespaces",
+    "languages.am.justification",
+    "typesetter.fixedSpacingAfterInitialEmdash",
     "linespacing.method",
     "linespacing.fixed.baselinedistance",
     "linespacing.fit-glyph.extra-space",
@@ -357,6 +391,7 @@ struct Settings {
     fixed_nbsp: bool,
     /// Every newline ends a paragraph (`typesetter.parseppattern` "\n").
     obey_lines: bool,
+    ethiopic_centered: bool,
     skips: LineSkips,
     space: SpaceSettings,
     line_spacing: Option<LineSpacingSettings>,
@@ -414,6 +449,7 @@ struct Synced {
     fixed_nbsp: bool,
     space: SpaceSettings,
     line_spacing: Option<LineSpacing>,
+    ethiopic_centered: bool,
 }
 
 /// A driver error passed through a class's typesetting callbacks.
@@ -492,6 +528,7 @@ impl<'a> Driver<'a> {
                 obey_spaces: false,
                 fixed_nbsp: false,
                 obey_lines: false,
+                ethiopic_centered: false,
                 skips: LineSkips::default(),
                 space: SpaceSettings::default(),
                 line_spacing: None,
@@ -602,6 +639,7 @@ impl<'a> Driver<'a> {
             fixed_nbsp: self.settings.fixed_nbsp,
             space: self.settings.space,
             line_spacing: self.settings.line_spacing.map(|l| l.spacing()),
+            ethiopic_centered: self.settings.ethiopic_centered,
         };
         // Only what changed, so that settings a class made around content
         // it hands back to us stay in force.
@@ -625,6 +663,7 @@ impl<'a> Driver<'a> {
         push!(fixed_nbsp, doc.set_fixed_nbsp(now.fixed_nbsp));
         push!(space, doc.set_space_settings(now.space));
         push!(line_spacing, doc.set_line_spacing(now.line_spacing));
+        push!(ethiopic_centered, doc.set_ethiopic_centered(now.ethiopic_centered));
         self.synced = Some(now);
         if self.depth == 0 {
             self.doc.mark_toplevel();
@@ -806,6 +845,7 @@ impl<'a> Driver<'a> {
                 _ => {}
             },
             "par" => self.par()?,
+            "bidi-off" => {}
             " " => self.add_text(" ")?,
             "comment" => {}
             "noop" => self.process(content)?,
@@ -1526,6 +1566,13 @@ impl<'a> Driver<'a> {
                     _ => return Err(format!("setting {p}")),
                 }
             }
+            "typesetter.fixedSpacingAfterInitialEmdash" => {
+                self.doc.set_fixed_space_after_dash(truthy(value));
+            }
+            "languages.am.justification" => match value {
+                "left" | "centered" => self.settings.ethiopic_centered = value == "centered",
+                _ => return Err(format!("Amharic justification {value}")),
+            },
             "shaper.variablespaces" => self.settings.space.variable_spaces = truthy(value),
             "document.spaceskip" => {
                 self.settings.space.skip = if value.is_empty() { None } else { Some(self.length(value)?) }
