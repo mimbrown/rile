@@ -37,6 +37,9 @@ pub const INFINITY: f64 = 1e13;
 #[derive(Debug, Clone, Default)]
 pub struct GlyphData {
     pub gid: u16,
+    /// How far the glyph moves the pen; the font's advance unless tracking
+    /// changed it.
+    pub width: f64,
     pub x_advance: f64,
     pub y_advance: f64,
     pub x_offset: f64,

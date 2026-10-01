@@ -457,7 +457,7 @@ impl PdfOutputter {
             page.content
                 .set_text_matrix([1.0, 0.0, 0.0, 1.0, px as f32, py as f32]);
             page.content.show(Str(&glyph.gid.to_be_bytes()));
-            cur_x += glyph.x_advance;
+            cur_x += glyph.width;
         }
 
         page.content.end_text();
@@ -1253,11 +1253,13 @@ mod tests {
         let glyphs = vec![
             GlyphData {
                 gid: gid_h,
+                width: w_h,
                 x_advance: w_h,
                 ..Default::default()
             },
             GlyphData {
                 gid: gid_i,
+                width: w_i,
                 x_advance: w_i,
                 ..Default::default()
             },
@@ -1304,7 +1306,8 @@ mod tests {
             "A",
             vec![GlyphData {
                 gid,
-                x_advance: w,
+                width: w,
+                    x_advance: w,
                 ..Default::default()
             }],
             "body",
@@ -1377,6 +1380,7 @@ mod tests {
                 "X",
                 vec![GlyphData {
                     gid,
+                    width: w,
                     x_advance: w,
                     ..Default::default()
                 }],

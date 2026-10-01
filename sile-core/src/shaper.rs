@@ -137,10 +137,18 @@ impl Default for RustyBuzzShaper {
 impl Shaper for RustyBuzzShaper {
     fn shape(&self, text: &str, face: &FontFace, spec: &FontSpec) -> Vec<GlyphItem> {
         let (data, index) = face.raw_data();
-        let rb_face = match rustybuzz::Face::from_slice(data, index) {
+        let mut rb_face = match rustybuzz::Face::from_slice(data, index) {
             Some(f) => f,
             None => return vec![],
         };
+        let variations: Vec<rustybuzz::Variation> = face
+            .variations(spec)
+            .into_iter()
+            .map(|(tag, value)| rustybuzz::Variation { tag: rustybuzz::ttf_parser::Tag::from_bytes(&tag), value })
+            .collect();
+        if !variations.is_empty() {
+            rb_face.set_variations(&variations);
+        }
 
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);

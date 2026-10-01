@@ -90,6 +90,7 @@ struct TextRun {
     language: String,
     tokens: NodeMakerOptions,
     letter_space: Option<Length>,
+    tracking: Option<f64>,
 }
 
 /// Paragraph material in the order it was added: text still to be shaped,
@@ -150,6 +151,7 @@ impl RunningText {
                 language: language.to_string(),
                 tokens: NodeMakerOptions::for_language(language),
                 letter_space: None,
+                tracking: None,
             })
         }));
         line
@@ -248,6 +250,7 @@ pub struct Settings {
     obey_spaces: bool,
     fixed_nbsp: bool,
     letter_space: Option<Length>,
+    tracking: Option<f64>,
     linebreak_settings: LinebreakSettings,
 }
 
@@ -267,6 +270,7 @@ impl Default for Settings {
             obey_spaces: false,
             fixed_nbsp: false,
             letter_space: None,
+            tracking: None,
             linebreak_settings: LinebreakSettings::default(),
         }
     }
@@ -574,7 +578,17 @@ impl DocumentBuilder {
         self
     }
 
+    /// Scale every glyph's advance (SILE's `shaper.tracking`).
+    pub fn set_tracking(&mut self, tracking: Option<f64>) -> &mut Self {
+        self.settings.tracking = tracking;
+        self
+    }
+
     // -- Style ---------------------------------------------------------------
+
+    pub fn color(&self) -> Option<Color> {
+        self.settings.color
+    }
 
     pub fn set_color(&mut self, color: Color) -> &mut Self {
         self.settings.color = Some(color);
@@ -691,6 +705,7 @@ impl DocumentBuilder {
             language: self.settings.language.clone(),
             tokens,
             letter_space: self.settings.letter_space,
+            tracking: self.settings.tracking,
         }
     }
 
@@ -1597,8 +1612,7 @@ impl DocumentBuilder {
         let laid = self.lay_out()?;
         let mut trace = crate::trace::TraceCanvas::new(paper);
         for (name, entry) in &laid.fonts {
-            let family = entry.spec.family.clone().unwrap_or_default();
-            trace.register_font(name, family, &entry.spec);
+            trace.register_font(name, &entry.spec);
         }
         crate::render::draw_pages(&laid.pages, &mut trace);
         Ok(trace.finish())
@@ -1767,11 +1781,16 @@ impl DocumentBuilder {
         // inter-word kerning (critical for nastaliq scripts where words
         // overlap horizontally based on their vertical positions).
         let mut glyphs = self.shaper.shape(&run.text, &face, &spec);
+        let tracking = run.tracking.unwrap_or(1.0);
+        for g in &mut glyphs {
+            g.width *= tracking;
+        }
+        let space = || self.shaper.shape(" ", &face, &spec).iter().map(|g| g.width).sum::<f64>() * tracking;
         let rtl = spec.direction == Direction::RTL;
         if rtl {
             glyphs.reverse();
         }
-        let items: Vec<Item> = glyphs
+        let mut items: Vec<Item> = glyphs
             .iter()
             .enumerate()
             .map(|(i, g)| {
@@ -1780,48 +1799,59 @@ impl DocumentBuilder {
                 Item { text: run.text.get(start..end).unwrap_or(""), index: start }
             })
             .collect();
+        let mut colors = vec![run.color; glyphs.len()];
+        if face.has_color_layers() {
+            (glyphs, items, colors) = color_layers(&face, glyphs, items, run.color);
+        }
 
         let mut nodes = Vec::new();
-        for token in nodemaker::tokenize(&items, run.tokens) {
-            match token {
-                Token::Word(range) => {
-                    let text: String = items[range.clone()].iter().map(|i| i.text).collect();
-                    let mut word = glyphs[range].to_vec();
-                    if rtl {
-                        word.reverse();
+        let mut lo = 0;
+        while lo < glyphs.len() {
+            let color = colors[lo];
+            let hi = (lo..glyphs.len()).find(|&i| colors[i] != color).unwrap_or(glyphs.len());
+            for token in nodemaker::tokenize(&items[lo..hi], run.tokens) {
+                match token {
+                    Token::Word(range) => {
+                        let range = range.start + lo..range.end + lo;
+                        let text: String = items[range.clone()].iter().map(|i| i.text).collect();
+                        let mut word = glyphs[range].to_vec();
+                        if rtl {
+                            word.reverse();
+                        }
+                        let mut nnode = self.build_nnode(&text, &word, &run.font_name, &spec, color);
+                        nnode.language = run.language.clone();
+                        nodes.push(Node::NNode(nnode));
                     }
-                    let mut nnode = self.build_nnode(&text, &word, &run.font_name, &spec, run.color);
-                    nnode.language = run.language.clone();
-                    nodes.push(Node::NNode(nnode));
-                }
-                Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.space(glyphs[i].x_advance))),
-                Token::NonBreakingSpace => {
-                    let width = self.shaper.shape(" ", &face, &spec).iter().map(|g| g.x_advance).sum();
-                    nodes.push(Node::kern(self.settings.space_settings.space(width)));
-                }
-                Token::Penalty(p) => nodes.push(Node::penalty(p)),
-                Token::RepeatedHyphen => {
-                    let hyphen = self.shaper.shape("-", &face, &spec);
-                    let mut nnode = self.build_nnode("-", &hyphen, &run.font_name, &spec, run.color);
-                    nnode.language = run.language.clone();
-                    nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
-                }
-                Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
-                Token::PunctSpace(kind) => {
-                    let spc: f64 = self.shaper.shape(" ", &face, &spec).iter().map(|g| g.x_advance).sum();
-                    let s = self.settings.space_settings;
-                    let (w, stretch, shrink) = match kind {
-                        PunctSpace::Thin => (0.5 * s.enlargement_factor, 0.0, 0.0),
-                        PunctSpace::Colon => (s.enlargement_factor, s.stretch_factor, s.shrink_factor),
-                        PunctSpace::Guillemet => (0.8 * s.enlargement_factor, 0.3 * s.stretch_factor, 0.8 * s.shrink_factor),
-                    };
-                    nodes.push(Node::kern(Length::new(
-                        Measurement::pt(w * spc),
-                        Measurement::pt(stretch * spc),
-                        Measurement::pt(shrink * spc),
-                    )));
+                    Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.space(glyphs[i + lo].width))),
+                    Token::NonBreakingSpace => {
+                        let width = space();
+                        nodes.push(Node::kern(self.settings.space_settings.space(width)));
+                    }
+                    Token::Penalty(p) => nodes.push(Node::penalty(p)),
+                    Token::RepeatedHyphen => {
+                        let hyphen = self.shaper.shape("-", &face, &spec);
+                        let mut nnode = self.build_nnode("-", &hyphen, &run.font_name, &spec, color);
+                        nnode.language = run.language.clone();
+                        nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
+                    }
+                    Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
+                    Token::PunctSpace(kind) => {
+                        let spc = space();
+                        let s = self.settings.space_settings;
+                        let (w, stretch, shrink) = match kind {
+                            PunctSpace::Thin => (0.5 * s.enlargement_factor, 0.0, 0.0),
+                            PunctSpace::Colon => (s.enlargement_factor, s.stretch_factor, s.shrink_factor),
+                            PunctSpace::Guillemet => (0.8 * s.enlargement_factor, 0.3 * s.stretch_factor, 0.8 * s.shrink_factor),
+                        };
+                        nodes.push(Node::kern(Length::new(
+                            Measurement::pt(w * spc),
+                            Measurement::pt(stretch * spc),
+                            Measurement::pt(shrink * spc),
+                        )));
+                    }
                 }
             }
+            lo = hi;
         }
         Ok(nodes)
     }
@@ -1873,6 +1903,7 @@ impl DocumentBuilder {
             language: like.language.clone(),
             tokens: NodeMakerOptions::for_language(&like.language),
             letter_space: None,
+            tracking: None,
         };
         self.shape_run(&run).unwrap_or_default()
     }
@@ -1891,11 +1922,12 @@ impl DocumentBuilder {
         let mut glyph_data = Vec::with_capacity(glyphs.len());
 
         for g in glyphs {
-            width += g.x_advance;
+            width += g.width;
             height = height.max(g.height);
             depth = depth.max(g.depth);
             glyph_data.push(GlyphData {
                 gid: g.gid,
+                width: g.width,
                 x_advance: g.x_advance,
                 y_advance: g.y_advance,
                 x_offset: g.x_offset,
@@ -2272,6 +2304,39 @@ fn split_words(text: &str) -> Vec<&str> {
 /// What a hyphenation point after `segments[j]` sets before the break, and
 /// what it sets when the word stays whole, adjusting the segments for
 /// languages whose spelling changes at a break (SILE's `hyphenateSegments`).
+/// Replace each glyph the font draws in coloured layers with one glyph
+/// per layer, the last carrying the advance and text (SILE's
+/// `harfbuzzWithColor` shaper).
+fn color_layers<'t>(
+    face: &FontFace,
+    glyphs: Vec<GlyphItem>,
+    items: Vec<Item<'t>>,
+    color: Option<Color>,
+) -> (Vec<GlyphItem>, Vec<Item<'t>>, Vec<Option<Color>>) {
+    let mut out = (Vec::new(), Vec::new(), Vec::new());
+    for (g, item) in glyphs.into_iter().zip(items) {
+        let Some(layers) = face.color_layers(g.gid) else {
+            out.0.push(g);
+            out.1.push(item);
+            out.2.push(color);
+            continue;
+        };
+        let last = layers.len().saturating_sub(1);
+        for (j, (gid, layer_color)) in layers.into_iter().enumerate() {
+            let top = j == last;
+            out.0.push(GlyphItem {
+                gid,
+                width: if top { g.width } else { 0.0 },
+                height: if top { g.height } else { 0.0 },
+                ..g.clone()
+            });
+            out.1.push(Item { text: if top { item.text } else { "" }, index: item.index });
+            out.2.push(layer_color.or(color));
+        }
+    }
+    out
+}
+
 fn hyphenation_point(lang: &str, segments: &mut [String], j: usize) -> (String, Option<String>) {
     let base = lang.split(['-', '_']).next().unwrap_or(lang);
     match base {
@@ -2412,6 +2477,18 @@ mod tests {
         doc.add_text("A").start_leaders(None).add_text(".").end_hbox().add_text("B");
         let trace = doc.render_debug().unwrap();
         assert!(trace.matches("\t(.)\n").count() > 10, "{trace}");
+    }
+
+    #[test]
+    fn tracking_scales_advances_but_not_glyph_advances() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.add_text("road");
+        let plain = doc.render_debug().unwrap();
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.set_tracking(Some(1.5)).add_text("road");
+        let tracked = doc.render_debug().unwrap();
+        assert!(plain.contains(" w="), "{plain}");
+        assert!(tracked.contains(" a="), "{tracked}");
     }
 
     #[test]
