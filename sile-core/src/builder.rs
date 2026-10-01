@@ -9,6 +9,7 @@ use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
 use crate::node::{self, GlyphData, NNode, Node, VBox};
+use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
 use crate::pagebuilder::{PageBreakSettings, PageBuilder};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
@@ -80,6 +81,9 @@ struct TextRun {
     text: String,
     font_name: String,
     color: Option<Color>,
+    language: String,
+    tokens: NodeMakerOptions,
+    letter_space: Option<Length>,
 }
 
 /// Paragraph material in the order it was added: text still to be shaped,
@@ -116,7 +120,7 @@ impl RunningText {
         }
     }
 
-    fn resolved(&self, page: usize, pages: usize) -> Vec<Inline> {
+    fn resolved(&self, page: usize, pages: usize, language: &str) -> Vec<Inline> {
         let mut line = vec![Inline::Node(Box::new(Node::zerohbox())), Inline::Node(Box::new(Node::glue(Length::zero())))];
         line.extend(self.runs.iter().map(|(font, text)| {
             Inline::Text(TextRun {
@@ -125,6 +129,9 @@ impl RunningText {
                     .replace("{pages}", &pages.to_string()),
                 font_name: font.clone(),
                 color: self.color,
+                language: language.to_string(),
+                tokens: NodeMakerOptions::for_language(language),
+                letter_space: None,
             })
         }));
         line
@@ -236,6 +243,9 @@ pub struct DocumentBuilder {
     baseline_skip: Option<BaselineSkip>,
     previous_depth: Option<f64>,
     space_settings: SpaceSettings,
+    obey_spaces: bool,
+    fixed_nbsp: bool,
+    letter_space: Option<Length>,
 
     // Settings
     linebreak_settings: LinebreakSettings,
@@ -280,6 +290,9 @@ impl DocumentBuilder {
             baseline_skip: None,
             previous_depth: None,
             space_settings: SpaceSettings::default(),
+            obey_spaces: false,
+            fixed_nbsp: false,
+            letter_space: None,
             linebreak_settings: LinebreakSettings::default(),
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
@@ -390,6 +403,24 @@ impl DocumentBuilder {
         self
     }
 
+    /// Keep every space as its own glue, including leading ones.
+    pub fn set_obey_spaces(&mut self, obey: bool) -> &mut Self {
+        self.obey_spaces = obey;
+        self
+    }
+
+    /// Treat U+00A0 as an ordinary glyph rather than a space-wide kern.
+    pub fn set_fixed_nbsp(&mut self, fixed: bool) -> &mut Self {
+        self.fixed_nbsp = fixed;
+        self
+    }
+
+    /// Space added between every pair of characters.
+    pub fn set_letter_space(&mut self, space: Option<Length>) -> &mut Self {
+        self.letter_space = space;
+        self
+    }
+
     // -- Style ---------------------------------------------------------------
 
     pub fn set_color(&mut self, color: Color) -> &mut Self {
@@ -472,17 +503,26 @@ impl DocumentBuilder {
     /// Add text to the current paragraph, starting one if needed. Leading
     /// whitespace at the start of a paragraph or box is dropped.
     pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
-        let mut text = text.into();
-        if self.current_list().is_empty() {
+        let mut text = text.into().replace("\r\n", " ").replace(['\n', '\t'], " ");
+        if self.current_list().is_empty() && !self.obey_spaces {
             text = text.trim_start().to_string();
             if text.is_empty() {
                 return self;
             }
         }
+        let tokens = NodeMakerOptions {
+            obey_spaces: self.obey_spaces,
+            fixed_nbsp: self.fixed_nbsp,
+            letterspace: self.letter_space.is_some(),
+            ..NodeMakerOptions::for_language(&self.language)
+        };
         let run = TextRun {
             text,
             font_name: self.current_font.clone().unwrap_or_default(),
             color: self.current_color,
+            language: self.language.clone(),
+            tokens,
+            letter_space: self.letter_space,
         };
         self.push_inline(Inline::Text(run));
         self
@@ -726,7 +766,7 @@ impl DocumentBuilder {
             };
             let hsize = layout.frame(frame_id).width();
             for page in pages.iter_mut() {
-                let line = running.resolved(page.number, total);
+                let line = running.resolved(page.number, total, &self.language);
                 let skips = LineSkips::default().aligned(running.align);
                 let nodes = self.typeset_inlines(&line, hsize, running.direction, skips, &mut None)?;
                 page.add_frame_content(frame_id, nodes);
@@ -788,14 +828,7 @@ impl DocumentBuilder {
         // linebreaking and line building. The linebreaker's internal hyphenation
         // pass modifies its own copy of the node list, making break positions
         // incompatible with the original. By pre-hyphenating we avoid that.
-        let mut hyph_shaper = shaper::default_shaper();
-        let h_nodes = hyphenate_nodes(
-            &h_nodes,
-            &self.language,
-            &mut self.hyphenation,
-            hyph_shaper.as_mut(),
-            &self.fonts,
-        );
+        let h_nodes = self.hyphenate(h_nodes);
 
         let mut lb_settings = self.linebreak_settings.clone();
         lb_settings.left_skip = skips.left;
@@ -826,8 +859,9 @@ impl DocumentBuilder {
         Ok(h_nodes)
     }
 
-    /// Shape one run into word nodes separated by space glue.
-    fn shape_run(&mut self, run: &TextRun) -> Result<Vec<Node>, BuilderError> {
+    /// Shape one run and cut it into words, spaces and break penalties
+    /// (SILE's unicode node maker).
+    fn shape_run(&self, run: &TextRun) -> Result<Vec<Node>, BuilderError> {
         let font_entry = self
             .fonts
             .get(&run.font_name)
@@ -838,49 +872,121 @@ impl DocumentBuilder {
         // Shape the entire run at once so the shaping engine can apply
         // inter-word kerning (critical for nastaliq scripts where words
         // overlap horizontally based on their vertical positions).
-        let all_glyphs = self.shaper.shape(&run.text, &face, &spec);
-        let is_space_at = |cluster: u32| {
-            run.text
-                .get(cluster as usize..)
-                .and_then(|s| s.chars().next())
-                .is_some_and(char::is_whitespace)
-        };
+        let mut glyphs = self.shaper.shape(&run.text, &face, &spec);
+        let rtl = spec.direction == Direction::RTL;
+        if rtl {
+            glyphs.reverse();
+        }
+        let items: Vec<Item> = glyphs
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let start = g.cluster as usize;
+                let end = glyphs.get(i + 1).map_or(run.text.len(), |n| n.cluster as usize);
+                Item { text: run.text.get(start..end).unwrap_or(""), index: start }
+            })
+            .collect();
 
-        let mut segments: Vec<Node> = Vec::new();
-        let mut gi = 0;
-        while gi < all_glyphs.len() {
-            let is_space = is_space_at(all_glyphs[gi].cluster);
-            let seg_start = gi;
-            gi += 1;
-            while gi < all_glyphs.len() && is_space_at(all_glyphs[gi].cluster) == is_space {
-                gi += 1;
+        let mut nodes = Vec::new();
+        for token in nodemaker::tokenize(&items, run.tokens) {
+            match token {
+                Token::Word(range) => {
+                    let text: String = items[range.clone()].iter().map(|i| i.text).collect();
+                    let mut word = glyphs[range].to_vec();
+                    if rtl {
+                        word.reverse();
+                    }
+                    let mut nnode = self.build_nnode(&text, &word, &run.font_name, &spec, run.color);
+                    nnode.language = run.language.clone();
+                    nodes.push(Node::NNode(nnode));
+                }
+                Token::Space(i) => nodes.push(Node::glue(self.space_settings.space(glyphs[i].x_advance))),
+                Token::NonBreakingSpace => {
+                    let width = self.shaper.shape(" ", &face, &spec).iter().map(|g| g.x_advance).sum();
+                    nodes.push(Node::kern(self.space_settings.space(width)));
+                }
+                Token::Penalty(p) => nodes.push(Node::penalty(p)),
+                Token::RepeatedHyphen => {
+                    let hyphen = self.shaper.shape("-", &face, &spec);
+                    let mut nnode = self.build_nnode("-", &hyphen, &run.font_name, &spec, run.color);
+                    nnode.language = run.language.clone();
+                    nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
+                }
+                Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
+                Token::PunctSpace(kind) => {
+                    let spc: f64 = self.shaper.shape(" ", &face, &spec).iter().map(|g| g.x_advance).sum();
+                    let s = self.space_settings;
+                    let (w, stretch, shrink) = match kind {
+                        PunctSpace::Thin => (0.5 * s.enlargement_factor, 0.0, 0.0),
+                        PunctSpace::Colon => (s.enlargement_factor, s.stretch_factor, s.shrink_factor),
+                        PunctSpace::Guillemet => (0.8 * s.enlargement_factor, 0.3 * s.stretch_factor, 0.8 * s.shrink_factor),
+                    };
+                    nodes.push(Node::kern(Length::new(
+                        Measurement::pt(w * spc),
+                        Measurement::pt(stretch * spc),
+                        Measurement::pt(shrink * spc),
+                    )));
+                }
             }
-            let seg_glyphs = &all_glyphs[seg_start..gi];
+        }
+        Ok(nodes)
+    }
 
-            if is_space {
-                let base: f64 = seg_glyphs.iter().map(|g| g.x_advance).sum();
-                let s = self.space_settings;
-                let (w, stretch, shrink) =
-                    (base * s.enlargement_factor, base * s.stretch_factor, base * s.shrink_factor);
-                segments.push(Node::glue(Length::new(
-                    Measurement::pt(w),
-                    Measurement::pt(stretch),
-                    Measurement::pt(shrink),
-                )));
+    /// Split words at their hyphenation points, with a discretionary at
+    /// each (SILE's `hyphenate`).
+    fn hyphenate(&mut self, nodes: Vec<Node>) -> Vec<Node> {
+        let mut out = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let Node::NNode(word) = &node else {
+                out.push(node);
+                continue;
+            };
+            let lang = if word.language.is_empty() { self.language.clone() } else { word.language.clone() };
+            let mut segments = if word.text.chars().count() < self.hyphenation.min_word
+                || !word.text.chars().any(char::is_alphabetic)
+            {
+                Vec::new()
             } else {
-                let word = text_from_clusters(&run.text, seg_glyphs);
-                let nnode = self.build_nnode(&word, seg_glyphs, &run.font_name, &spec, run.color);
-                segments.push(Node::NNode(nnode));
+                self.hyphenation.hyphenate_word(&word.text, &lang)
+            };
+            if segments.len() <= 1 || !self.fonts.contains_key(&word.font_key) {
+                out.push(node);
+                continue;
             }
+            let mut pieces = Vec::new();
+            let mut syllables = 0;
+            for j in 0..segments.len() {
+                let point = (j + 1 < segments.len()).then(|| hyphenation_point(&lang, &mut segments, j));
+                let nnodes: Vec<Node> = self.text_nodes(&segments[j], word).into_iter().filter(Node::is_nnode).collect();
+                syllables += nnodes.len();
+                pieces.extend(nnodes);
+                if let Some((prebreak, replacement)) = point {
+                    let replacement = replacement.map(|r| self.text_nodes(&r, word)).unwrap_or_default();
+                    pieces.push(Node::discretionary(self.text_nodes(&prebreak, word), vec![], replacement));
+                }
+            }
+            let parent = Arc::new(node::HyphenatedWord { word: word.clone(), syllables });
+            for piece in &mut pieces {
+                if let Node::NNode(n) = piece {
+                    n.parent = Some(Arc::clone(&parent));
+                }
+            }
+            out.extend(pieces);
         }
+        out
+    }
 
-        // For RTL runs the shaper returns glyphs in visual order
-        // (left-to-right); reverse to logical order so the linebreaker
-        // and build_lines (which reverses again) work consistently.
-        if spec.direction == Direction::RTL {
-            segments.reverse();
-        }
-        Ok(segments)
+    /// Shape a short text in the style of `like` (SILE's `createNnodes`).
+    fn text_nodes(&self, text: &str, like: &NNode) -> Vec<Node> {
+        let run = TextRun {
+            text: text.to_string(),
+            font_name: like.font_key.clone(),
+            color: like.color,
+            language: like.language.clone(),
+            tokens: NodeMakerOptions::for_language(&like.language),
+            letter_space: None,
+        };
+        self.shape_run(&run).unwrap_or_default()
     }
 
     fn build_nnode(
@@ -1129,18 +1235,6 @@ fn line_ratio(width: f64, line: &[Node], margins: Length) -> f64 {
     (left / flex).max(-1.0)
 }
 
-fn text_from_clusters(text: &str, glyphs: &[GlyphItem]) -> String {
-    if glyphs.is_empty() {
-        return String::new();
-    }
-    let min = glyphs.iter().map(|g| g.cluster as usize).min().unwrap();
-    let max = glyphs.iter().map(|g| g.cluster as usize).max().unwrap();
-    let end = text.get(max..)
-        .and_then(|s| s.char_indices().nth(1).map(|(i, _)| max + i))
-        .unwrap_or(text.len());
-    text.get(min..end).unwrap_or("").to_string()
-}
-
 // ---------------------------------------------------------------------------
 // Word splitting
 // ---------------------------------------------------------------------------
@@ -1174,126 +1268,33 @@ fn split_words(text: &str) -> Vec<&str> {
     words
 }
 
-// ---------------------------------------------------------------------------
-// Hyphenation callback
-// ---------------------------------------------------------------------------
-
-fn hyphenate_nodes(
-    nodes: &[Node],
-    lang: &str,
-    dict: &mut HyphenationDictionary,
-    shaper: &dyn Shaper,
-    fonts: &std::collections::BTreeMap<String, RegisteredFont>,
-) -> Vec<Node> {
-    let mut result = Vec::with_capacity(nodes.len());
-
-    for node in nodes {
-        if let Node::NNode(nnode) = node {
-            let word = &nnode.text;
-            if word.chars().count() < dict.min_word
-                || !word.chars().all(|c| c.is_alphabetic()) {
-                result.push(node.clone());
-                continue;
-            }
-
-            let segments = dict.hyphenate_word(word, lang);
-            if segments.len() <= 1 {
-                result.push(node.clone());
-                continue;
-            }
-
-            // Build discretionary break points between syllables
-            let font_entry = match fonts.get(&nnode.font_key) {
-                Some(e) => e,
-                None => {
-                    result.push(node.clone());
-                    continue;
-                }
-            };
-
-            let parent = Arc::new(node::HyphenatedWord { word: nnode.clone(), syllables: segments.len() });
-            for (i, segment) in segments.iter().enumerate() {
-                // Shape this segment
-                let glyphs = shaper.shape(segment, &font_entry.face, &font_entry.spec);
-                let mut seg_width = 0.0;
-                let mut seg_height = 0.0_f64;
-                let mut seg_depth = 0.0_f64;
-                let mut glyph_data = Vec::with_capacity(glyphs.len());
-
-                for g in &glyphs {
-                    seg_width += g.x_advance;
-                    seg_height = seg_height.max(g.height);
-                    seg_depth = seg_depth.max(g.depth);
-                    glyph_data.push(GlyphData {
-                        gid: g.gid,
-                        x_advance: g.x_advance,
-                        y_advance: g.y_advance,
-                        x_offset: g.x_offset,
-                        y_offset: g.y_offset,
-                        text: g.text.clone(),
-                    });
-                }
-
-                let mut seg_nnode = NNode::with_glyphs(
-                    segment,
-                    glyph_data,
-                    &nnode.font_key,
-                    nnode.font_size,
-                    seg_width,
-                    seg_height,
-                    seg_depth,
-                );
-                seg_nnode.color = nnode.color;
-                seg_nnode.language = nnode.language.clone();
-                seg_nnode.parent = Some(Arc::clone(&parent));
-
-                result.push(Node::NNode(seg_nnode));
-
-                // Insert discretionary break between segments (not after last)
-                if i < segments.len() - 1 {
-                    // Shape a hyphen for the prebreak
-                    let hyphen_glyphs = shaper.shape("-", &font_entry.face, &font_entry.spec);
-                    let mut hw = 0.0;
-                    let mut hh = 0.0_f64;
-                    let mut hd = 0.0_f64;
-                    let mut hglyph_data = Vec::new();
-                    for g in &hyphen_glyphs {
-                        hw += g.x_advance;
-                        hh = hh.max(g.height);
-                        hd = hd.max(g.depth);
-                        hglyph_data.push(GlyphData {
-                            gid: g.gid,
-                            x_advance: g.x_advance,
-                            y_advance: g.y_advance,
-                            x_offset: g.x_offset,
-                            y_offset: g.y_offset,
-                            text: g.text.clone(),
-                        });
-                    }
-
-                    let hyphen_nnode = NNode::with_glyphs(
-                        "-",
-                        hglyph_data,
-                        &nnode.font_key,
-                        nnode.font_size,
-                        hw,
-                        hh,
-                        hd,
-                    );
-
-                    result.push(Node::discretionary(
-                        vec![Node::NNode(hyphen_nnode)],
-                        vec![],
-                        vec![],
-                    ));
+/// What a hyphenation point after `segments[j]` sets before the break, and
+/// what it sets when the word stays whole, adjusting the segments for
+/// languages whose spelling changes at a break (SILE's `hyphenateSegments`).
+fn hyphenation_point(lang: &str, segments: &mut [String], j: usize) -> (String, Option<String>) {
+    let base = lang.split(['-', '_']).next().unwrap_or(lang);
+    match base {
+        // Catalan punt volat: "l·l" breaks as "l-" / "l".
+        "ca" => {
+            for (ending, cut, hyphen) in [("ŀ", "ŀ", "l-"), ("Ŀ", "Ŀ", "L-"), ("l·", "l·", "l-"), ("L·", "L·", "L-")] {
+                if let Some(stem) = segments[j].strip_suffix(ending) {
+                    segments[j] = stem.to_string();
+                    return (hyphen.to_string(), Some(cut.to_string()));
                 }
             }
-        } else {
-            result.push(node.clone());
         }
+        // Turkish: a break at an apostrophe keeps the apostrophe, no hyphen.
+        "tr" => {
+            if let Some(next) = segments.get(j + 1)
+                && let Some(apostrophe) = next.chars().next().filter(|c| matches!(c, '\'' | '’'))
+            {
+                segments[j + 1] = next[apostrophe.len_utf8()..].to_string();
+                return (apostrophe.to_string(), Some(apostrophe.to_string()));
+            }
+        }
+        _ => {}
     }
-
-    result
+    ("-".to_string(), None)
 }
 
 // ===========================================================================

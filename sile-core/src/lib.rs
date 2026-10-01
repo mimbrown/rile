@@ -7,6 +7,7 @@ pub mod length;
 pub mod linebreak;
 pub mod measurement;
 pub mod node;
+pub mod nodemaker;
 pub mod pagebuilder;
 pub mod pdf;
 pub mod render;

@@ -59,6 +59,17 @@ impl Default for SpaceSettings {
     }
 }
 
+impl SpaceSettings {
+    /// Glue for a space glyph of advance `width` (SILE's `shapespace`).
+    pub fn space(&self, width: f64) -> crate::length::Length {
+        crate::length::Length::new(
+            crate::measurement::Measurement::pt(width * self.enlargement_factor),
+            crate::measurement::Measurement::pt(width * self.stretch_factor),
+            crate::measurement::Measurement::pt(width * self.shrink_factor),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shaper trait
 // ---------------------------------------------------------------------------

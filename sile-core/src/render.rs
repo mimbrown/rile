@@ -51,16 +51,17 @@ fn draw_hlist(nodes: &[Node], mut x: f64, baseline_y: f64, ratio: f64, canvas: &
                 canvas.glyphs(nnode, x, baseline_y);
                 x += pt(&nnode.width.length);
             }
-            Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
-                let (stretch, shrink) = (pt(&g.width.stretch), pt(&g.width.shrink));
-                x += pt(&g.width.length);
+            Node::Glue(_) | Node::HFillGlue(_) | Node::HssGlue(_) | Node::Kern(_) => {
+                let width = node.width();
+                let (stretch, shrink) = (pt(&width.stretch), pt(&width.shrink));
+                x += pt(&width.length);
                 if ratio > 0.0 && stretch > 0.0 {
                     x += stretch * ratio;
                 } else if ratio < 0.0 && shrink > 0.0 {
                     x += shrink * ratio;
                 }
             }
-            Node::Kern(k) => x += pt(&k.width.length),
+            Node::Discretionary(d) => x = draw_hlist(&d.replacement, x, baseline_y, ratio, canvas),
             Node::HBox(hbox) => {
                 draw_hlist(&hbox.nodes, x, baseline_y, 0.0, canvas);
                 x += pt(&hbox.width.length);
