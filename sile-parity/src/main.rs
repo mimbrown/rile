@@ -143,6 +143,7 @@ fn run_one(name: &str, dir: &std::path::Path, corpus: &Corpus) -> TestResult {
     corpus.fonts.fill_advances(&mut expected);
     let outcome = match source(dir, name) {
         Err(missing) => Outcome::Unsupported(vec![missing]),
+        Ok((src, _)) if src.contains("KNOWNBAD") => Outcome::Unsupported(vec!["KNOWNBAD upstream".into()]),
         Ok((src, format)) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             driver::run(name, &src, format, corpus)
         })) {
