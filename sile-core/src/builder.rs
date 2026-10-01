@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::color::Color;
 use crate::counter::MultilevelCounter;
-use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec};
+use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
 use crate::framespec::{self, FrameGeometry, FrameSpec};
@@ -91,6 +91,8 @@ struct TextRun {
     tokens: NodeMakerOptions,
     letter_space: Option<Length>,
     tracking: Option<f64>,
+    /// Fonts tried in turn for characters the font lacks.
+    fallbacks: Vec<String>,
 }
 
 /// Paragraph material in the order it was added: text still to be shaped,
@@ -152,6 +154,7 @@ impl RunningText {
                 tokens: NodeMakerOptions::for_language(language),
                 letter_space: None,
                 tracking: None,
+                fallbacks: Vec::new(),
             })
         }));
         line
@@ -178,6 +181,44 @@ impl BaselineSkip {
         } else {
             Node::vglue(Length::pt(self.lineskip))
         }
+    }
+}
+
+/// A font to fall back on, as changes to the current font.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FontFallback {
+    pub family: Option<String>,
+    pub filename: Option<String>,
+    /// Absolute, or relative to the current font (`em`, `en`).
+    pub size: Option<Measurement>,
+    pub weight: Option<FontWeight>,
+    pub style: Option<FontStyle>,
+    pub features: Option<String>,
+}
+
+impl FontFallback {
+    fn apply(&self, current: &FontSpec) -> FontSpec {
+        let mut spec = current.clone();
+        if let Some(family) = &self.family {
+            spec.family = Some(family.clone());
+            spec.filename = None;
+        }
+        if let Some(filename) = &self.filename {
+            spec.filename = Some(filename.clone());
+        }
+        if let Some(size) = self.size {
+            spec.size = pt_of(&resolve_em(Length::new(size, Measurement::pt(0.0), Measurement::pt(0.0)), current.size));
+        }
+        if let Some(weight) = self.weight {
+            spec.weight = weight;
+        }
+        if let Some(style) = self.style {
+            spec.style = style;
+        }
+        if let Some(features) = &self.features {
+            spec.features = features.clone();
+        }
+        spec
     }
 }
 
@@ -285,6 +326,9 @@ pub struct Settings {
     fixed_nbsp: bool,
     letter_space: Option<Length>,
     tracking: Option<f64>,
+    fallbacks: Vec<FontFallback>,
+    /// The fallbacks applied to the current font, as registered fonts.
+    fallback_fonts: Vec<String>,
     linebreak_settings: LinebreakSettings,
 }
 
@@ -306,6 +350,8 @@ impl Default for Settings {
             fixed_nbsp: false,
             letter_space: None,
             tracking: None,
+            fallbacks: Vec::new(),
+            fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
         }
     }
@@ -546,6 +592,46 @@ impl DocumentBuilder {
     /// Switch to the font `spec` describes, from the fonts already
     /// registered or else the font database (SILE's `\font`).
     pub fn set_font_spec(&mut self, spec: FontSpec) -> Result<&mut Self, BuilderError> {
+        let key = self.register_font_spec(spec)?;
+        self.settings.font = Some(key);
+        self.refresh_fallbacks()?;
+        Ok(self)
+    }
+
+    /// Fall back on the current font changed by `fallback` for characters
+    /// the fonts so far lack (SILE's `\font:add-fallback`).
+    pub fn add_font_fallback(&mut self, fallback: FontFallback) -> Result<&mut Self, BuilderError> {
+        self.settings.fallbacks.push(fallback);
+        self.refresh_fallbacks()?;
+        Ok(self)
+    }
+
+    /// Drop the last fallback added (SILE's `\font:remove-fallback`).
+    pub fn remove_font_fallback(&mut self) -> &mut Self {
+        self.settings.fallbacks.pop();
+        self.settings.fallback_fonts.pop();
+        self
+    }
+
+    pub fn clear_font_fallbacks(&mut self) -> &mut Self {
+        self.settings.fallbacks.clear();
+        self.settings.fallback_fonts.clear();
+        self
+    }
+
+    fn refresh_fallbacks(&mut self) -> Result<(), BuilderError> {
+        let Some(current) = self.font_spec().cloned() else {
+            return Ok(());
+        };
+        let fallbacks = self.settings.fallbacks.clone();
+        self.settings.fallback_fonts = fallbacks
+            .iter()
+            .map(|f| self.register_font_spec(f.apply(&current)))
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
+    fn register_font_spec(&mut self, spec: FontSpec) -> Result<String, BuilderError> {
         let key = spec.cache_key();
         if !self.fonts.contains_key(&key) {
             let same_face = |f: &&RegisteredFont| {
@@ -560,8 +646,7 @@ impl DocumentBuilder {
             };
             self.fonts.insert(key.clone(), RegisteredFont { spec, face });
         }
-        self.settings.font = Some(key);
-        Ok(self)
+        Ok(key)
     }
 
     /// Change some aspects of the current font.
@@ -775,6 +860,7 @@ impl DocumentBuilder {
             tokens,
             letter_space: self.settings.letter_space,
             tracking: self.settings.tracking,
+            fallbacks: self.settings.fallback_fonts.clone(),
         }
     }
 
@@ -1898,45 +1984,30 @@ impl DocumentBuilder {
     /// Shape one run and cut it into words, spaces and break penalties
     /// (SILE's unicode node maker).
     fn shape_run(&self, run: &TextRun) -> Result<Vec<Node>, BuilderError> {
-        let font_entry = self
-            .fonts
-            .get(&run.font_name)
-            .ok_or_else(|| BuilderError::NoFont(run.font_name.clone()))?;
-        let face = Arc::clone(&font_entry.face);
-        let spec = font_entry.spec.clone();
-
-        // Shape the entire run at once so the shaping engine can apply
-        // inter-word kerning (critical for nastaliq scripts where words
-        // overlap horizontally based on their vertical positions).
-        let mut glyphs = self.shaper.shape(&run.text, &face, &spec);
+        let fonts = std::iter::once(&run.font_name)
+            .chain(&run.fallbacks)
+            .map(|name| self.fonts.get(name).map(|f| (name.as_str(), f)).ok_or_else(|| BuilderError::NoFont(name.clone())))
+            .collect::<Result<Vec<_>, _>>()?;
         let tracking = run.tracking.unwrap_or(1.0);
-        for g in &mut glyphs {
-            g.width *= tracking;
+        let mut shaped = self.shape_with_fallbacks(&run.text, &fonts, run.color);
+        for s in &mut shaped {
+            s.glyph.width *= tracking;
         }
-        let space = || self.shaper.shape(" ", &face, &spec).iter().map(|g| g.width).sum::<f64>() * tracking;
-        let rtl = spec.direction == Direction::RTL;
-        if rtl {
-            glyphs.reverse();
+        if fonts.iter().any(|(_, f)| f.face.has_color_layers()) {
+            shaped = shaped.into_iter().flat_map(|s| color_layers(&fonts[s.font].1.face, s)).collect();
         }
-        let mut items: Vec<Item> = glyphs
-            .iter()
-            .enumerate()
-            .map(|(i, g)| {
-                let start = g.cluster as usize;
-                let end = glyphs.get(i + 1).map_or(run.text.len(), |n| n.cluster as usize);
-                Item { text: run.text.get(start..end).unwrap_or(""), index: start }
-            })
-            .collect();
-        let mut colors = vec![run.color; glyphs.len()];
-        if face.has_color_layers() {
-            (glyphs, items, colors) = color_layers(&face, glyphs, items, run.color);
-        }
+        let glyphs: Vec<GlyphItem> = shaped.iter().map(|s| s.glyph.clone()).collect();
+        let items: Vec<Item> = shaped.iter().map(|s| s.item).collect();
 
         let mut nodes = Vec::new();
         let mut lo = 0;
-        while lo < glyphs.len() {
-            let color = colors[lo];
-            let hi = (lo..glyphs.len()).find(|&i| colors[i] != color).unwrap_or(glyphs.len());
+        while lo < shaped.len() {
+            let (font, color) = (shaped[lo].font, shaped[lo].color);
+            let hi = (lo..shaped.len()).find(|&i| (shaped[i].font, shaped[i].color) != (font, color)).unwrap_or(shaped.len());
+            let (font_name, entry) = fonts[font];
+            let (face, spec) = (&entry.face, &entry.spec);
+            let rtl = spec.direction == Direction::RTL;
+            let space = || self.shaper.shape(" ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
             for token in nodemaker::tokenize(&items[lo..hi], run.tokens) {
                 match token {
                     Token::Word(range) => {
@@ -1946,7 +2017,7 @@ impl DocumentBuilder {
                         if rtl {
                             word.reverse();
                         }
-                        let mut nnode = self.build_nnode(&text, &word, &run.font_name, &spec, color);
+                        let mut nnode = self.build_nnode(&text, &word, font_name, spec, color);
                         nnode.language = run.language.clone();
                         nodes.push(Node::NNode(nnode));
                     }
@@ -1954,8 +2025,8 @@ impl DocumentBuilder {
                     Token::NonBreakingSpace => nodes.push(Node::kern(self.settings.space_settings.measured(space))),
                     Token::Penalty(p) => nodes.push(Node::penalty(p)),
                     Token::RepeatedHyphen => {
-                        let hyphen = self.shaper.shape("-", &face, &spec);
-                        let mut nnode = self.build_nnode("-", &hyphen, &run.font_name, &spec, color);
+                        let hyphen = self.shaper.shape("-", face, spec);
+                        let mut nnode = self.build_nnode("-", &hyphen, font_name, spec, color);
                         nnode.language = run.language.clone();
                         nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
                     }
@@ -1979,6 +2050,60 @@ impl DocumentBuilder {
             lo = hi;
         }
         Ok(nodes)
+    }
+
+    /// Shape `text` in the first font, reshaping what it has no glyphs for
+    /// in the next, in logical order (SILE's fallback shaper). Like SILE,
+    /// the n-th stretch to be shaped falls back to the font after the n-th.
+    fn shape_with_fallbacks<'t>(&self, text: &'t str, fonts: &[(&str, &RegisteredFont)], color: Option<Color>) -> Vec<Shaped<'t>> {
+        struct Pending {
+            font: usize,
+            offset: usize,
+            start: usize,
+            stop: usize,
+        }
+        let mut runs = std::collections::VecDeque::from([Pending { font: 0, offset: 0, start: 0, stop: text.len() }]);
+        let mut shaped: Vec<Shaped> = Vec::new();
+        let mut popped = 0;
+        while let Some(run) = runs.pop_front() {
+            let (_, font) = fonts[run.font];
+            let chunk = &text[run.start..run.stop];
+            let mut glyphs = self.shaper.shape(chunk, &font.face, &font.spec);
+            if font.spec.direction == Direction::RTL {
+                glyphs.reverse();
+            }
+            let ends: Vec<usize> = (0..glyphs.len())
+                .map(|i| glyphs.get(i + 1).map_or(chunk.len(), |n| n.cluster as usize))
+                .collect();
+            let next_font = (popped + 1 < fonts.len()).then_some(popped + 1);
+            let mut offset = run.offset;
+            let mut pending: Option<Pending> = None;
+            for (mut glyph, end) in glyphs.into_iter().zip(ends) {
+                let index = glyph.cluster as usize;
+                let found = glyph.gid != 0;
+                if !found && pending.is_none() {
+                    if let Some(font) = next_font {
+                        pending = Some(Pending { font, offset, start: run.start + index, stop: run.start + index });
+                        continue;
+                    }
+                } else if !found {
+                    continue;
+                } else if let Some(mut p) = pending.take() {
+                    p.stop = run.start + index;
+                    runs.push_back(p);
+                }
+                glyph.cluster += run.start as u32;
+                let item = Item { text: text.get(run.start + index..run.start + end.max(index)).unwrap_or(""), index: run.start + index };
+                shaped.insert(offset, Shaped { glyph, item, font: run.font, color });
+                offset += 1;
+            }
+            if let Some(mut p) = pending {
+                p.stop = run.stop;
+                runs.push_back(p);
+            }
+            popped += 1;
+        }
+        shaped
     }
 
     /// Split words at their hyphenation points, with a discretionary at
@@ -2029,6 +2154,7 @@ impl DocumentBuilder {
             tokens: NodeMakerOptions::for_language(&like.language),
             letter_space: None,
             tracking: None,
+            fallbacks: Vec::new(),
         };
         self.shape_run(&run).unwrap_or_default()
     }
@@ -2521,42 +2647,45 @@ fn split_words(text: &str) -> Vec<&str> {
     words
 }
 
+/// A glyph shaped for a run of text, with the font (an index into the
+/// run's fonts) and colour it is set in.
+struct Shaped<'t> {
+    glyph: GlyphItem,
+    item: Item<'t>,
+    font: usize,
+    color: Option<Color>,
+}
+
+/// One glyph per layer for a glyph the font draws in coloured layers, the
+/// last carrying the advance and text (SILE's `harfbuzzWithColor`).
+fn color_layers<'t>(face: &FontFace, s: Shaped<'t>) -> Vec<Shaped<'t>> {
+    let Some(layers) = face.color_layers(s.glyph.gid) else {
+        return vec![s];
+    };
+    let last = layers.len().saturating_sub(1);
+    layers
+        .into_iter()
+        .enumerate()
+        .map(|(j, (gid, color))| {
+            let top = j == last;
+            Shaped {
+                glyph: GlyphItem {
+                    gid,
+                    width: if top { s.glyph.width } else { 0.0 },
+                    height: if top { s.glyph.height } else { 0.0 },
+                    ..s.glyph.clone()
+                },
+                item: Item { text: if top { s.item.text } else { "" }, index: s.item.index },
+                font: s.font,
+                color: color.or(s.color),
+            }
+        })
+        .collect()
+}
+
 /// What a hyphenation point after `segments[j]` sets before the break, and
 /// what it sets when the word stays whole, adjusting the segments for
 /// languages whose spelling changes at a break (SILE's `hyphenateSegments`).
-/// Replace each glyph the font draws in coloured layers with one glyph
-/// per layer, the last carrying the advance and text (SILE's
-/// `harfbuzzWithColor` shaper).
-fn color_layers<'t>(
-    face: &FontFace,
-    glyphs: Vec<GlyphItem>,
-    items: Vec<Item<'t>>,
-    color: Option<Color>,
-) -> (Vec<GlyphItem>, Vec<Item<'t>>, Vec<Option<Color>>) {
-    let mut out = (Vec::new(), Vec::new(), Vec::new());
-    for (g, item) in glyphs.into_iter().zip(items) {
-        let Some(layers) = face.color_layers(g.gid) else {
-            out.0.push(g);
-            out.1.push(item);
-            out.2.push(color);
-            continue;
-        };
-        let last = layers.len().saturating_sub(1);
-        for (j, (gid, layer_color)) in layers.into_iter().enumerate() {
-            let top = j == last;
-            out.0.push(GlyphItem {
-                gid,
-                width: if top { g.width } else { 0.0 },
-                height: if top { g.height } else { 0.0 },
-                ..g.clone()
-            });
-            out.1.push(Item { text: if top { item.text } else { "" }, index: item.index });
-            out.2.push(layer_color.or(color));
-        }
-    }
-    out
-}
-
 fn hyphenation_point(lang: &str, segments: &mut [String], j: usize) -> (String, Option<String>) {
     let base = lang.split(['-', '_']).next().unwrap_or(lang);
     match base {

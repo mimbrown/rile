@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
-use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
+use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Heading, PageTemplate, Plain};
@@ -81,6 +81,9 @@ pub fn run(name: &str, src: &str, format: Format, corpus: &Corpus) -> Result<Str
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "verbatim",
+    "font:add-fallback",
+    "font:remove-fallback",
+    "font:clear-fallbacks",
     "itemize",
     "enumerate",
     "item",
@@ -271,6 +274,7 @@ fn check(
                     | "packages.lists"
                     | "packages.verbatim"
                     | "packages.linespacing"
+                    | "packages.font-fallback"
                     | "packages.color-fonts",
                 ) => {}
                 Some(m) => {
@@ -434,6 +438,8 @@ pub(crate) struct Driver<'a> {
     /// What `\set[reset=true]` goes back to, for the settings that have one.
     defaults: BTreeMap<String, String>,
     counter_display: BTreeMap<String, String>,
+    /// Font fallbacks in force (SILE switches shaper around these).
+    fallbacks: usize,
     paper: PaperSize,
     settings: Settings,
     synced: Option<Synced>,
@@ -469,6 +475,7 @@ impl<'a> Driver<'a> {
             page_frames: None,
             masters: BTreeMap::new(),
             counter_display: BTreeMap::new(),
+            fallbacks: 0,
             defaults: [("font.family", "Gentium Book"), ("font.size", "10"), ("font.style", "normal"), ("font.weight", "400")]
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1192,6 +1199,44 @@ impl<'a> Driver<'a> {
                     d.doc.leave_hmode(false).map_err(err)
                 })?;
             }
+            "font:add-fallback" => {
+                self.sync()?;
+                if self.fallbacks == 0 {
+                    self.doc.leave_hmode(true).map_err(err)?;
+                }
+                let mut fallback = FontFallback::default();
+                for (k, v) in &cmd.options {
+                    match k.as_str() {
+                        "family" => fallback.family = Some(v.clone()),
+                        "size" => {
+                            fallback.size = Some(match v.trim() {
+                                v if v.ends_with("em") || v.ends_with("en") => Measurement::from_str(v).map_err(|_| format!("bad size {v}"))?,
+                                v => Measurement::pt(self.dimen(v)?),
+                            })
+                        }
+                        "weight" => fallback.weight = Some(FontWeight(v.parse().map_err(|_| format!("bad weight {v}"))?)),
+                        "style" => fallback.style = Some(if v.eq_ignore_ascii_case("italic") { FontStyle::Italic } else { FontStyle::Normal }),
+                        "features" => fallback.features = Some(v.clone()),
+                        other => return Err(format!("fallback option {other}")),
+                    }
+                }
+                self.doc.add_font_fallback(fallback).map_err(err)?;
+                self.fallbacks += 1;
+            }
+            "font:remove-fallback" => {
+                self.doc.remove_font_fallback();
+                self.fallbacks = self.fallbacks.saturating_sub(1);
+                if self.fallbacks == 0 {
+                    self.doc.leave_hmode(true).map_err(err)?;
+                }
+            }
+            "font:clear-fallbacks" => {
+                if self.fallbacks > 0 {
+                    self.doc.clear_font_fallbacks();
+                    self.doc.leave_hmode(true).map_err(err)?;
+                    self.fallbacks = 0;
+                }
+            }
             "unichar" => {
                 let arg = sil::plain_text(content);
                 let arg = arg.trim();
@@ -1224,6 +1269,9 @@ impl<'a> Driver<'a> {
                     for (k, v) in &cmd.options {
                         if k != "adjust" {
                             d.set_font_option(k, v)?;
+                        }
+                        if k == "family" {
+                            d.update_font(|f| f.filename = None)?;
                         }
                     }
                     if let Some(adjust) = cmd.option("adjust") {
