@@ -3,8 +3,9 @@
 //! the test runs without a Lua interpreter.
 
 use sile_core::builder::{BuilderError, DocumentBuilder};
-use sile_core::class::{smallskip, with_font};
-use sile_core::font::{FontStyle, FontWeight};
+use sile_core::class::{bigskip, smallskip, with_font};
+use sile_core::font::{Direction, FontStyle, FontWeight};
+use sile_core::framespec::FrameSpec;
 use sile_core::linebreak::ParShape;
 use sile_core::textcase;
 
@@ -43,6 +44,9 @@ pub fn port(test: &str) -> Option<Port> {
         "parshaping-simple" => (&[parshaping], &[]),
         "settings" => (&[cormorant, reset_family, cormorant_by_default, reset_family], &[]),
         "footnote-skip" => (&[footnote_skips], &[]),
+        "bug-1317" => (&[bug_1317], &[]),
+        "bug-1321" => (&[bug_1321], &[]),
+        "sura-2" => (&[nothing], &[]),
         _ => return None,
     };
     Some(Port { chunks, commands })
@@ -199,4 +203,32 @@ fn parshaping(d: &mut Driver) -> Result<(), String> {
     d.lorem(20)?;
     d.par()?;
     d.lorem(30)
+}
+
+fn arabic_frame(id: &str, top: &str, bottom: &str, direction: Option<Direction>) -> FrameSpec {
+    FrameSpec { direction, ..FrameSpec::new(id).left("left(content)").right("right(content)").top(top).bottom(bottom) }
+}
+
+fn bug_1317(d: &mut Driver) -> Result<(), String> {
+    with_doc(d, |doc| {
+        doc.declare_page_frames(&[arabic_frame("other", "top(content) + 50%ph", "bottom(content)", Some(Direction::RTL))])?;
+        doc.typeset_into("other", |doc| Ok(doc.add_text("عَرَبي pass")).map(|_| ()))?;
+        doc.add_text("عَرَبي pass");
+        doc.add_explicit_vskip(bigskip())?;
+        doc.set_bidi(false).add_text("عَرَبي fail");
+        Ok(())
+    })
+}
+
+fn bug_1321(d: &mut Driver) -> Result<(), String> {
+    with_doc(d, |doc| {
+        doc.declare_page_frames(&[
+            arabic_frame("inherit", "top(content) + 20%ph", "top(content) + 30%ph", None),
+            arabic_frame("setleft", "top(content) + 40%ph", "top(content) + 50%ph", Some(Direction::LTR)),
+        ])?;
+        for (frame, text) in [("folio", "عَرَبي"), ("setleft", "foo"), ("inherit", "عَرَبي")] {
+            doc.typeset_into(frame, |doc| Ok(doc.add_text(text)).map(|_| ()))?;
+        }
+        Ok(())
+    })
 }

@@ -449,6 +449,8 @@ pub struct NNode {
     /// Unbroken words are drawn from the parent, keeping kerning across
     /// hyphenation points.
     pub parent: Option<std::sync::Arc<HyphenatedWord>>,
+    /// Embedding level relative to the paragraph's, when bidi assigned one.
+    pub bidi_level: Option<u8>,
 }
 
 /// A hyphenated word and the number of syllables it was split into.
@@ -491,6 +493,7 @@ impl NNode {
             glyphs: Vec::new(),
             color: None,
             parent: None,
+            bidi_level: None,
         }
     }
 
@@ -518,6 +521,7 @@ impl NNode {
             glyphs,
             color: None,
             parent: None,
+            bidi_level: None,
         }
     }
 }

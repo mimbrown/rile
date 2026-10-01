@@ -95,6 +95,8 @@ struct TextRun {
     fallbacks: Vec<String>,
     /// Opens a paragraph with a dialogue dash whose space is fixed.
     speaker_change: bool,
+    /// Embedding level relative to the paragraph's, once bidi has split it.
+    bidi_level: Option<u8>,
 }
 
 /// Paragraph material in the order it was added: text still to be shaped,
@@ -158,6 +160,7 @@ impl RunningText {
                 tracking: None,
                 fallbacks: Vec::new(),
                 speaker_change: false,
+                bidi_level: None,
             })
         }));
         line
@@ -317,7 +320,6 @@ pub struct Settings {
     font: Option<String>,
     language: String,
     color: Option<Color>,
-    direction: Direction,
     skips: LineSkips,
     paragraph_indent: f64,
     paragraph_skip: Length,
@@ -343,7 +345,6 @@ impl Default for Settings {
             font: None,
             language: "en".to_string(),
             color: None,
-            direction: Direction::LTR,
             skips: LineSkips::default(),
             paragraph_indent: 20.0,
             paragraph_skip: Length::zero(),
@@ -418,6 +419,11 @@ pub struct DocumentBuilder {
     class: Option<Box<dyn DocumentClass>>,
     /// Frames used instead of the class's (SILE's `\switch-master`).
     master: Option<PageTemplate>,
+    /// Writing direction of frames that don't set their own.
+    direction: Direction,
+    /// Directions set on frames while typesetting (SILE's `\thisframeRTL`).
+    frame_directions: BTreeMap<String, Direction>,
+    bidi: bool,
 
     // Font system
     font_db: FontDatabase,
@@ -472,6 +478,9 @@ impl DocumentBuilder {
             frame_gap: 0.0,
             class: None,
             master: None,
+            direction: Direction::LTR,
+            frame_directions: BTreeMap::new(),
+            bidi: true,
             font_db: FontDatabase::new(),
             fonts: std::collections::BTreeMap::new(),
             shaper: shaper::default_shaper(),
@@ -790,8 +799,47 @@ impl DocumentBuilder {
         self
     }
 
+    /// The writing direction of every frame that doesn't set its own.
     pub fn set_direction(&mut self, direction: Direction) -> &mut Self {
-        self.settings.direction = direction;
+        self.direction = direction;
+        let template = self.page_template();
+        if let Some(state) = self.page.as_mut() {
+            for frame in &mut state.page.frames {
+                let fixed = self.frame_directions.contains_key(&frame.id)
+                    || template.frames.iter().any(|t| t.id == frame.id && t.direction.is_some());
+                if !fixed {
+                    frame.direction = Some(direction);
+                }
+            }
+        }
+        self
+    }
+
+    /// Set the writing direction of the frame being filled, here and on
+    /// later pages.
+    pub fn set_frame_direction(&mut self, direction: Direction) -> &mut Self {
+        if let Some(state) = self.page.as_mut() {
+            self.frame_directions.insert(state.frame.clone(), direction);
+            if let Some(frame) = state.page.frames.iter_mut().find(|f| f.id == state.frame) {
+                frame.direction = Some(direction);
+            }
+        }
+        self
+    }
+
+    fn resolve_direction(&self, frame: &mut FrameGeometry) {
+        frame.direction = self.frame_directions.get(&frame.id).copied().or(frame.direction).or(Some(self.direction));
+    }
+
+    /// The writing direction of the frame being filled.
+    pub fn writing_direction(&self) -> Direction {
+        self.current_frame().and_then(|f| f.direction).unwrap_or(self.direction)
+    }
+
+    /// Reorder mixed-direction paragraphs with the Unicode bidi algorithm
+    /// (on by default, as in SILE).
+    pub fn set_bidi(&mut self, on: bool) -> &mut Self {
+        self.bidi = on;
         self
     }
 
@@ -895,6 +943,7 @@ impl DocumentBuilder {
             tracking: self.settings.tracking,
             fallbacks: self.settings.fallback_fonts.clone(),
             speaker_change: false,
+            bidi_level: None,
         }
     }
 
@@ -1284,8 +1333,11 @@ impl DocumentBuilder {
 
     fn start_page(&mut self) -> Result<(), BuilderError> {
         let template = self.page_template();
-        let frames = framespec::solve(self.paper, self.font_spec().map_or(10.0, |f| f.size), &template.frames)
+        let mut frames = framespec::solve(self.paper, self.font_spec().map_or(10.0, |f| f.size), &template.frames)
             .map_err(|e| BuilderError::Layout(e.to_string()))?;
+        for frame in &mut frames {
+            self.resolve_direction(frame);
+        }
         if !frames.iter().any(|f| f.id == template.first_content_frame) {
             return Err(BuilderError::Layout(format!(
                 "no frame {}",
@@ -1310,8 +1362,12 @@ impl DocumentBuilder {
             template.frames.into_iter().filter(|t| !frames.iter().any(|f| f.id == t.id)).collect();
         specs.extend(frames.iter().cloned());
         let solved = framespec::solve(self.paper, self.font_spec().map_or(10.0, |f| f.size), &specs).map_err(|e| BuilderError::Layout(e.to_string()))?;
+        let mut solved: Vec<FrameGeometry> = solved.into_iter().filter(|g| frames.iter().any(|f| f.id == g.id)).collect();
+        for frame in &mut solved {
+            self.resolve_direction(frame);
+        }
         let page = &mut self.page.as_mut().expect("page").page;
-        for frame in solved.into_iter().filter(|g| frames.iter().any(|f| f.id == g.id)) {
+        for frame in solved {
             match page.frames.iter_mut().find(|g| g.id == frame.id) {
                 Some(existing) => *existing = frame,
                 None => page.frames.push(frame),
@@ -1608,7 +1664,8 @@ impl DocumentBuilder {
         let (left, right) = margins.unwrap_or_default();
         let skips = LineSkips { left, right, ..self.settings.skips };
         let mut previous_depth = self.previous_depth;
-        let lines = self.break_nodes(std::mem::take(nodes), hsize, self.settings.direction, skips, &mut previous_depth);
+        let direction = self.writing_direction();
+        let lines = self.break_nodes(std::mem::take(nodes), hsize, direction, false, skips, &mut previous_depth);
         self.previous_depth = previous_depth;
         self.vertical_queue.extend(lines);
         Ok(())
@@ -1902,13 +1959,7 @@ impl DocumentBuilder {
         self.ensure_page()?;
         let hsize = self.current_frame().map_or(0.0, |f| f.width());
         let mut previous_depth = self.previous_depth;
-        let nodes = self.typeset_inlines(
-            inlines,
-            hsize,
-            self.settings.direction,
-            self.settings.skips,
-            &mut previous_depth,
-        )?;
+        let nodes = self.typeset_inlines(inlines, hsize, self.writing_direction(), self.settings.skips, &mut previous_depth)?;
         self.previous_depth = previous_depth;
         Ok(nodes)
     }
@@ -1923,8 +1974,13 @@ impl DocumentBuilder {
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
-        let h_nodes = self.shape_inlines(inlines)?;
-        Ok(self.break_nodes(h_nodes, hsize, direction, skips, previous_depth))
+        let h_nodes = if self.bidi {
+            let inlines = self.split_bidi_runs(inlines, direction)?;
+            self.shape_inlines(&inlines)?
+        } else {
+            self.shape_inlines(inlines)?
+        };
+        Ok(self.break_nodes(h_nodes, hsize, direction, self.bidi, skips, previous_depth))
     }
 
     /// Break shaped paragraph material into lines (the rest of SILE's
@@ -1934,6 +1990,7 @@ impl DocumentBuilder {
         mut h_nodes: Vec<Node>,
         hsize: f64,
         direction: Direction,
+        reorder: bool,
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Vec<Node> {
@@ -1968,7 +2025,7 @@ impl DocumentBuilder {
             (lb_settings.hang_after, lb_settings.hang_indent) = (after, indent);
         }
         let (h_nodes, breaks) = linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes));
-        self.build_lines(&h_nodes, &breaks, direction, skips, previous_depth)
+        self.build_lines(&h_nodes, &breaks, direction, reorder, skips, previous_depth)
     }
 
     fn shape_inlines(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
@@ -2015,6 +2072,58 @@ impl DocumentBuilder {
         Ok(h_nodes)
     }
 
+    /// Cut the paragraph's text where its bidi embedding level changes and
+    /// shape each piece in the direction of its level (SILE's
+    /// `splitNodelistIntoBidiRuns`). Other material counts as an object
+    /// replacement character.
+    fn split_bidi_runs(&mut self, inlines: &[Inline], direction: Direction) -> Result<Vec<Inline>, BuilderError> {
+        let mut text = String::new();
+        let mut spans = Vec::with_capacity(inlines.len());
+        for inline in inlines {
+            let start = text.len();
+            match inline {
+                Inline::Text(run) => text.push_str(&run.text),
+                _ => text.push('\u{FFFC}'),
+            }
+            spans.push(start..text.len());
+        }
+        let levels = shaper::bidi_levels(&text, direction);
+        let base = u8::from(direction == Direction::RTL);
+        let mut out = Vec::with_capacity(inlines.len());
+        for (inline, span) in inlines.iter().zip(spans) {
+            let Inline::Text(run) = inline else {
+                out.push(inline.clone());
+                continue;
+            };
+            let mut lo = span.start;
+            while lo < span.end {
+                let level = levels[lo];
+                let hi = (lo..span.end).find(|&i| levels[i] != level).unwrap_or(span.end);
+                let dir = if level % 2 == 1 { Direction::RTL } else { Direction::LTR };
+                let mut piece = run.clone();
+                piece.text = text[lo..hi].to_string();
+                piece.bidi_level = Some(level.saturating_sub(base));
+                piece.speaker_change &= lo == span.start;
+                piece.font_name = self.font_in_direction(&run.font_name, dir)?;
+                for fallback in &mut piece.fallbacks {
+                    *fallback = self.font_in_direction(fallback, dir)?;
+                }
+                out.push(Inline::Text(piece));
+                lo = hi;
+            }
+        }
+        Ok(out)
+    }
+
+    fn font_in_direction(&mut self, name: &str, direction: Direction) -> Result<String, BuilderError> {
+        let font = self.fonts.get(name).ok_or_else(|| BuilderError::NoFont(name.to_string()))?;
+        if font.spec.direction == direction {
+            return Ok(name.to_string());
+        }
+        let spec = FontSpec { direction, ..font.spec.clone() };
+        self.register_font_spec(spec)
+    }
+
     /// Shape one run and cut it into words, spaces and break penalties
     /// (SILE's unicode node maker).
     fn shape_run(&self, run: &TextRun) -> Result<Vec<Node>, BuilderError> {
@@ -2040,19 +2149,15 @@ impl DocumentBuilder {
             let hi = (lo..shaped.len()).find(|&i| (shaped[i].font, shaped[i].color) != (font, color)).unwrap_or(shaped.len());
             let (font_name, entry) = fonts[font];
             let (face, spec) = (&entry.face, &entry.spec);
-            let rtl = spec.direction == Direction::RTL;
             let space = || self.shaper.shape(" ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
             for token in nodemaker::tokenize(&items[lo..hi], run.tokens) {
                 match token {
                     Token::Word(range) => {
                         let range = range.start + lo..range.end + lo;
                         let text: String = items[range.clone()].iter().map(|i| i.text).collect();
-                        let mut word = glyphs[range].to_vec();
-                        if rtl {
-                            word.reverse();
-                        }
-                        let mut nnode = self.build_nnode(&text, &word, font_name, spec, color);
+                        let mut nnode = self.build_nnode(&text, &glyphs[range], font_name, spec, color);
                         nnode.language = run.language.clone();
+                        nnode.bidi_level = run.bidi_level;
                         nodes.push(Node::NNode(nnode));
                     }
                     Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.word_space(glyphs[i + lo].width, space))),
@@ -2062,6 +2167,7 @@ impl DocumentBuilder {
                         let hyphen = self.shaper.shape("-", face, spec);
                         let mut nnode = self.build_nnode("-", &hyphen, font_name, spec, color);
                         nnode.language = run.language.clone();
+                        nnode.bidi_level = run.bidi_level;
                         nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
                     }
                     Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
@@ -2195,6 +2301,7 @@ impl DocumentBuilder {
             tracking: None,
             fallbacks: Vec::new(),
             speaker_change: false,
+            bidi_level: like.bidi_level,
         };
         self.shape_run(&run).unwrap_or_default()
     }
@@ -2321,6 +2428,7 @@ impl DocumentBuilder {
         h_nodes: &[Node],
         breaks: &[BreakResult],
         direction: Direction,
+        reorder: bool,
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Vec<Node> {
@@ -2380,8 +2488,8 @@ impl DocumentBuilder {
             line.push(Node::glue(end_skip));
             line.push(Node::zerohbox());
             let mut line = rebox_liners(line);
-            if direction == Direction::RTL {
-                line.reverse();
+            if reorder {
+                line = reorder_bidi(line, direction);
             }
 
             let vbox = VBox {
@@ -2478,6 +2586,65 @@ impl DocumentBuilder {
 // ---------------------------------------------------------------------------
 // Cluster-based text extraction
 // ---------------------------------------------------------------------------
+
+/// Put a line's nodes in display order: runs at each embedding level above
+/// the paragraph's are reversed, innermost last, material without a level
+/// of its own takes its neighbours' when they agree, and words set against
+/// the paragraph's direction get their glyphs reversed (SILE's bidi
+/// `reorder`, parity quirk included).
+fn reorder_bidi(mut line: Vec<Node>, direction: Direction) -> Vec<Node> {
+    let own: Vec<Option<u8>> = line.iter().map(|n| if let Node::NNode(n) = n { n.bidi_level } else { None }).collect();
+    let levels: Vec<u8> = (0..own.len())
+        .map(|i| {
+            own[i].unwrap_or_else(|| {
+                let left = own[..i].iter().rev().find_map(|l| *l);
+                let right = own[i + 1..].iter().find_map(|l| *l);
+                if left == right { left.unwrap_or(0) } else { 0 }
+            })
+        })
+        .collect();
+    let base = u8::from(direction == Direction::RTL);
+    for (node, level) in line.iter_mut().zip(&levels) {
+        if level % 2 == base {
+            continue;
+        }
+        match node {
+            Node::NNode(n) => n.glyphs.reverse(),
+            Node::Discretionary(d) => {
+                for n in d.replacement.iter_mut().chain(&mut d.prebreak).chain(&mut d.postbreak) {
+                    if let Node::NNode(n) = n {
+                        n.glyphs.reverse();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let n = line.len();
+    let mut matrix: Vec<usize> = (0..n).collect();
+    for level in 1..=levels.iter().copied().max().unwrap_or(0) {
+        let mut start = None;
+        for i in 0..n {
+            if levels[i] >= level {
+                match start {
+                    None => start = Some(i),
+                    Some(s) if i == n - 1 => {
+                        matrix[s..=i].reverse();
+                        start = None;
+                    }
+                    Some(_) => {}
+                }
+            } else if let Some(s) = start.take() {
+                matrix[s..i].reverse();
+            }
+        }
+    }
+    let mut out: Vec<Option<Node>> = (0..n).map(|_| None).collect();
+    for (node, m) in line.into_iter().zip(matrix) {
+        out[m] = Some(node);
+    }
+    out.into_iter().flatten().collect()
+}
 
 /// Put back whole any hyphenated word whose syllables all landed on this
 /// line, so it is set as shaped rather than syllable by syllable.
@@ -2878,6 +3045,41 @@ mod tests {
         let tracked = doc.render_debug().unwrap();
         assert!(plain.contains(" w="), "{plain}");
         assert!(tracked.contains(" a="), "{tracked}");
+    }
+
+    #[test]
+    fn bidi_reverses_runs_against_the_paragraph_direction() {
+        let word = |text: &str, level| {
+            let glyphs = text.chars().map(|c| GlyphData { gid: c as u16, ..Default::default() }).collect();
+            let mut n = NNode::with_glyphs(text, glyphs, "f", 10.0, 1.0, 0.0, 0.0);
+            n.bidi_level = Some(level);
+            Node::NNode(n)
+        };
+        let line = vec![word("ab", 0), Node::glue(Length::pt(1.0)), word("cd", 1), Node::glue(Length::pt(1.0)), word("ef", 1)];
+        let texts = |line: &[Node]| -> Vec<String> {
+            line.iter()
+                .map(|n| match n {
+                    Node::NNode(n) => n.glyphs.iter().map(|g| char::from(g.gid as u8)).collect(),
+                    _ => " ".to_string(),
+                })
+                .collect()
+        };
+        assert_eq!(texts(&reorder_bidi(line.clone(), Direction::LTR)), ["ab", " ", "fe", " ", "dc"]);
+        assert_eq!(texts(&reorder_bidi(line, Direction::RTL)), ["ba", " ", "ef", " ", "cd"]);
+    }
+
+    #[test]
+    fn rtl_frames_set_lines_from_the_right() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.set_direction(Direction::RTL).set_paragraph_indent(0.0).add_text("one two");
+        let trace = doc.render_debug().unwrap();
+        let x = |label: &str| {
+            let at = trace.find(&format!("({label})")).unwrap();
+            let mx = trace[..at].rfind("Mx \t").unwrap();
+            trace[mx + 4..].lines().next().unwrap().parse::<f64>().unwrap()
+        };
+        assert!(trace.find("(two)") < trace.find("(one)"), "{trace}");
+        assert!(x("one") < x("two"), "{trace}");
     }
 
     #[test]
