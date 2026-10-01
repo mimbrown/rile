@@ -55,7 +55,7 @@ fn main() {
     doc.add_text("A Scandal in Bohemia");
     doc.new_paragraph().expect("title paragraph");
 
-    doc.add_vskip(12.0);
+    doc.add_vskip(12.0).expect("vertical skip");
 
     // --- Body text ---
 
@@ -123,7 +123,7 @@ fn main() {
 
     // --- Alignment examples ---
 
-    doc.add_vskip(18.0);
+    doc.add_vskip(18.0).expect("vertical skip");
 
     let demo_text = "The art of typesetting lies in the invisible details — the \
          spacing between words, the rhythm of line breaks, and the way a paragraph \
@@ -140,7 +140,7 @@ fn main() {
     doc.set_paragraph_indent(0.0);
     doc.add_text("Justified");
     doc.new_paragraph().expect("alignment heading 1");
-    doc.add_vskip(4.0);
+    doc.add_vskip(4.0).expect("vertical skip");
 
     doc.set_font("body");
     doc.set_paragraph_indent(20.0);
@@ -154,7 +154,7 @@ fn main() {
     doc.set_paragraph_indent(0.0);
     doc.add_text("Left-aligned");
     doc.new_paragraph().expect("alignment heading 2");
-    doc.add_vskip(4.0);
+    doc.add_vskip(4.0).expect("vertical skip");
 
     doc.set_font("body");
     doc.set_paragraph_indent(20.0);
@@ -168,7 +168,7 @@ fn main() {
     doc.set_paragraph_indent(0.0);
     doc.add_text("Right-aligned");
     doc.new_paragraph().expect("alignment heading 3");
-    doc.add_vskip(4.0);
+    doc.add_vskip(4.0).expect("vertical skip");
 
     doc.set_font("body");
     doc.set_paragraph_indent(0.0);
@@ -182,7 +182,7 @@ fn main() {
     doc.set_paragraph_indent(0.0);
     doc.add_text("Centered");
     doc.new_paragraph().expect("alignment heading 4");
-    doc.add_vskip(4.0);
+    doc.add_vskip(4.0).expect("vertical skip");
 
     doc.set_font("body");
     doc.set_alignment(TextAlign::Center);
@@ -194,7 +194,7 @@ fn main() {
 
     // --- Urdu section (Graphite via Awami Nastaliq) ---
 
-    doc.add_vskip(18.0);
+    doc.add_vskip(18.0).expect("vertical skip");
 
     // Load Awami Nastaliq — a Graphite-enabled font from SIL
     match find_awami_nastaliq() {
@@ -234,7 +234,7 @@ fn main() {
             // "بوہیمیا میں ایک اسکینڈل" = "A Scandal in Bohemia"
             doc.new_paragraph().expect("urdu title");
 
-            doc.add_vskip(8.0);
+            doc.add_vskip(8.0).expect("vertical skip");
 
             // Urdu body text — opening paragraph
             doc.set_font("urdu-body");

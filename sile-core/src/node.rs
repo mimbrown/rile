@@ -199,18 +199,17 @@ impl Node {
         }
     }
 
+    /// Glue and penalties vanish at breaks, except glue the user asked for
+    /// explicitly (SILE's `pushExplicitGlue`).
     pub fn is_discardable(&self) -> bool {
-        matches!(
-            self,
-            Node::Glue(_)
-                | Node::HFillGlue(_)
-                | Node::HssGlue(_)
-                | Node::VGlue(_)
-                | Node::VFillGlue(_)
-                | Node::VssGlue(_)
-                | Node::ZeroVGlue(_)
-                | Node::Penalty(_)
-        )
+        match self {
+            Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => !g.explicit,
+            Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
+                !g.explicit
+            }
+            Node::Penalty(_) => true,
+            _ => false,
+        }
     }
 
     pub fn is_explicit(&self) -> bool {
@@ -368,11 +367,13 @@ pub struct HBox {
     pub depth: Length,
     pub misfit: bool,
     pub explicit: bool,
+    /// Horizontal content drawn inside the box (empty for plain spacers).
+    pub nodes: Vec<Node>,
 }
 
 impl HBox {
     pub fn new(width: Length, height: Length, depth: Length) -> Self {
-        Self { width, height, depth, misfit: false, explicit: false }
+        Self { width, height, depth, ..Default::default() }
     }
 }
 
@@ -405,6 +406,17 @@ pub struct NNode {
     pub glyphs: Vec<GlyphData>,
     /// Optional color override for this text node.
     pub color: Option<Color>,
+    /// For a syllable produced by hyphenation, the whole word it came from.
+    /// Unbroken words are drawn from the parent, keeping kerning across
+    /// hyphenation points.
+    pub parent: Option<std::sync::Arc<HyphenatedWord>>,
+}
+
+/// A hyphenated word and the number of syllables it was split into.
+#[derive(Debug)]
+pub struct HyphenatedWord {
+    pub word: NNode,
+    pub syllables: usize,
 }
 
 impl NNode {
@@ -439,6 +451,7 @@ impl NNode {
             font_size: 0.0,
             glyphs: Vec::new(),
             color: None,
+            parent: None,
         }
     }
 
@@ -465,6 +478,7 @@ impl NNode {
             font_size,
             glyphs,
             color: None,
+            parent: None,
         }
     }
 }
