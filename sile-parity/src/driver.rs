@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
-use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, TextAlign};
+use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Heading, PageTemplate, Plain};
@@ -185,6 +185,12 @@ const SETTINGS: &[&str] = &[
     "document.letterspaceglue",
     "shaper.tracking",
     "shaper.variablespaces",
+    "linespacing.method",
+    "linespacing.fixed.baselinedistance",
+    "linespacing.fit-glyph.extra-space",
+    "linespacing.fit-font.extra-space",
+    "linespacing.css.line-height",
+    "linespacing.minimumfirstlineposition",
     "document.spaceskip",
     "lists.parskip",
     "lists.enumerate.leftmargin",
@@ -264,6 +270,7 @@ fn check(
                     | "packages.unichar"
                     | "packages.lists"
                     | "packages.verbatim"
+                    | "packages.linespacing"
                     | "packages.color-fonts",
                 ) => {}
                 Some(m) => {
@@ -348,6 +355,45 @@ struct Settings {
     obey_lines: bool,
     skips: LineSkips,
     space: SpaceSettings,
+    line_spacing: Option<LineSpacingSettings>,
+}
+
+/// SILE's `linespacing.*` settings, lengths kept relative to the font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LineSpacingSettings {
+    method: &'static str,
+    fixed: Length,
+    fit_glyph: Length,
+    fit_font: Length,
+    css: Length,
+    minimum_first_line: Length,
+}
+
+impl Default for LineSpacingSettings {
+    fn default() -> Self {
+        let em = |n| Length::new(Measurement::new(n, Unit::Em), Measurement::pt(0.0), Measurement::pt(0.0));
+        Self {
+            method: "tex",
+            fixed: em(1.2),
+            fit_glyph: Length::zero(),
+            fit_font: Length::zero(),
+            css: em(1.2),
+            minimum_first_line: Length::zero(),
+        }
+    }
+}
+
+impl LineSpacingSettings {
+    fn spacing(&self) -> LineSpacing {
+        let method = match self.method {
+            "fixed" => LineSpacingMethod::Fixed(self.fixed),
+            "fit-glyph" => LineSpacingMethod::FitGlyph(self.fit_glyph),
+            "fit-font" => LineSpacingMethod::FitFont(self.fit_font),
+            "css" => LineSpacingMethod::Css(self.css),
+            _ => LineSpacingMethod::Tex,
+        };
+        LineSpacing { method, minimum_first_line: self.minimum_first_line }
+    }
 }
 
 /// Settings as last handed to the builder.
@@ -363,6 +409,7 @@ struct Synced {
     obey_spaces: bool,
     fixed_nbsp: bool,
     space: SpaceSettings,
+    line_spacing: Option<LineSpacing>,
 }
 
 /// A driver error passed through a class's typesetting callbacks.
@@ -440,6 +487,7 @@ impl<'a> Driver<'a> {
                 obey_lines: false,
                 skips: LineSkips::default(),
                 space: SpaceSettings::default(),
+                line_spacing: None,
             },
             synced: None,
             depth: 0,
@@ -546,6 +594,7 @@ impl<'a> Driver<'a> {
             obey_spaces: self.settings.obey_spaces,
             fixed_nbsp: self.settings.fixed_nbsp,
             space: self.settings.space,
+            line_spacing: self.settings.line_spacing.map(|l| l.spacing()),
         };
         // Only what changed, so that settings a class made around content
         // it hands back to us stay in force.
@@ -568,6 +617,7 @@ impl<'a> Driver<'a> {
         push!(obey_spaces, doc.set_obey_spaces(now.obey_spaces));
         push!(fixed_nbsp, doc.set_fixed_nbsp(now.fixed_nbsp));
         push!(space, doc.set_space_settings(now.space));
+        push!(line_spacing, doc.set_line_spacing(now.line_spacing));
         self.synced = Some(now);
         if self.depth == 0 {
             self.doc.mark_toplevel();
@@ -741,11 +791,13 @@ impl<'a> Driver<'a> {
                 };
                 self.process(content)?;
             }
-            "use" => {
-                if cmd.option("module") == Some("packages.retrograde") {
-                    self.retrograde(cmd.option("target").unwrap_or(""))?;
+            "use" => match cmd.option("module") {
+                Some("packages.retrograde") => self.retrograde(cmd.option("target").unwrap_or(""))?,
+                Some("packages.linespacing") => {
+                    self.settings.line_spacing.get_or_insert_with(Default::default);
                 }
-            }
+                _ => {}
+            },
             "par" => self.par()?,
             " " => self.add_text(" ")?,
             "comment" => {}
@@ -1408,6 +1460,24 @@ impl<'a> Driver<'a> {
                     _ => s.shrink_factor = num()?,
                 }
             }
+            p if p.starts_with("linespacing.") => {
+                let length = if value.is_empty() || p == "linespacing.method" { Length::zero() } else { self.relative_length(value)? };
+                let l = self.settings.line_spacing.get_or_insert_with(Default::default);
+                match p {
+                    "linespacing.method" => {
+                        l.method = ["tex", "fixed", "fit-glyph", "fit-font", "css"]
+                            .into_iter()
+                            .find(|m| *m == value)
+                            .ok_or_else(|| format!("line spacing method {value}"))?
+                    }
+                    "linespacing.fixed.baselinedistance" => l.fixed = length,
+                    "linespacing.fit-glyph.extra-space" => l.fit_glyph = length,
+                    "linespacing.fit-font.extra-space" => l.fit_font = length,
+                    "linespacing.css.line-height" => l.css = length,
+                    "linespacing.minimumfirstlineposition" => l.minimum_first_line = length,
+                    _ => return Err(format!("setting {p}")),
+                }
+            }
             "shaper.variablespaces" => self.settings.space.variable_spaces = truthy(value),
             "document.spaceskip" => {
                 self.settings.space.skip = if value.is_empty() { None } else { Some(self.length(value)?) }
@@ -1452,6 +1522,29 @@ impl<'a> Driver<'a> {
             Measurement::pt(self.dimen(natural)?),
             Measurement::pt(part(self, stretch)?),
             Measurement::pt(part(self, shrink)?),
+        ))
+    }
+
+    /// A SILE length whose `em` parts stay relative to the font.
+    fn relative_length(&mut self, value: &str) -> Result<Length, String> {
+        let absolute = self.length(value)?;
+        let parts: Vec<&str> = value.split(" plus ").flat_map(|p| p.split(" minus ")).collect();
+        let relative = |d: &mut Self, part: Option<&&str>, abs: Measurement| -> Result<Measurement, String> {
+            match part.map(|p| p.trim()) {
+                Some(p) if p.ends_with("em") => Ok(Measurement::new(d.dimen(p)? / d.dimen("1em")?, Unit::Em)),
+                _ => Ok(abs),
+            }
+        };
+        let (stretch, shrink) = match (value.contains(" plus "), value.contains(" minus ")) {
+            (true, true) => (parts.get(1), parts.get(2)),
+            (true, false) => (parts.get(1), None),
+            (false, true) => (None, parts.get(1)),
+            _ => (None, None),
+        };
+        Ok(Length::new(
+            relative(self, parts.first(), absolute.length)?,
+            relative(self, stretch, absolute.stretch)?,
+            relative(self, shrink, absolute.shrink)?,
         ))
     }
 

@@ -181,6 +181,39 @@ impl BaselineSkip {
     }
 }
 
+/// How lines are spaced when SILE's `linespacing` package is in use.
+/// Lengths may be relative to the font (`em`), resolved when lines are
+/// set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineSpacingMethod {
+    /// TeX's baselineskip and lineskip.
+    Tex,
+    /// A fixed distance from baseline to baseline.
+    Fixed(Length),
+    /// Space between the lowest point of one line and the highest of the
+    /// next.
+    FitGlyph(Length),
+    /// Space between the fonts' descenders on one line and ascenders on
+    /// the next.
+    FitFont(Length),
+    /// CSS's line-height model, from each font's line height.
+    Css(Length),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineSpacing {
+    pub method: LineSpacingMethod,
+    /// The first line's baseline is at least this far below the top of the
+    /// frame.
+    pub minimum_first_line: Length,
+}
+
+impl Default for LineSpacing {
+    fn default() -> Self {
+        Self { method: LineSpacingMethod::Tex, minimum_first_line: Length::zero() }
+    }
+}
+
 /// The glue around every line (SILE's `document.lskip` and `document.rskip`)
 /// and after the last one (`typesetter.parfillskip`). Alignment is expressed
 /// through these, as in SILE.
@@ -246,6 +279,7 @@ pub struct Settings {
     paragraph_skip: Length,
     leading: f64,
     baseline_skip: Option<BaselineSkip>,
+    line_spacing: Option<LineSpacing>,
     space_settings: SpaceSettings,
     obey_spaces: bool,
     fixed_nbsp: bool,
@@ -266,6 +300,7 @@ impl Default for Settings {
             paragraph_skip: Length::zero(),
             leading: 2.0,
             baseline_skip: None,
+            line_spacing: None,
             space_settings: SpaceSettings::default(),
             obey_spaces: false,
             fixed_nbsp: false,
@@ -641,6 +676,13 @@ impl DocumentBuilder {
     /// fixed `leading` between them. Overrides `set_leading`.
     pub fn set_baseline_skip(&mut self, baseline_skip: Option<BaselineSkip>) -> &mut Self {
         self.settings.baseline_skip = baseline_skip;
+        self
+    }
+
+    /// Space lines with SILE's `linespacing` package rather than the
+    /// baseline skip alone.
+    pub fn set_line_spacing(&mut self, spacing: Option<LineSpacing>) -> &mut Self {
+        self.settings.line_spacing = spacing;
         self
     }
 
@@ -1376,8 +1418,18 @@ impl DocumentBuilder {
             if self.typesetters.is_empty() && self.build_page()? {
                 self.init_next_frame()?;
             }
-        } else if !self.vertical_queue.is_empty() {
-            self.vertical_queue.insert(0, Node::vglue(Length::zero()));
+        } else if let Some(first) = self.vertical_queue.first() {
+            let lead = match self.settings.line_spacing {
+                Some(spacing) => {
+                    let em = self.font_spec().map_or(10.0, |f| f.size);
+                    let min = pt_of(&resolve_em(spacing.minimum_first_line, em));
+                    (min > 0.0).then(|| Node::vkern(Length::pt(min - pt_of(&first.height()))))
+                }
+                None => Some(Node::vglue(Length::zero())),
+            };
+            if let Some(lead) = lead {
+                self.vertical_queue.insert(0, lead);
+            }
         }
         Ok(())
     }
@@ -2015,10 +2067,91 @@ impl DocumentBuilder {
         nnode
     }
 
+    /// The space before `vbox` under SILE's `linespacing` package.
+    fn line_spacing_leading(&mut self, spacing: LineSpacing, vbox: &VBox, previous_depth: Option<f64>, v_nodes: &mut [Node]) -> Option<Node> {
+        let em = self.font_spec().map_or(10.0, |f| f.size);
+        let height = pt_of(&vbox.height);
+        let Some(previous_depth) = previous_depth else {
+            let first = resolve_em(spacing.minimum_first_line, em).length.to_pt().unwrap_or(0.0);
+            return (first > 0.0).then(|| Node::vkern(Length::pt(first - height)));
+        };
+        Some(match spacing.method {
+            LineSpacingMethod::Tex => self.settings.baseline_skip?.leading_for(height, Some(previous_depth)),
+            LineSpacingMethod::FitGlyph(extra) => Node::vglue(resolve_em(extra, em)),
+            LineSpacingMethod::Fixed(distance) => {
+                let d = resolve_em(distance, em);
+                Node::vglue(Length::new(Measurement::pt(pt_of(&d) - height - previous_depth), d.stretch, d.shrink))
+            }
+            LineSpacingMethod::FitFont(extra) => {
+                let extra = resolve_em(extra, em);
+                let (_, descender, _) = self.previous_vbox(v_nodes).map_or((0.0, 0.0, 0.0), |p| self.line_metrics(&p.nodes, None));
+                let (ascender, _, _) = self.line_metrics(&vbox.nodes, None);
+                Node::vglue(extra + Length::pt(descender + ascender - height - previous_depth))
+            }
+            LineSpacingMethod::Css(line_height) => {
+                if let Some(previous) = self.previous_vbox(v_nodes) {
+                    let (ascender, descender, lh) = self.line_metrics(&previous.nodes, Some(line_height));
+                    let half = (lh - ascender - descender) / 2.0;
+                    let previous = self.previous_vbox_mut(v_nodes).expect("previous line");
+                    previous.height += Length::pt(half);
+                    previous.depth += Length::pt(half);
+                }
+                Node::vglue(Length::zero())
+            }
+        })
+    }
+
+    fn previous_vbox(&self, v_nodes: &[Node]) -> Option<VBox> {
+        let last = |nodes: &[Node]| nodes.iter().rev().find_map(|n| if let Node::VBox(v) = n { Some(v.clone()) } else { None });
+        last(v_nodes).or_else(|| match self.captures.last() {
+            Some(capture) => capture.items.iter().rev().find_map(|i| match i {
+                Captured::Vertical(n) => match &**n {
+                    Node::VBox(v) => Some(v.clone()),
+                    _ => None,
+                },
+                _ => None,
+            }),
+            None => last(&self.vertical_queue),
+        })
+    }
+
+    fn previous_vbox_mut<'v>(&'v mut self, v_nodes: &'v mut [Node]) -> Option<&'v mut VBox> {
+        if v_nodes.iter().any(|n| matches!(n, Node::VBox(_))) {
+            return v_nodes.iter_mut().rev().find_map(|n| if let Node::VBox(v) = n { Some(v) } else { None });
+        }
+        match self.captures.last_mut() {
+            Some(capture) => capture.items.iter_mut().rev().find_map(|i| match i {
+                Captured::Vertical(n) => match &mut **n {
+                    Node::VBox(v) => Some(v),
+                    _ => None,
+                },
+                _ => None,
+            }),
+            None => self.vertical_queue.iter_mut().rev().find_map(|n| if let Node::VBox(v) = n { Some(v) } else { None }),
+        }
+    }
+
+    /// The largest ascender, descender and CSS line height of the fonts set
+    /// directly on a line (SILE's `getLineMetrics`).
+    fn line_metrics(&self, nodes: &[Node], line_height: Option<Length>) -> (f64, f64, f64) {
+        let mut metrics = (0.0_f64, 0.0_f64, 0.0_f64);
+        for node in nodes {
+            let Node::NNode(n) = node else { continue };
+            let Some(font) = self.fonts.get(&n.font_key) else { continue };
+            let size = font.spec.size;
+            metrics.0 = metrics.0.max(font.face.scale(font.face.ascender(), size));
+            metrics.1 = metrics.1.max(-font.face.scale(font.face.descender(), size));
+            if let Some(lh) = line_height {
+                metrics.2 = metrics.2.max(pt_of(&resolve_em(lh, size)));
+            }
+        }
+        metrics
+    }
+
     /// Cut the node list at the breakpoints into lines, add the margin
     /// glue and package each line (SILE's `breakpointsToLines`).
     fn build_lines(
-        &self,
+        &mut self,
         h_nodes: &[Node],
         breaks: &[BreakResult],
         direction: Direction,
@@ -2101,7 +2234,11 @@ impl DocumentBuilder {
         let mut v_nodes = Vec::new();
         for (index, (vbox, broken, migrating)) in lines.into_iter().enumerate() {
             let (height, depth) = (pt_of(&vbox.height), pt_of(&vbox.depth));
-            if let Some(bls) = self.settings.baseline_skip {
+            if let Some(spacing) = self.settings.line_spacing {
+                let leading = self.line_spacing_leading(spacing, &vbox, *previous_depth, &mut v_nodes);
+                v_nodes.extend(leading);
+                *previous_depth = Some(depth);
+            } else if let Some(bls) = self.settings.baseline_skip {
                 v_nodes.push(bls.leading_for(height, *previous_depth));
                 *previous_depth = Some(depth);
             } else if index > 0 && self.settings.leading > 0.0 {
@@ -2300,6 +2437,16 @@ fn natural_width(node: &Node) -> Length {
         Node::Discretionary(d) => d.replacement.iter().map(Node::width).fold(Length::zero(), |a, b| a + b),
         other => other.width(),
     }
+}
+
+/// `length` with any `em` parts in points for a font of size `em`.
+fn resolve_em(length: Length, em: f64) -> Length {
+    let part = |m: Measurement| match m.unit {
+        crate::measurement::Unit::Em => Measurement::pt(m.amount * em),
+        crate::measurement::Unit::En => Measurement::pt(m.amount * em / 2.0),
+        _ => m,
+    };
+    Length::new(part(length.length), part(length.stretch), part(length.shrink))
 }
 
 fn natural_hbox(nodes: Vec<Node>) -> node::HBox {
@@ -2583,6 +2730,18 @@ mod tests {
         };
         assert!((x("1") - x("2")).abs() < 1e-6, "{trace}");
         assert!((x("one") - x("1") - 18.0).abs() < 1e-6, "{trace}");
+    }
+
+    #[test]
+    fn fixed_line_spacing_sets_baselines_apart() {
+        let Some(mut doc) = builder_with_font() else { return };
+        let spacing = LineSpacing { method: LineSpacingMethod::Fixed(Length::pt(30.0)), ..Default::default() };
+        doc.set_line_spacing(Some(spacing)).add_text("one");
+        doc.new_paragraph().unwrap();
+        doc.add_text("two");
+        let trace = doc.render_debug().unwrap();
+        let ys: Vec<f64> = trace.lines().filter_map(|l| l.strip_prefix("My \t")).map(|y| y.parse().unwrap()).collect();
+        assert!((ys[1] - ys[0] - 30.0).abs() < 1e-3, "{trace}");
     }
 
     #[test]
