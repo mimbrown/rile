@@ -296,19 +296,19 @@ impl DocumentClass for Book {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_support {
     use super::*;
     use crate::font::FontSpec;
     use crate::frame::PaperSize;
     use crate::node::Node;
     use crate::pagebuilder::Page;
 
-    fn gentium() -> Vec<u8> {
+    pub fn gentium() -> Vec<u8> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts/gentium-plus-5.000/GentiumPlus-R.ttf");
         std::fs::read(path).expect("committed test font")
     }
 
-    fn doc(class: impl DocumentClass) -> DocumentBuilder {
+    pub fn doc(class: impl DocumentClass) -> DocumentBuilder {
         let mut doc = DocumentBuilder::new(PaperSize::A5);
         let spec = FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() };
         doc.load_font_data("body", gentium(), spec).unwrap();
@@ -316,7 +316,7 @@ mod tests {
         doc
     }
 
-    fn text_in(page: &Page, frame: &str) -> String {
+    pub fn text_in(page: &Page, frame: &str) -> String {
         fn collect(nodes: &[Node], out: &mut String) {
             for n in nodes {
                 match n {
@@ -333,6 +333,14 @@ mod tests {
         }
         out
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
+    use crate::frame::PaperSize;
+    use crate::pagebuilder::Page;
 
     fn fill_pages(doc: &mut DocumentBuilder, pages: usize) {
         for _ in 0..pages {
@@ -385,5 +393,59 @@ mod tests {
         assert_eq!(text_in(&pages[2], "content"), "Three.");
         assert_eq!(text_in(&pages[1], "folio"), "");
         assert_eq!(text_in(&pages[2], "folio"), "3");
+    }
+}
+
+#[cfg(test)]
+mod footnote_tests {
+    use super::tests_support::*;
+    use super::*;
+    use crate::insertion::InsertionClass;
+    use crate::length::Length;
+    use crate::node::Node;
+
+    fn footnote(d: &mut DocumentBuilder, text: &str) {
+        d.push_typesetter(Some("footnotes")).unwrap();
+        d.add_text(text);
+        let nodes = d.pop_typesetter().unwrap();
+        d.insert("footnote", nodes);
+    }
+
+    fn with_footnotes() -> DocumentBuilder {
+        let mut d = doc(Book::new());
+        let mut class = InsertionClass::new("footnotes", "content", 400.0);
+        class.top_box = vec![Node::vglue(Length::pt(9.0))];
+        class.inter_skip = 4.5;
+        d.set_insertion_class("footnote", class);
+        d
+    }
+
+    #[test]
+    fn footnotes_go_to_their_frame_and_shorten_the_content() {
+        let mut d = with_footnotes();
+        d.add_text("Body.");
+        footnote(&mut d, "Note one.");
+        d.add_text("More.");
+        footnote(&mut d, "Note two.");
+        let pages = d.into_pages().unwrap();
+        assert_eq!(pages.len(), 1);
+        let page = &pages[0];
+        assert_eq!(text_in(page, "footnotes").replace(' ', ""), "Noteone.Notetwo.");
+        assert_eq!(text_in(page, "content").replace(' ', ""), "Body.More.");
+        let (content, notes) = (page.frame("content").unwrap(), page.frame("footnotes").unwrap());
+        assert!(notes.height() > 9.0);
+        assert!(content.bottom <= notes.top + 0.01, "content gave up room to the notes");
+    }
+
+    #[test]
+    fn a_footnote_too_long_for_the_page_is_split() {
+        let mut d = with_footnotes();
+        d.add_text("Body.");
+        footnote(&mut d, &"Long note text. ".repeat(400));
+        let pages = d.into_pages().unwrap();
+        assert!(pages.len() >= 2);
+        assert!(!text_in(&pages[0], "footnotes").is_empty());
+        assert!(!text_in(&pages[1], "footnotes").is_empty());
+        assert_eq!(text_in(&pages[0], "content"), "Body.");
     }
 }

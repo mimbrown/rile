@@ -7,12 +7,13 @@ use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
 use crate::framespec::{self, FrameGeometry, FrameSpec};
 use crate::hyphenation::HyphenationDictionary;
+use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
 use crate::node::{self, GlyphData, NNode, Node, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
-use crate::pagebuilder::{Page, PageBreakSettings, take_page};
+use crate::pagebuilder::{self, Page, PageBreakSettings};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
@@ -202,9 +203,7 @@ impl LineSkips {
     }
 }
 
-/// SILE's `supereject` penalty: ends the page even when the frame has a
-/// `next` frame.
-pub const SUPER_EJECT: i32 = -20_000;
+pub use crate::pagebuilder::SUPER_EJECT;
 
 struct LaidOut {
     pages: Vec<Page>,
@@ -276,6 +275,17 @@ struct Capture {
     current_indent: Option<f64>,
 }
 
+struct SavedTypesetter {
+    settings: Settings,
+    paragraph: Vec<Inline>,
+    open_boxes: Vec<Vec<Inline>>,
+    current_indent: Option<f64>,
+    previous_depth: Option<f64>,
+    queue: Vec<Node>,
+    captures: Vec<Capture>,
+    frame: String,
+}
+
 /// The page being filled: its frames and the frame content flows into.
 struct PageState {
     page: Page,
@@ -312,8 +322,6 @@ pub struct DocumentBuilder {
     current_indent: Option<f64>,
     previous_depth: Option<f64>,
     captures: Vec<Capture>,
-    /// Inside `typeset_into`: lines are set but no page is built.
-    naturally: usize,
 
     page_break_settings: PageBreakSettings,
 
@@ -322,6 +330,10 @@ pub struct DocumentBuilder {
     page: Option<PageState>,
     pages: Vec<Page>,
     last_penalty: i32,
+    insertion_classes: std::collections::BTreeMap<String, InsertionClass>,
+    insertions: PageInsertions,
+    /// Typesetting states set aside by `push_typesetter`.
+    typesetters: Vec<SavedTypesetter>,
 
     // Running header/footer (need header_height / footer_height > 0)
     header: Option<RunningText>,
@@ -352,12 +364,14 @@ impl DocumentBuilder {
             current_indent: None,
             previous_depth: None,
             captures: Vec::new(),
-            naturally: 0,
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
             page: None,
             pages: Vec::new(),
             last_penalty: 0,
+            insertion_classes: std::collections::BTreeMap::new(),
+            insertions: PageInsertions::default(),
+            typesetters: Vec::new(),
             header: None,
             footer: None,
             pdf_config: PdfConfig::default(),
@@ -595,6 +609,15 @@ impl DocumentBuilder {
         self
     }
 
+    /// Move the baseline of what follows up by `height` (down when
+    /// negative), without changing the line's height (SILE's `\raise`).
+    pub fn add_baseline_shift(&mut self, height: f64) -> &mut Self {
+        let mut shift = node::HBox::new(Length::zero(), Length::zero(), Length::zero());
+        shift.raise = height;
+        self.push_inline(Inline::Node(Box::new(Node::HBox(shift))));
+        self
+    }
+
     /// Infinitely stretchable space that survives line breaks (`\hfill`).
     pub fn add_hfill(&mut self) -> &mut Self {
         let mut fill = Node::hfillglue(Length::zero());
@@ -688,7 +711,7 @@ impl DocumentBuilder {
             let nodes = self.typeset_paragraph(&inlines)?;
             self.vertical_queue.extend(nodes);
         }
-        if independent || self.naturally > 0 {
+        if independent || !self.typesetters.is_empty() {
             return Ok(());
         }
         if self.build_page()? {
@@ -840,6 +863,7 @@ impl DocumentBuilder {
                 template.first_content_frame
             )));
         }
+        self.insertions = PageInsertions::default();
         self.page = Some(PageState {
             page: Page::new(self.page_number(), self.paper, frames),
             frame: template.first_content_frame,
@@ -853,20 +877,88 @@ impl DocumentBuilder {
     }
 
     /// Fill the current frame if the queue holds enough to (SILE's
-    /// `buildPage`).
+    /// `buildPage`). Insertions met on the way are placed on this page and
+    /// shrink the frames they steal from.
     fn build_page(&mut self) -> Result<bool, BuilderError> {
         if self.vertical_queue.is_empty() {
             return Ok(false);
         }
         self.ensure_page()?;
         let frame = self.current_frame().expect("current frame");
-        let (id, target) = (frame.id.clone(), frame.height());
-        let Some((nodes, penalty)) = take_page(&mut self.vertical_queue, target, false) else {
+        let id = frame.id.clone();
+        let target = frame.height() - self.insertions.shrinkage(&id);
+        let (classes, insertions) = (&self.insertion_classes, &mut self.insertions);
+        let mut on_insertion = |queue: &mut Vec<Node>, i, height, target| {
+            insertions.process(classes, &id, queue, i, height, target)
+        };
+        let Some(br) = pagebuilder::find_break(&mut self.vertical_queue, target, false, &mut on_insertion) else {
             return Ok(false);
         };
-        self.last_penalty = penalty;
-        self.output(&id, nodes);
+        self.last_penalty = br.trigger_penalty;
+        let nodes = pagebuilder::split_page(&mut self.vertical_queue, &br);
+        self.commit_shrinkage();
+        let target = self.current_frame().expect("current frame").height() - self.insertions.shrinkage(&id);
+        self.output(&id, pagebuilder::set_vertical_glue(nodes, target));
         Ok(true)
+    }
+
+    /// Take the room promised to this page's insertions from the frames
+    /// they steal from, at the bottom.
+    fn commit_shrinkage(&mut self) {
+        let Some(state) = self.page.as_mut() else { return };
+        for (class, _) in &self.insertions.boxes {
+            let Some(class) = self.insertion_classes.get(class) else { continue };
+            for (frame, _) in &class.steal_from {
+                let shrinkage = self.insertions.shrinkage.insert(frame.clone(), 0.0).unwrap_or(0.0);
+                if let Some(frame) = state.page.frames.iter_mut().find(|f| &f.id == frame) {
+                    frame.bottom -= shrinkage;
+                }
+            }
+        }
+    }
+
+    /// Grow each insertion frame upwards by what was placed in it and set
+    /// the material there.
+    fn output_insertions(&mut self) {
+        let boxes = std::mem::take(&mut self.insertions.boxes);
+        let Some(state) = self.page.as_mut() else { return };
+        for (class, stack) in &boxes {
+            let Some(class) = self.insertion_classes.get(class) else { continue };
+            if let Some(frame) = state.page.frames.iter_mut().find(|f| f.id == class.insert_into) {
+                frame.top -= stack.height + stack.depth;
+            }
+        }
+        for (class, stack) in boxes {
+            let Some(class) = self.insertion_classes.get(&class) else { continue };
+            state.page.add_frame_content(class.insert_into.clone(), stack.nodes);
+        }
+    }
+
+    /// Declare a kind of insertion (footnotes, say).
+    pub fn set_insertion_class(&mut self, name: impl Into<String>, class: InsertionClass) -> &mut Self {
+        self.insertion_classes.insert(name.into(), class);
+        self
+    }
+
+    pub fn insertion_class_mut(&mut self, name: &str) -> Option<&mut InsertionClass> {
+        self.insertion_classes.get_mut(name)
+    }
+
+    /// Send vertical material to the frame of insertion class `class`, from
+    /// the current point of the paragraph (SILE's `class:insert`).
+    pub fn insert(&mut self, class: &str, nodes: Vec<Node>) -> &mut Self {
+        let penalty = self.insertion_classes.get(class).map_or(-3000, |c| c.penalty);
+        let stack = Stack::of(nodes);
+        let insertion = Node::Insertion(node::Insertion {
+            class: class.to_string(),
+            nodes: stack.nodes,
+            content_height: stack.height,
+            content_depth: stack.depth,
+            seen: false,
+        });
+        let migrating = node::Migrating { material: vec![Node::penalty(penalty), insertion], ..Default::default() };
+        self.push_inline(Inline::Node(Box::new(Node::Migrating(migrating))));
+        self
     }
 
     fn output(&mut self, frame: &str, nodes: Vec<Node>) {
@@ -898,6 +990,7 @@ impl DocumentBuilder {
 
     fn end_page(&mut self) -> Result<(), BuilderError> {
         self.ensure_page()?;
+        self.output_insertions();
         if let Some(mut class) = self.class.take() {
             let result = class.end_page(self);
             self.class = Some(class);
@@ -934,6 +1027,50 @@ impl DocumentBuilder {
         self.end_page()
     }
 
+    /// Set the current paragraph and vertical list aside and start afresh,
+    /// with lines as wide as `frame` (the current frame when `None`), until
+    /// `pop_typesetter` (SILE's `typesetter:pushState`).
+    pub fn push_typesetter(&mut self, frame: Option<&str>) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let state = self.page.as_mut().expect("page");
+        let flow = match frame {
+            Some(frame) => std::mem::replace(&mut state.frame, frame.to_string()),
+            None => state.frame.clone(),
+        };
+        self.typesetters.push(SavedTypesetter {
+            settings: self.settings.clone(),
+            paragraph: std::mem::take(&mut self.paragraph),
+            open_boxes: std::mem::take(&mut self.open_boxes),
+            current_indent: self.current_indent.take(),
+            previous_depth: self.previous_depth.take(),
+            queue: std::mem::take(&mut self.vertical_queue),
+            captures: std::mem::take(&mut self.captures),
+            frame: flow,
+        });
+        Ok(self)
+    }
+
+    /// End the paragraph begun since `push_typesetter`, restore what it set
+    /// aside, and return the vertical material set meanwhile.
+    pub fn pop_typesetter(&mut self) -> Result<Vec<Node>, BuilderError> {
+        let result = self.leave_hmode(true);
+        let Some(saved) = self.typesetters.pop() else {
+            return Ok(Vec::new());
+        };
+        let nodes = std::mem::replace(&mut self.vertical_queue, saved.queue);
+        if let Some(state) = self.page.as_mut() {
+            state.frame = saved.frame;
+        }
+        self.settings = saved.settings;
+        self.paragraph = saved.paragraph;
+        self.open_boxes = saved.open_boxes;
+        self.current_indent = saved.current_indent;
+        self.previous_depth = saved.previous_depth;
+        self.captures = saved.captures;
+        result?;
+        Ok(nodes)
+    }
+
     /// Typeset whatever `f` adds straight into `frame` on the current page,
     /// apart from the main flow, with settings restored afterwards (SILE's
     /// `typesetNaturally`).
@@ -942,28 +1079,9 @@ impl DocumentBuilder {
         frame: &str,
         f: impl FnOnce(&mut Self) -> Result<(), BuilderError>,
     ) -> Result<(), BuilderError> {
-        self.ensure_page()?;
-        let settings = self.settings.clone();
-        let paragraph = std::mem::take(&mut self.paragraph);
-        let open_boxes = std::mem::take(&mut self.open_boxes);
-        let current_indent = self.current_indent.take();
-        let previous_depth = self.previous_depth.take();
-        let queue = std::mem::take(&mut self.vertical_queue);
-        let captures = std::mem::take(&mut self.captures);
-        let flow = std::mem::replace(&mut self.page.as_mut().expect("page").frame, frame.to_string());
-        self.naturally += 1;
-
-        let result = f(self).and_then(|_| self.leave_hmode(true));
-
-        self.naturally -= 1;
-        let nodes = std::mem::replace(&mut self.vertical_queue, queue);
-        self.page.as_mut().expect("page").frame = flow;
-        self.settings = settings;
-        self.paragraph = paragraph;
-        self.open_boxes = open_boxes;
-        self.current_indent = current_indent;
-        self.previous_depth = previous_depth;
-        self.captures = captures;
+        self.push_typesetter(Some(frame))?;
+        let result = f(self);
+        let nodes = self.pop_typesetter()?;
         result?;
         let top = nodes
             .iter()
@@ -1167,8 +1285,16 @@ impl DocumentBuilder {
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
         let mut h_nodes = self.shape_inlines(inlines)?;
-        while h_nodes.last().is_some_and(Node::is_discardable) {
-            h_nodes.pop();
+        let mut j = h_nodes.len();
+        while j > 0 {
+            j -= 1;
+            if h_nodes[j].is_migrating() {
+                continue;
+            }
+            if !h_nodes[j].is_discardable() {
+                break;
+            }
+            h_nodes.remove(j);
         }
         while h_nodes.first().is_some_and(Node::is_penalty) {
             h_nodes.remove(0);
@@ -1391,7 +1517,7 @@ impl DocumentBuilder {
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Vec<Node> {
-        let mut lines: Vec<(VBox, bool)> = Vec::new();
+        let mut lines: Vec<(VBox, bool, Vec<Node>)> = Vec::new();
         let mut start = 0;
         let mut postbreak: Vec<Node> = Vec::new();
 
@@ -1430,6 +1556,14 @@ impl DocumentBuilder {
             while line.first().is_some_and(Node::is_discardable) {
                 line.remove(0);
             }
+            let mut migrating = Vec::new();
+            line.retain(|n| match n {
+                Node::Migrating(m) => {
+                    migrating.extend(m.material.iter().cloned());
+                    false
+                }
+                _ => true,
+            });
             let mut line = rejoin_unbroken_words(line);
             let ratio = line_ratio(br.width, &line, start_skip + end_skip);
             line.insert(0, Node::glue(start_skip));
@@ -1449,12 +1583,12 @@ impl DocumentBuilder {
                 misfit: false,
                 explicit: false,
             };
-            lines.push((vbox, broken));
+            lines.push((vbox, broken, migrating));
         }
 
         let count = lines.len();
         let mut v_nodes = Vec::new();
-        for (index, (vbox, broken)) in lines.into_iter().enumerate() {
+        for (index, (vbox, broken, migrating)) in lines.into_iter().enumerate() {
             let (height, depth) = (pt_of(&vbox.height), pt_of(&vbox.depth));
             if let Some(bls) = self.settings.baseline_skip {
                 v_nodes.push(bls.leading_for(height, *previous_depth));
@@ -1467,6 +1601,7 @@ impl DocumentBuilder {
                 )));
             }
             v_nodes.push(Node::VBox(vbox));
+            v_nodes.extend(migrating);
             let settings = &self.page_break_settings;
             let penalty = if count > 1 && index == 0 {
                 settings.widow_penalty
