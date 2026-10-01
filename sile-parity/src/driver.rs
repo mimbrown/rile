@@ -112,6 +112,9 @@ fn expand_includes(tree: Vec<Content>, dir: &Path) -> Result<Vec<Content>, Strin
 const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "bidi-off",
+    "bidi-on",
+    "thisframeRTL",
+    "thisframeLTR",
     "verbatim",
     "font:add-fallback",
     "font:remove-fallback",
@@ -200,7 +203,8 @@ const SIMPLE_COMMANDS: &[&str] = &[
     " ",
 ];
 
-const FONT_OPTIONS: &[&str] = &["family", "size", "style", "weight", "language", "features", "variations", "filename", "adjust"];
+const FONT_OPTIONS: &[&str] =
+    &["family", "size", "style", "weight", "language", "features", "variations", "filename", "adjust", "direction", "script"];
 
 const SETTINGS: &[&str] = &[
     "font.family",
@@ -287,9 +291,13 @@ fn check(
                 {
                     missing.insert(format!("papersize={p}"));
                 }
-                for (k, _) in &cmd.options {
-                    if !matches!(k.as_str(), "class" | "papersize" | "landscape") {
-                        missing.insert(format!("document[{k}]"));
+                for (k, v) in &cmd.options {
+                    match k.as_str() {
+                        "class" | "papersize" | "landscape" => {}
+                        "direction" if direction(v).is_some() => {}
+                        _ => {
+                            missing.insert(format!("document[{k}={v}]"));
+                        }
                     }
                 }
             }
@@ -309,7 +317,8 @@ fn check(
                     | "packages.verbatim"
                     | "packages.linespacing"
                     | "packages.font-fallback"
-                    | "packages.color-fonts",
+                    | "packages.color-fonts"
+                    | "packages.bidi",
                 ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
@@ -835,6 +844,10 @@ impl<'a> Driver<'a> {
                     Some("book") => self.doc.set_class(Book::new()),
                     _ => self.doc.set_class(Plain::new()),
                 };
+                if let Some(dir) = cmd.option("direction").and_then(direction) {
+                    self.doc.set_direction(dir);
+                    self.update_font(|f| f.direction = dir)?;
+                }
                 self.process(content)?;
             }
             "use" => match cmd.option("module") {
@@ -845,7 +858,16 @@ impl<'a> Driver<'a> {
                 _ => {}
             },
             "par" => self.par()?,
-            "bidi-off" => {}
+            "bidi-off" | "bidi-on" => {
+                self.doc.set_bidi(cmd.name == "bidi-on");
+            }
+            "thisframeRTL" | "thisframeLTR" => {
+                let dir = if cmd.name == "thisframeRTL" { Direction::RTL } else { Direction::LTR };
+                self.sync()?;
+                self.doc.set_frame_direction(dir);
+                self.update_font(|f| f.direction = dir)?;
+                self.doc.leave_hmode(false).map_err(err)?;
+            }
             " " => self.add_text(" ")?,
             "comment" => {}
             "noop" => self.process(content)?,
@@ -1445,6 +1467,11 @@ impl<'a> Driver<'a> {
             "language" => self.settings.language = value.to_string(),
             "features" => self.update_font(|f| f.features = value.to_string())?,
             "variations" => self.update_font(|f| f.variations = value.to_string())?,
+            "direction" => {
+                let dir = direction(value).ok_or_else(|| format!("bad direction {value}"))?;
+                self.update_font(|f| f.direction = dir)?
+            }
+            "script" => self.update_font(|f| f.script = value.to_string())?,
             "filename" => {
                 let path = match value.strip_prefix(".fonts/") {
                     Some(file) => self.corpus.font_dir.join("extra").join(file),
@@ -1832,5 +1859,13 @@ mod tests {
     fn retrograde_versions_compare() {
         assert!(semver("v0.14.17") < (0, 15, 0));
         assert!(semver("0.15.14") >= (0, 15, 14));
+    }
+}
+
+fn direction(value: &str) -> Option<Direction> {
+    match value.to_ascii_uppercase().as_str() {
+        "LTR" | "LTR-TTB" => Some(Direction::LTR),
+        "RTL" | "RTL-TTB" => Some(Direction::RTL),
+        _ => None,
     }
 }

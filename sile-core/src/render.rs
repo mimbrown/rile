@@ -1,4 +1,5 @@
 use crate::node::{HBox, Ink, Leader, NNode, Node};
+use crate::font::Direction;
 use crate::framespec::FrameGeometry;
 use crate::pagebuilder::Page;
 
@@ -36,8 +37,10 @@ fn draw_page(page: &Page, canvas: &mut impl Canvas) {
                 Node::VBox(vbox) => {
                     let height = pt(&vbox.height.length);
                     let depth = pt(&vbox.depth.length);
-                    let line = Line { ratio: vbox.ratio, end_edge: frame.right };
-                    draw_hlist(&vbox.nodes, frame.left, cursor_y + height, &line, canvas);
+                    let rtl = frame.direction == Some(Direction::RTL);
+                    let line = Line { ratio: vbox.ratio, end_edge: frame.right, rtl };
+                    let start = if rtl { frame.right } else { frame.left };
+                    draw_hlist(&vbox.nodes, start, cursor_y + height, &line, canvas);
                     cursor_y += height + depth;
                 }
                 Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
@@ -54,10 +57,15 @@ struct Line {
     ratio: f64,
     /// Where leaders line up.
     end_edge: f64,
+    /// Set from the right edge leftwards, each node in turn (SILE's RTL
+    /// frames).
+    rtl: bool,
 }
 
 impl Line {
-    const NATURAL: Line = Line { ratio: 0.0, end_edge: f64::INFINITY };
+    fn natural(&self) -> Line {
+        Line { ratio: 0.0, end_edge: f64::INFINITY, rtl: self.rtl }
+    }
 
     /// SILE's `rationWidth`.
     fn width(&self, node: &Node) -> f64 {
@@ -73,30 +81,39 @@ impl Line {
     }
 }
 
-/// Draw a line's nodes from `x`, scaling glue by the line's ratio.
+/// Draw a line's nodes from `x`, scaling glue by the line's ratio. In
+/// right-to-left lines `x` is the right end, and boxes are drawn from their
+/// left edge after moving past them, as SILE's frames do.
 fn draw_hlist(nodes: &[Node], mut x: f64, mut baseline_y: f64, line: &Line, canvas: &mut impl Canvas) -> f64 {
+    let sign = if line.rtl { -1.0 } else { 1.0 };
     for node in nodes {
         match node {
             Node::NNode(nnode) => {
-                canvas.glyphs(nnode, x, baseline_y);
-                x += pt(&nnode.width.length);
+                let width = pt(&nnode.width.length);
+                if line.rtl {
+                    x -= width;
+                    canvas.glyphs(nnode, x, baseline_y);
+                } else {
+                    canvas.glyphs(nnode, x, baseline_y);
+                    x += width;
+                }
             }
             Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
                 let width = line.width(node);
                 match &g.leader {
-                    Some(Leader::Stroke(s)) => canvas.rule(x, baseline_y - s.raise, width, s.thickness),
-                    Some(Leader::Box(b)) => draw_leaders(b, x, width, baseline_y, line, canvas),
+                    Some(Leader::Stroke(s)) => canvas.rule(x, baseline_y - s.raise, sign * width, s.thickness),
+                    Some(Leader::Box(b)) => draw_leaders(b, x.min(x + sign * width), width, baseline_y, line, canvas),
                     None => {}
                 }
-                x += width;
+                x += sign * width;
             }
-            Node::Kern(_) => x += line.width(node),
+            Node::Kern(_) => x += sign * line.width(node),
             Node::Discretionary(d) => x = draw_hlist(&d.replacement, x, baseline_y, line, canvas),
             Node::HBox(hbox) => match hbox.ink {
                 Some(Ink::Rule) => {
                     let (width, height, depth) = (pt(&hbox.width.length), pt(&hbox.height.length), pt(&hbox.depth.length));
-                    canvas.rule(x, baseline_y - height, width, height + depth);
-                    x += width;
+                    canvas.rule(x, baseline_y - height, sign * width, height + depth);
+                    x += sign * width;
                 }
                 Some(Ink::Liner(s)) => {
                     let end = draw_hlist(&hbox.nodes, x, baseline_y, line, canvas);
@@ -104,8 +121,14 @@ fn draw_hlist(nodes: &[Node], mut x: f64, mut baseline_y: f64, line: &Line, canv
                     x = end;
                 }
                 _ => {
-                    draw_hlist(&hbox.nodes, x, baseline_y, &Line::NATURAL, canvas);
-                    x += pt(&hbox.width.length);
+                    let width = pt(&hbox.width.length);
+                    if line.rtl {
+                        x -= width;
+                        draw_hlist(&hbox.nodes, x, baseline_y, &line.natural(), canvas);
+                    } else {
+                        draw_hlist(&hbox.nodes, x, baseline_y, &line.natural(), canvas);
+                        x += width;
+                    }
                     baseline_y -= hbox.raise;
                 }
             },
@@ -129,7 +152,7 @@ fn draw_leaders(pattern: &HBox, x: f64, width: f64, baseline_y: f64, line: &Line
     let repetitions = max - (skip / step).ceil();
     let mut x = x + fit - max * step;
     for _ in 0..repetitions.max(0.0) as usize {
-        draw_hlist(&pattern.nodes, x, baseline_y, &Line::NATURAL, canvas);
+        draw_hlist(&pattern.nodes, x, baseline_y, &line.natural(), canvas);
         x += step;
     }
 }

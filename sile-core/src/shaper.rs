@@ -399,6 +399,21 @@ pub fn split_bidi_runs(text: &str, default_direction: Option<Direction>) -> Vec<
     runs
 }
 
+/// The embedding level of each byte of `text` in a paragraph set in
+/// `direction`, with trailing whitespace back at the paragraph's level.
+pub fn bidi_levels(text: &str, direction: Direction) -> Vec<u8> {
+    let level = if direction == Direction::RTL { Level::rtl() } else { Level::ltr() };
+    let info = BidiInfo::new(text, Some(level));
+    let mut levels = vec![level.number(); text.len()];
+    for para in &info.paragraphs {
+        let reordered = info.reordered_levels(para, para.range.clone());
+        for i in para.range.clone() {
+            levels[i] = reordered[i].number();
+        }
+    }
+    levels
+}
+
 /// Shape text with bidi support. Splits the input into directional runs
 /// using the Unicode BiDi Algorithm, shapes each run with the correct
 /// direction, and returns glyphs in visual display order.
