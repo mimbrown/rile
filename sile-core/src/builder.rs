@@ -13,7 +13,7 @@ use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
-use crate::node::{self, GlyphData, NNode, Node, VBox};
+use crate::node::{self, GlyphData, Ink, Leader, NNode, Node, Stroke, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
 use crate::pagebuilder::{self, Page, PageBreakSettings};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
@@ -98,7 +98,16 @@ struct TextRun {
 enum Inline {
     Text(TextRun),
     Node(Box<Node>),
-    Box(Vec<Inline>),
+    Box(Group, Vec<Inline>),
+}
+
+/// How material collected between `start_*` and `end_hbox` is set.
+#[derive(Clone)]
+enum Group {
+    HBox,
+    /// Glue of this width (infinite when `None`) filled with copies of the box.
+    Leaders(Option<Length>),
+    Liner(Stroke),
 }
 
 // ---------------------------------------------------------------------------
@@ -279,14 +288,14 @@ enum Captured {
 struct Capture {
     items: Vec<Captured>,
     paragraph: Vec<Inline>,
-    open_boxes: Vec<Vec<Inline>>,
+    open_boxes: Vec<(Group, Vec<Inline>)>,
     current_indent: Option<f64>,
 }
 
 struct SavedTypesetter {
     settings: Settings,
     paragraph: Vec<Inline>,
-    open_boxes: Vec<Vec<Inline>>,
+    open_boxes: Vec<(Group, Vec<Inline>)>,
     current_indent: Option<f64>,
     previous_depth: Option<f64>,
     queue: Vec<Node>,
@@ -326,7 +335,7 @@ pub struct DocumentBuilder {
 
     // Paragraph state
     paragraph: Vec<Inline>,
-    open_boxes: Vec<Vec<Inline>>,
+    open_boxes: Vec<(Group, Vec<Inline>)>,
     current_indent: Option<f64>,
     hanging: Option<(i32, f64)>,
     previous_depth: Option<f64>,
@@ -721,24 +730,89 @@ impl DocumentBuilder {
     /// Start collecting material into a box set at its natural width;
     /// everything added until `end_hbox` goes inside it.
     pub fn start_hbox(&mut self) -> &mut Self {
-        self.open_boxes.push(Vec::new());
+        self.open_boxes.push((Group::HBox, Vec::new()));
         self
     }
 
+    /// Close the innermost `start_hbox`, `start_leaders` or `start_liner`.
     pub fn end_hbox(&mut self) -> &mut Self {
-        if let Some(content) = self.open_boxes.pop() {
-            self.push_inline(Inline::Box(content));
+        if let Some((group, content)) = self.open_boxes.pop() {
+            self.push_inline(Inline::Box(group, content));
         }
         self
     }
 
+    /// Fill glue of `width` (as much as possible when `None`) with copies of
+    /// the material added until `end_hbox`, lined up across lines by the
+    /// frame's end edge (SILE's `\leaders`).
+    pub fn start_leaders(&mut self, width: Option<Length>) -> &mut Self {
+        self.open_boxes.push((Group::Leaders(width), Vec::new()));
+        self
+    }
+
+    /// Draw `stroke` along the material added until `end_hbox`, across line
+    /// breaks (SILE's liners).
+    pub fn start_liner(&mut self, stroke: Stroke) -> &mut Self {
+        self.open_boxes.push((Group::Liner(stroke), Vec::new()));
+        self
+    }
+
+    pub fn start_underline(&mut self) -> &mut Self {
+        let (raise, thickness) = self.underline_metrics();
+        self.start_liner(Stroke { raise, thickness })
+    }
+
+    pub fn start_strikethrough(&mut self) -> &mut Self {
+        let (position, thickness) = self.strikeout_metrics();
+        self.start_liner(Stroke { raise: position + thickness / 2.0, thickness })
+    }
+
+    /// The current font's underline position (its top above the baseline)
+    /// and thickness, in points.
+    pub fn underline_metrics(&self) -> (f64, f64) {
+        self.font_metrics(|f| (f.underline_position(), f.underline_thickness()))
+    }
+
+    /// The current font's strikeout position (its middle above the baseline)
+    /// and thickness, in points.
+    pub fn strikeout_metrics(&self) -> (f64, f64) {
+        self.font_metrics(|f| (f.strikeout_position(), f.strikeout_size()))
+    }
+
+    fn font_metrics(&self, metrics: impl Fn(&FontFace) -> (i16, i16)) -> (f64, f64) {
+        let Some(font) = self.settings.font.as_deref().and_then(|f| self.fonts.get(f)) else {
+            return (0.0, 0.0);
+        };
+        let (a, b) = metrics(&font.face);
+        (font.face.scale(a, font.spec.size), font.face.scale(b, font.spec.size))
+    }
+
+    /// A box of solid ink on the baseline (SILE's `\hrule`).
+    pub fn add_hrule(&mut self, width: f64, height: f64, depth: f64) -> &mut Self {
+        let mut rule = node::HBox::new(Length::pt(width), Length::pt(height), Length::pt(depth));
+        rule.ink = Some(Ink::Rule);
+        self.push_inline(Inline::Node(Box::new(Node::HBox(rule))));
+        self
+    }
+
+    /// Infinitely stretchable space filled with a rule (SILE's `\hrulefill`).
+    pub fn add_hrulefill(&mut self, stroke: Stroke) -> &mut Self {
+        let mut fill = Node::hfillglue(Length::zero());
+        if let Node::HFillGlue(g) = &mut fill {
+            g.explicit = true;
+            g.leader = Some(Leader::Stroke(stroke));
+        }
+        self.push_inline(Inline::Node(Box::new(fill)));
+        self
+    }
+
     fn current_list(&self) -> &[Inline] {
-        self.open_boxes.last().unwrap_or(&self.paragraph)
+        self.open_boxes.last().map_or(&self.paragraph, |(_, list)| list)
     }
 
     /// SILE's `initline`: a paragraph opens with a zero box and its indent.
     fn push_inline(&mut self, item: Inline) {
-        if let Some(open) = self.open_boxes.last_mut() {
+        if let Some((_, open)) = self.open_boxes.last_mut() {
             open.push(item);
             return;
         }
@@ -769,7 +843,7 @@ impl DocumentBuilder {
     /// Break the pending paragraph into lines without ending it as a
     /// paragraph (no paragraph skip), then fill the current frame if it is
     /// full. `independent` only breaks the lines.
-    pub(crate) fn leave_hmode(&mut self, independent: bool) -> Result<(), BuilderError> {
+    pub fn leave_hmode(&mut self, independent: bool) -> Result<(), BuilderError> {
         self.open_boxes.clear();
         if let Some(capture) = self.captures.last_mut() {
             if !self.paragraph.is_empty() {
@@ -872,7 +946,13 @@ impl DocumentBuilder {
             width: Length::pt(width),
             height: Length::pt(height),
             depth: Length::zero(),
-            nodes: vec![Node::hbox(width, height, 0.0)],
+            nodes: vec![{
+                let mut rule = Node::hbox(width, height, 0.0);
+                if let Node::HBox(b) = &mut rule {
+                    b.ink = Some(Ink::Rule);
+                }
+                rule
+            }],
             ratio: 0.0,
             misfit: false,
             explicit: false,
@@ -1208,8 +1288,8 @@ impl DocumentBuilder {
             return Material::default();
         };
         let mut items = capture.items;
-        while let Some(open) = self.open_boxes.pop() {
-            self.push_inline(Inline::Box(open));
+        while let Some((group, open)) = self.open_boxes.pop() {
+            self.push_inline(Inline::Box(group, open));
         }
         let pending = std::mem::replace(&mut self.paragraph, capture.paragraph);
         if !pending.is_empty() {
@@ -1411,16 +1491,27 @@ impl DocumentBuilder {
             match item {
                 Inline::Text(run) => h_nodes.extend(self.shape_run(run)?),
                 Inline::Node(node) => h_nodes.push((**node).clone()),
-                Inline::Box(content) => {
-                    let nodes = self.shape_inlines(content)?;
-                    let width: f64 = nodes.iter().map(|n| pt_of(&n.width())).sum();
-                    let mut hbox = node::HBox::new(
-                        Length::pt(width),
-                        node::max_node_dim(&nodes, node::Dim::Height),
-                        node::max_node_dim(&nodes, node::Dim::Depth),
-                    );
-                    hbox.nodes = nodes;
-                    h_nodes.push(Node::HBox(hbox));
+                Inline::Box(Group::Liner(stroke), content) => {
+                    h_nodes.push(liner_mark(Ink::LinerStart(*stroke)));
+                    h_nodes.extend(self.shape_inlines(content)?);
+                    h_nodes.push(liner_mark(Ink::LinerEnd));
+                }
+                Inline::Box(group, content) => {
+                    let hbox = natural_hbox(self.shape_inlines(content)?);
+                    h_nodes.push(match group {
+                        Group::Leaders(width) => {
+                            let mut glue = match width {
+                                Some(w) => Node::glue(*w),
+                                None => Node::hfillglue(Length::zero()),
+                            };
+                            if let Node::Glue(g) | Node::HFillGlue(g) = &mut glue {
+                                g.explicit = true;
+                                g.leader = Some(Leader::Box(Box::new(hbox)));
+                            }
+                            glue
+                        }
+                        _ => Node::HBox(hbox),
+                    });
                 }
             }
         }
@@ -1597,6 +1688,7 @@ impl DocumentBuilder {
         let mut lines: Vec<(VBox, bool, Vec<Node>)> = Vec::new();
         let mut start = 0;
         let mut postbreak: Vec<Node> = Vec::new();
+        let mut open_liners: Vec<Stroke> = Vec::new();
 
         for br in breaks {
             if br.position == 0 || h_nodes.is_empty() {
@@ -1641,12 +1733,14 @@ impl DocumentBuilder {
                 }
                 _ => true,
             });
-            let mut line = rejoin_unbroken_words(line);
+            let line = rejoin_unbroken_words(line);
+            let mut line = reopen_liners(line, &mut open_liners);
             let ratio = line_ratio(br.width, &line, start_skip + end_skip);
             line.insert(0, Node::glue(start_skip));
             line.insert(0, Node::zerohbox());
             line.push(Node::glue(end_skip));
             line.push(Node::zerohbox());
+            let mut line = rebox_liners(line);
             if direction == Direction::RTL {
                 line.reverse();
             }
@@ -1777,6 +1871,112 @@ fn rejoin_unbroken_words(line: Vec<Node>) -> Vec<Node> {
     out
 }
 
+fn ink(node: &Node) -> Option<Ink> {
+    match node {
+        Node::HBox(b) => b.ink,
+        _ => None,
+    }
+}
+
+/// Reopen at the line's first content the liners still open from earlier
+/// lines, and close the ones still open after its last content (SILE's
+/// `_repeatEnterLiners` and `_repeatLeaveLiners`).
+fn reopen_liners(line: Vec<Node>, open: &mut Vec<Stroke>) -> Vec<Node> {
+    let is_content = |n: &Node| !n.is_discardable() && !(n.is_glue() && !n.is_explicit()) && !n.is_zero();
+    let mut out = Vec::with_capacity(line.len());
+    let mut seen_liner = false;
+    let mut last_content = None;
+    for node in line {
+        if is_content(&node) {
+            last_content = Some(out.len());
+        }
+        if !seen_liner && last_content.is_some() {
+            if !open.is_empty() {
+                out.extend(open.iter().map(|&s| liner_mark(Ink::LinerStart(s))));
+                seen_liner = true;
+            }
+            last_content = Some(out.len());
+        }
+        match ink(&node) {
+            Some(Ink::LinerStart(stroke)) => {
+                open.push(stroke);
+                seen_liner = true;
+            }
+            Some(Ink::LinerEnd) => {
+                open.pop();
+            }
+            _ => {}
+        }
+        out.push(node);
+    }
+    if let Some(i) = last_content {
+        for _ in open.iter() {
+            out.insert(i + 1, liner_mark(Ink::LinerEnd));
+        }
+    }
+    out
+}
+
+/// Wrap the content between liner markers in boxes that draw their stroke
+/// (SILE's `_reboxLiners`).
+fn rebox_liners(line: Vec<Node>) -> Vec<Node> {
+    if !line.iter().any(|n| ink(n).is_some_and(|i| i == Ink::LinerEnd)) {
+        return line;
+    }
+    let mut out = Vec::with_capacity(line.len());
+    let mut stack: Vec<node::HBox> = Vec::new();
+    let append = |b: &mut node::HBox, n: Node| {
+        b.width = Length::pt(pt_of(&b.width) + pt_of(&natural_width(&n)));
+        b.height = Length::pt(pt_of(&b.height).max(pt_of(&n.height())));
+        b.depth = Length::pt(pt_of(&b.depth).max(pt_of(&n.depth())));
+        b.nodes.push(n);
+    };
+    for node in line {
+        match ink(&node) {
+            Some(Ink::LinerStart(stroke)) => {
+                stack.push(node::HBox { ink: Some(Ink::Liner(stroke)), ..Default::default() });
+            }
+            Some(Ink::LinerEnd) => {
+                let Some(b) = stack.pop() else { continue };
+                if b.nodes.is_empty() {
+                    continue;
+                }
+                match stack.last_mut() {
+                    Some(parent) => append(parent, Node::HBox(b)),
+                    None => out.push(Node::HBox(b)),
+                }
+            }
+            _ => match stack.last_mut() {
+                Some(b) => append(b, node),
+                None => out.push(node),
+            },
+        }
+    }
+    out
+}
+
+fn natural_width(node: &Node) -> Length {
+    match node {
+        Node::Discretionary(d) => d.replacement.iter().map(Node::width).fold(Length::zero(), |a, b| a + b),
+        other => other.width(),
+    }
+}
+
+fn natural_hbox(nodes: Vec<Node>) -> node::HBox {
+    let width: f64 = nodes.iter().map(|n| pt_of(&n.width())).sum();
+    let mut hbox = node::HBox::new(
+        Length::pt(width),
+        node::max_node_dim(&nodes, node::Dim::Height),
+        node::max_node_dim(&nodes, node::Dim::Depth),
+    );
+    hbox.nodes = nodes;
+    hbox
+}
+
+fn liner_mark(ink: Ink) -> Node {
+    Node::HBox(node::HBox { ink: Some(ink), ..Default::default() })
+}
+
 fn pt_of(l: &Length) -> f64 {
     l.length.to_pt().unwrap_or(0.0)
 }
@@ -1790,10 +1990,7 @@ fn line_ratio(width: f64, line: &[Node], margins: Length) -> f64 {
         .map_or(0, |i| i + 1);
     let mut natural = margins;
     for n in &line[..end] {
-        natural += match n {
-            Node::Discretionary(d) => d.replacement.iter().map(Node::width).fold(Length::zero(), |a, b| a + b),
-            other => other.width(),
-        };
+        natural += natural_width(n);
     }
     let left = width - pt_of(&natural);
     let flex = if left < 0.0 { natural.shrink } else { natural.stretch };
@@ -1943,6 +2140,44 @@ mod tests {
     }
 
     // -- Construction --------------------------------------------------------
+
+    fn rule_lines(trace: &str) -> Vec<Vec<f64>> {
+        trace
+            .lines()
+            .filter_map(|l| l.strip_prefix("Draw line\t"))
+            .map(|l| l.split('\t').map(|v| v.parse().unwrap()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn underline_spans_line_breaks() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.add_text("Before ").start_underline();
+        doc.add_text("underlined words ".repeat(12)).end_hbox().add_text("after.");
+        let rules = rule_lines(&doc.render_debug().unwrap());
+        assert!(rules.len() >= 2, "one stroke per line: {rules:?}");
+        assert!(rules[1][1] > rules[0][1]);
+    }
+
+    #[test]
+    fn hrule_and_hrulefill_draw_rules() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.add_hrule(20.0, 5.0, 1.0).add_text("x");
+        doc.add_hrulefill(Stroke { raise: 0.0, thickness: 0.2 });
+        let rules = rule_lines(&doc.render_debug().unwrap());
+        assert_eq!(rules.len(), 2);
+        assert_eq!((rules[0][2], rules[0][3]), (20.0, 6.0));
+        assert_eq!(rules[1][3], 0.2);
+        assert!(rules[1][2] > 100.0, "the fill takes the rest of the line");
+    }
+
+    #[test]
+    fn leaders_repeat_their_box() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.add_text("A").start_leaders(None).add_text(".").end_hbox().add_text("B");
+        let trace = doc.render_debug().unwrap();
+        assert!(trace.matches("\t(.)\n").count() > 10, "{trace}");
+    }
 
     #[test]
     fn new_builder() {

@@ -168,6 +168,8 @@ pub struct FontFace {
     line_gap: i16,
     underline_position: i16,
     underline_thickness: i16,
+    strikeout_position: i16,
+    strikeout_size: i16,
     glyph_count: u16,
     is_variable: bool,
     has_colr: bool,
@@ -185,6 +187,10 @@ impl FontFace {
             .underline_metrics()
             .map(|m| (m.position, m.thickness))
             .unwrap_or((0, 0));
+        let (so_pos, so_size) = face
+            .strikeout_metrics()
+            .map(|m| (m.position, m.thickness))
+            .unwrap_or((0, 0));
 
         Ok(Self {
             units_per_em: face.units_per_em(),
@@ -193,6 +199,8 @@ impl FontFace {
             line_gap: face.line_gap(),
             underline_position: ul_pos,
             underline_thickness: ul_thick,
+            strikeout_position: so_pos,
+            strikeout_size: so_size,
             glyph_count: face.number_of_glyphs(),
             is_variable: face.is_variable(),
             has_colr: face.tables().colr.is_some(),
@@ -234,6 +242,14 @@ impl FontFace {
 
     pub fn underline_thickness(&self) -> i16 {
         self.underline_thickness
+    }
+
+    pub fn strikeout_position(&self) -> i16 {
+        self.strikeout_position
+    }
+
+    pub fn strikeout_size(&self) -> i16 {
+        self.strikeout_size
     }
 
     pub fn glyph_count(&self) -> u16 {

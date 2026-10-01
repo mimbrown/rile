@@ -9,7 +9,7 @@ use std::str::FromStr;
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, LineSkips, TextAlign};
 use sile_core::class::{Book, Folio, FolioState, Heading, Plain};
 use sile_core::insertion::InsertionClass;
-use sile_core::node::Node;
+use sile_core::node::{Node, Stroke};
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::length::Length;
@@ -134,6 +134,13 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "chapter",
     "section",
     "subsection",
+    "hrule",
+    "hrulefill",
+    "fullrule",
+    "underline",
+    "strikethrough",
+    "leaders",
+    "dotfill",
     " ",
 ];
 
@@ -192,7 +199,7 @@ fn check(
                 }
             }
             "use" => match cmd.option("module") {
-                Some("packages.retrograde" | "packages.lorem" | "packages.footnotes") => {}
+                Some("packages.retrograde" | "packages.lorem" | "packages.footnotes" | "packages.rules" | "packages.leaders") => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
                 }
@@ -771,6 +778,68 @@ impl<'a> Driver<'a> {
                 self.process(content)?;
                 self.doc.end_hbox();
             }
+            "hrule" => {
+                let mut dim = |name| cmd.option(name).map_or(Ok(0.0), |v| self.dimen(v));
+                let (width, height, depth) = (dim("width")?, dim("height")?, dim("depth")?);
+                self.sync()?;
+                self.doc.add_hrule(width, height, depth);
+            }
+            "hrulefill" => {
+                let thickness = cmd.option("thickness").map(|t| self.dimen(t)).transpose()?;
+                let stroke = match cmd.option("position") {
+                    Some("underline") => {
+                        self.sync()?;
+                        let (position, default) = self.doc.underline_metrics();
+                        Stroke { raise: position, thickness: thickness.unwrap_or(default) }
+                    }
+                    Some("strikethrough") => {
+                        self.sync()?;
+                        let (position, default) = self.doc.strikeout_metrics();
+                        let thickness = thickness.unwrap_or(default);
+                        Stroke { raise: position + thickness / 2.0, thickness }
+                    }
+                    Some(other) => return Err(format!("unknown hrulefill position {other}")),
+                    None => Stroke {
+                        raise: self.dimen(cmd.option("raise").unwrap_or("0"))?,
+                        thickness: thickness.unwrap_or(0.2),
+                    },
+                };
+                self.sync()?;
+                self.doc.add_hrulefill(stroke);
+            }
+            "fullrule" => {
+                let thickness = self.dimen(cmd.option("thickness").unwrap_or("0.2pt"))?;
+                let raise = self.dimen(cmd.option("raise").unwrap_or("0.5em"))?;
+                self.sync()?;
+                self.doc.leave_hmode(false).map_err(err)?;
+                self.doc.set_current_indent(Some(0.0));
+                self.doc.add_hrulefill(Stroke { raise, thickness });
+                self.doc.leave_hmode(false).map_err(err)?;
+            }
+            "underline" | "strikethrough" => {
+                self.sync()?;
+                if cmd.name == "underline" {
+                    self.doc.start_underline();
+                } else {
+                    self.doc.start_strikethrough();
+                }
+                self.process(content)?;
+                self.doc.end_hbox();
+            }
+            "leaders" => {
+                let width = cmd.option("width").map(|w| self.length(w)).transpose()?;
+                self.sync()?;
+                self.doc.start_leaders(width);
+                self.process(content)?;
+                self.doc.end_hbox();
+            }
+            "dotfill" => {
+                let kern = self.length("0.25em")?;
+                self.sync()?;
+                self.doc.start_leaders(None).add_kern(kern);
+                self.add_text(".")?;
+                self.doc.add_kern(kern).end_hbox();
+            }
             "center" => self.aligned(TextAlign::Center, content)?,
             "raggedright" => self.aligned(TextAlign::Left, content)?,
             "raggedleft" => self.aligned(TextAlign::Right, content)?,
@@ -1054,6 +1123,10 @@ impl<'a> Driver<'a> {
             "%ph" => n / 100.0 * self.paper.height,
             "%fw" => n / 100.0 * frame_w,
             "%fh" => n / 100.0 * frame_h,
+            "%pmax" => n / 100.0 * self.paper.width.max(self.paper.height),
+            "%pmin" => n / 100.0 * self.paper.width.min(self.paper.height),
+            "%fmax" => n / 100.0 * frame_w.max(frame_h),
+            "%fmin" => n / 100.0 * frame_w.min(frame_h),
             "%lw" => {
                 let s = self.settings.skips;
                 n / 100.0 * frame_w

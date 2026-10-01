@@ -56,7 +56,11 @@ pub fn compare(expected: &Trace, actual: &Trace) -> Comparison {
         let pairs = lcs_pairs(&ek, &ak);
         common += pairs.len();
         for (i, j) in pairs {
-            let offset = (e[i].x - a[j].x).abs().max((e[i].y - a[j].y).abs());
+            let offset = (e[i].x - a[j].x)
+                .abs()
+                .max((e[i].y - a[j].y).abs())
+                .max((e[i].size.0 - a[j].size.0).abs())
+                .max((e[i].size.1 - a[j].size.1).abs());
             if offset <= TOLERANCE_PT {
                 within += 1;
             }
@@ -99,11 +103,15 @@ struct Glyph {
     gid: u32,
     x: f64,
     y: f64,
+    /// Width and depth, for rules.
+    size: (f64, f64),
 }
 
-/// Every glyph on the page with its pen position. Runs without per-glyph
-/// advances spread their width evenly, which is exact for the first glyph and
-/// close enough for the rest at the tolerance used.
+const RULE: u32 = u32::MAX;
+
+/// Every glyph on the page with its pen position, then every rule. Runs
+/// without per-glyph advances spread their width evenly, which is exact for
+/// the first glyph and close enough for the rest at the tolerance used.
 fn glyphs(page: &crate::trace::Page) -> Vec<Glyph> {
     let mut out = Vec::new();
     for run in &page.runs {
@@ -114,6 +122,7 @@ fn glyphs(page: &crate::trace::Page) -> Vec<Glyph> {
                 gid: *gid,
                 x,
                 y: run.y,
+                size: (0.0, 0.0),
             });
             x += match &run.advances {
                 Some(a) => a.get(i).copied().unwrap_or(0.0),
@@ -121,6 +130,12 @@ fn glyphs(page: &crate::trace::Page) -> Vec<Glyph> {
             };
         }
     }
+    out.extend(page.rules.iter().map(|r| Glyph {
+        gid: RULE,
+        x: r.x,
+        y: r.y,
+        size: (r.width, r.depth),
+    }));
     out
 }
 

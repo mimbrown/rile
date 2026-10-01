@@ -686,6 +686,10 @@ impl crate::render::Canvas for PdfOutputter {
     fn glyphs(&mut self, nnode: &crate::node::NNode, x: f64, baseline_y: f64) {
         self.render_nnode(nnode, x, baseline_y);
     }
+
+    fn rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        self.draw_rule(x, y, width, height);
+    }
 }
 
 fn write_font(

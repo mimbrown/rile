@@ -383,6 +383,28 @@ pub struct HBox {
     /// Moves the baseline of everything after the box up by this much
     /// (SILE's `\raise`).
     pub raise: f64,
+    pub ink: Option<Ink>,
+}
+
+/// A horizontal line whose top edge is `raise` above the baseline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stroke {
+    pub raise: f64,
+    pub thickness: f64,
+}
+
+/// What an hbox draws besides its content.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ink {
+    /// The whole box is solid ink (SILE's `\hrule`).
+    Rule,
+    /// Content drawn at the line's glue ratio with a stroke along it
+    /// (SILE's liners: `\underline`, `\strikethrough`).
+    Liner(Stroke),
+    /// Zero-size markers around liner content in a paragraph. Each line
+    /// wraps what falls between them in its own `Liner` box.
+    LinerStart(Stroke),
+    LinerEnd,
 }
 
 impl HBox {
@@ -670,6 +692,16 @@ pub struct Glue {
     pub height: Length,
     pub depth: Length,
     pub explicit: bool,
+    /// Ink filling the glue's set width.
+    pub leader: Option<Leader>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Leader {
+    /// A rule (SILE's `\hrulefill`).
+    Stroke(Stroke),
+    /// Copies of a box, aligned to the frame's end edge (SILE's `\leaders`).
+    Box(Box<HBox>),
 }
 
 impl Glue {

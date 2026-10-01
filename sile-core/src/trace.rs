@@ -127,6 +127,10 @@ impl Canvas for TraceCanvas {
         }
         let _ = writeln!(self.out, "T\t{buf}\t({})", nnode.text);
     }
+
+    fn rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        let _ = writeln!(self.out, "Draw line\t{}\t{}\t{}\t{}", round(x), round(y), round(width), round(height));
+    }
 }
 
 /// SILE's `SU.debug_round`: four decimals, nudged away from zero.
