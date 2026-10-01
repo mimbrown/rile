@@ -44,9 +44,153 @@ impl MultilevelCounter {
     }
 }
 
+/// `n` written in the numbering system `display` (SILE's
+/// `SU.formatNumber`): `arabic`, `alpha`/`ALPHA`, `roman`/`ROMAN`, Greek
+/// (`greklow`, `grek`), Japanese (`jpan`), or a decimal system with its own
+/// digits such as `arabext` or `deva`.
+pub fn format_number(n: i64, display: &str) -> Option<String> {
+    Some(match display {
+        "arabic" | "" => n.to_string(),
+        "alpha" => alpha(n),
+        "Alpha" | "ALPHA" => alpha(n).to_uppercase(),
+        "roman" => roman(n).to_lowercase(),
+        "Roman" | "ROMAN" => roman(n),
+        "greklow" => greek(n, false),
+        "grek" => greek(n, true),
+        "jpan" => japanese(n),
+        other => {
+            let zero = decimal_zero(other)?;
+            n.to_string()
+                .chars()
+                .map(|c| c.to_digit(10).and_then(|d| char::from_u32(zero + d)).unwrap_or(c))
+                .collect()
+        }
+    })
+}
+
+fn decimal_zero(system: &str) -> Option<u32> {
+    Some(match system {
+        "arab" => 0x0660,
+        "arabext" => 0x06F0,
+        "deva" => 0x0966,
+        "beng" => 0x09E6,
+        "guru" => 0x0A66,
+        "gujr" => 0x0AE6,
+        "orya" => 0x0B66,
+        "tamldec" => 0x0BE6,
+        "telu" => 0x0C66,
+        "knda" => 0x0CE6,
+        "mlym" => 0x0D66,
+        "thai" => 0x0E50,
+        "laoo" => 0x0ED0,
+        "tibt" => 0x0F20,
+        "mymr" => 0x1040,
+        "khmr" => 0x17E0,
+        "mong" => 0x1810,
+        "fullwide" => 0xFF10,
+        _ => return None,
+    })
+}
+
+/// Bijective base 26: a…z, aa…
+fn alpha(mut n: i64) -> String {
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push((b'a' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    out.iter().rev().collect()
+}
+
+fn roman(mut n: i64) -> String {
+    const NUMERALS: [(i64, &str); 13] = [
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+        (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ];
+    let mut out = String::new();
+    for (value, numeral) in NUMERALS {
+        while n >= value {
+            out.push_str(numeral);
+            n -= value;
+        }
+    }
+    out
+}
+
+/// Alphabetic Greek numerals, thousands marked with ͵ and the number closed
+/// with a keraia, as ICU writes them.
+fn greek(n: i64, upper: bool) -> String {
+    const UNITS: [&str; 9] = ["α", "β", "γ", "δ", "ε", "ϛ", "ζ", "η", "θ"];
+    const TENS: [&str; 9] = ["ι", "κ", "λ", "μ", "ν", "ξ", "ο", "π", "ϟ"];
+    const HUNDREDS: [&str; 9] = ["ρ", "σ", "τ", "υ", "φ", "χ", "ψ", "ω", "ϡ"];
+    let digit = |table: &[&'static str; 9], d: i64| if d > 0 { table[d as usize - 1] } else { "" };
+    let mut out = String::new();
+    if n >= 1000 {
+        out.push('͵');
+        out.push_str(digit(&UNITS, n / 1000 % 10));
+    }
+    out.push_str(digit(&HUNDREDS, n / 100 % 10));
+    out.push_str(digit(&TENS, n / 10 % 10));
+    out.push_str(digit(&UNITS, n % 10));
+    if upper {
+        out = out.to_uppercase();
+    }
+    out.push('´');
+    out
+}
+
+/// Japanese numerals with 十, 百, 千, 万 and 億, leaving out 一 before the
+/// first three.
+fn japanese(n: i64) -> String {
+    const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+    if n == 0 {
+        return "〇".to_string();
+    }
+    let below_10000 = |n: i64| {
+        let mut out = String::new();
+        for (unit, mark) in [(1000, Some('千')), (100, Some('百')), (10, Some('十')), (1, None)] {
+            let d = n / unit % 10;
+            if d == 0 {
+                continue;
+            }
+            if d > 1 || mark.is_none() {
+                out.push(DIGITS[d as usize]);
+            }
+            out.extend(mark);
+        }
+        out
+    };
+    let mut out = String::new();
+    for (unit, mark) in [(100_000_000, Some('億')), (10_000, Some('万')), (1, None)] {
+        let part = n / unit % 10_000;
+        if part > 0 {
+            out.push_str(&below_10000(part));
+            out.extend(mark);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbering_systems_follow_sile() {
+        let f = |display| format_number(1234, display).unwrap();
+        assert_eq!(f("arabic"), "1234");
+        assert_eq!(f("alpha"), "aul");
+        assert_eq!(f("ROMAN"), "MCCXXXIV");
+        assert_eq!(f("roman"), "mccxxxiv");
+        assert_eq!(f("greklow"), "͵ασλδ´");
+        assert_eq!(f("jpan"), "千二百三十四");
+        assert_eq!(f("arabext"), "۱۲۳۴");
+        assert_eq!(format_number(26, "alpha").unwrap(), "z");
+        assert_eq!(format_number(27, "alpha").unwrap(), "aa");
+        assert_eq!(format_number(10_010, "jpan").unwrap(), "一万十");
+        assert_eq!(format_number(1, "nonesuch"), None);
+    }
 
     #[test]
     fn levels_open_and_close() {

@@ -41,6 +41,8 @@ pub fn port(test: &str) -> Option<Port> {
         "hyph-except" => (&[tr_rabbin, tr_rabbin, tr_rabbin_typographic, af_volksemosie], &[]),
         "inline-lua" => (&[nothing, modulus, modulus, braces, escapes, escapes], &[]),
         "parshaping-simple" => (&[parshaping], &[]),
+        "settings" => (&[cormorant, reset_family, cormorant_by_default, reset_family], &[]),
+        "footnote-skip" => (&[footnote_skips], &[]),
         _ => return None,
     };
     Some(Port { chunks, commands })
@@ -159,6 +161,26 @@ fn braces(d: &mut Driver) -> Result<(), String> {
 
 fn escapes(d: &mut Driver) -> Result<(), String> {
     d.add_text("\\backslash & \ttab")
+}
+
+fn cormorant(d: &mut Driver) -> Result<(), String> {
+    d.set("font.family", "Cormorant Infant")
+}
+
+fn reset_family(d: &mut Driver) -> Result<(), String> {
+    d.reset_setting("font.family")
+}
+
+fn cormorant_by_default(d: &mut Driver) -> Result<(), String> {
+    d.set_default("font.family", "Cormorant Infant")
+}
+
+/// The Lua also sets `topSkip`, which SILE ignores when the class has a
+/// `topBox`, as footnotes do.
+fn footnote_skips(d: &mut Driver) -> Result<(), String> {
+    d.footnote_class()?;
+    d.doc.insertion_class_mut("footnote").ok_or("no footnote class")?.inter_skip = 24.0;
+    Ok(())
 }
 
 fn parshaping(d: &mut Driver) -> Result<(), String> {
