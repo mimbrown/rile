@@ -491,6 +491,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sile-parity"
+version = "0.1.0"
+dependencies = [
+ "fontdb",
+ "sile-core",
+ "ttf-parser 0.25.1",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
