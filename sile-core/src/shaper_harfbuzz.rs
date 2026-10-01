@@ -41,6 +41,7 @@ impl Shaper for HarfBuzzShaper {
         if !spec.language.is_empty() {
             buffer.set_language(&spec.language);
         }
+        buffer.guess_segment_properties();
 
         let features: Vec<hb::hb_feature_t> = if spec.features.is_empty() {
             vec![]
