@@ -19,6 +19,7 @@ use sile_core::pullquote::Pullquote;
 use sile_core::dropcap::Dropcap;
 use sile_core::svg_image::SvgImage;
 use sile_core::index::{DefaultIndexStyle, Indexer};
+use sile_core::bibliography::{Bibliography, Cite};
 use sile_core::cropmarks::Cropmarks;
 use sile_core::features::OtFeatures;
 use sile_core::image::{Background, BackgroundFill, Image};
@@ -147,6 +148,13 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "cropmarks:setup",
     "indexentry",
     "printindex",
+    "loadbibliography",
+    "bibliographystyle",
+    "cite",
+    "cites",
+    "nocite",
+    "reference",
+    "printbibliography",
     "rotate",
     "scalebox",
     "table",
@@ -386,6 +394,7 @@ fn check(
                     | "packages.cropmarks"
                     | "packages.autodoc"
                     | "packages.indexer"
+                    | "packages.bibtex"
                     | "packages.rotate"
                     | "packages.scalebox"
                     | "packages.simpletable"
@@ -587,6 +596,7 @@ pub(crate) struct Driver<'a> {
     target: (u32, u32, u32),
     /// The grid package's spacing, once it is loaded.
     grid_spacing: Option<f64>,
+    bibliography: Bibliography,
 }
 
 impl AsMut<DocumentBuilder> for Driver<'_> {
@@ -640,6 +650,7 @@ impl<'a> Driver<'a> {
             toplevel: None,
             target: (u32::MAX, 0, 0),
             grid_spacing: None,
+            bibliography: Bibliography::default(),
         })
     }
 
@@ -1694,6 +1705,48 @@ impl<'a> Driver<'a> {
                 self.sync()?;
                 Indexer::default().typeset(&mut self.doc, cmd.option("index").unwrap_or("main"), &DefaultIndexStyle).map_err(err)?;
             }
+            "loadbibliography" => {
+                let path = self.resolve(opt("file")?)?;
+                let bib = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                self.bibliography.load_bibtex(&bib).map_err(err)?;
+            }
+            "bibliographystyle" => {
+                let (style, lang) = (opt("style")?, cmd.option("lang"));
+                if self.bibliography.set_style(style, lang).is_err() {
+                    let path = self.resolve(&format!("packages/bibtex/csl/styles/{style}.csl"))?;
+                    let xml = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                    self.bibliography.set_csl_style(&xml, lang).map_err(err)?;
+                }
+            }
+            "nocite" => self.bibliography.nocite(&citation_key(cmd, content)).map_err(err)?,
+            "cite" => {
+                self.sync()?;
+                self.bibliography.cite(&mut self.doc, vec![cite(cmd, content)]).map_err(err)?;
+            }
+            "cites" => {
+                let mut cites = Vec::new();
+                for child in content {
+                    match child {
+                        Content::Command(c) if c.name == "cite" => cites.push(cite(c, c.content.as_deref().unwrap_or(&[]))),
+                        Content::Command(c) if c.name == "nocite" => {
+                            self.bibliography.nocite(&citation_key(c, c.content.as_deref().unwrap_or(&[]))).map_err(err)?
+                        }
+                        Content::Command(_) => return Err("only \\cite and \\nocite are allowed in \\cites".into()),
+                        _ => {}
+                    }
+                }
+                self.sync()?;
+                self.bibliography.cite(&mut self.doc, cites).map_err(err)?;
+            }
+            "reference" => {
+                self.sync()?;
+                self.bibliography.reference(&mut self.doc, &citation_key(cmd, content)).map_err(err)?;
+            }
+            "printbibliography" => {
+                self.sync()?;
+                let cited = cmd.option("cited").is_none_or(truthy);
+                self.bibliography.typeset(&mut self.doc, cited).map_err(err)?;
+            }
             "rotate" | "scalebox" => {
                 self.sync()?;
                 self.doc.start_hbox();
@@ -2431,4 +2484,13 @@ fn direction(value: &str) -> Option<Direction> {
         "RTL" | "RTL-TTB" => Some(Direction::RTL),
         _ => None,
     }
+}
+
+fn citation_key(cmd: &Command, content: &[Content]) -> String {
+    cmd.option("key").map_or_else(|| sil::plain_text(content), String::from)
+}
+
+fn cite(cmd: &Command, content: &[Content]) -> Cite {
+    let locator = cmd.options.iter().find(|(k, _)| k != "key").cloned();
+    Cite { locator, ..Cite::new(citation_key(cmd, content)) }
 }
