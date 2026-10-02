@@ -101,6 +101,11 @@ pub trait Shaper {
     /// Graphite (SILE's `harfbuzz.subshapers`); all of them when empty.
     fn set_subshapers(&mut self, _shapers: &[&str]) {}
 
+    /// Whether fonts with Graphite tables are shaped by them.
+    fn uses_graphite(&self) -> bool {
+        false
+    }
+
     fn measure_char(&self, c: char, face: &FontFace, spec: &FontSpec) -> (CharMetrics, bool) {
         let items = self.shape(&c.to_string(), face, spec);
         let mut width = 0.0_f64;

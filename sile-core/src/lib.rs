@@ -37,6 +37,7 @@ pub mod svg_image;
 pub mod table;
 pub mod textcase;
 pub mod url;
+mod word_shaping;
 pub mod toc;
 pub mod trace;
 pub mod transform;

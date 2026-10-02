@@ -12,6 +12,10 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 
 * Default builds are pure Rust (rustybuzz). `--features harfbuzz` links system HarfBuzz, needed for Graphite fonts.
 
+## Shaping cache
+
+`sile-core/src/word_shaping.rs` shapes runs a word at a time from a per-font cache, for fonts whose GSUB/GPOS/kern tables it proves can't reach across a space (characters a space-sensitive rule pairs with a space are kept attached to it). Graphite and AAT fonts are always shaped whole. Debug builds also shape every run whole and assert the results are identical, so the test suite and a debug parity run check the cache.
+
 ## Language data
 
 Patterns are SILE's own, converted to `sile-core/languages/*.pat`; localized messages are SILE's Fluent files (`*.ftl`). Both are embedded via `sile-core/src/language_data.rs`; regenerate with `scripts/import-sile-languages.py <sile checkout>`.

@@ -25,6 +25,10 @@ impl Shaper for HarfBuzzShaper {
         self.subshapers = shapers.iter().filter_map(|s| std::ffi::CString::new(*s).ok()).collect();
     }
 
+    fn uses_graphite(&self) -> bool {
+        self.subshapers.is_empty() || self.subshapers.iter().any(|s| s.as_bytes() == b"graphite2")
+    }
+
     fn shape(&self, text: &str, face: &FontFace, spec: &FontSpec) -> Vec<GlyphItem> {
         let shaping = face.harfbuzz_font(&face.variations(spec));
         let font = shaping.font();
