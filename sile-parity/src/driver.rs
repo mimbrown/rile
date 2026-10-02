@@ -2409,27 +2409,6 @@ fn semver(v: &str) -> (u32, u32, u32) {
     )
 }
 
-fn measure(value: &str, font_size: f64) -> Result<f64, String> {
-    let value = value.trim();
-    if let Ok(n) = value.parse::<f64>() {
-        return Ok(n);
-    }
-    if let Some(bs) = value.strip_suffix("bs") {
-        let n: f64 = bs
-            .trim()
-            .parse()
-            .map_err(|_| format!("bad length {value}"))?;
-        return Ok(n * 1.2 * font_size);
-    }
-    let m = Measurement::from_str(value).map_err(|_| format!("bad length {value}"))?;
-    match m.unit {
-        Unit::Em => Ok(m.amount * font_size),
-        _ => m
-            .to_pt()
-            .ok_or_else(|| format!("unsupported length {value}")),
-    }
-}
-
 fn paper_size(name: &str) -> Option<PaperSize> {
     name.parse().ok()
 }
