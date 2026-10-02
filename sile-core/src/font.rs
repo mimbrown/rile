@@ -240,6 +240,10 @@ impl FontFace {
         self.line_gap
     }
 
+    pub fn x_height(&self) -> Option<i16> {
+        ttf_parser::Face::parse(&self.data, self.index).ok()?.x_height().filter(|h| *h > 0)
+    }
+
     pub fn underline_position(&self) -> i16 {
         self.underline_position
     }

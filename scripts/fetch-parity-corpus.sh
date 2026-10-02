@@ -12,8 +12,8 @@ mkdir -p "$root/fonts" "$root/downloads"
 if [ ! -d "$root/sile/.git" ]; then
   git init -q "$root/sile"
   git -C "$root/sile" remote add origin "$SILE_REPO"
-  git -C "$root/sile" sparse-checkout set tests packages/lorem LICENSE.md
 fi
+git -C "$root/sile" sparse-checkout set --skip-checks tests packages/lorem documentation LICENSE.md
 git -C "$root/sile" fetch -q --depth 1 origin "$SILE_COMMIT"
 git -C "$root/sile" checkout -q FETCH_HEAD
 

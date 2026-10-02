@@ -153,6 +153,8 @@ pub struct PdfOutputter {
     bookmarks: Vec<Bookmark>,
     /// Page index and top-left position of each named destination.
     destinations: HashMap<String, (usize, f64, f64)>,
+    /// Indexes of images already added, by their data's address.
+    placed_images: HashMap<usize, usize>,
     pages: Vec<BuiltPage>,
     current: Option<CurrentPage>,
 }
@@ -166,6 +168,7 @@ impl PdfOutputter {
             images: Vec::new(),
             bookmarks: Vec::new(),
             destinations: HashMap::new(),
+            placed_images: HashMap::new(),
             pages: Vec::new(),
             current: None,
         }
@@ -731,6 +734,23 @@ impl crate::render::Canvas for PdfOutputter {
 
     fn destination(&mut self, name: &str, x: f64, y: f64) {
         self.add_destination(name, x, y);
+    }
+
+    fn image(&mut self, image: &crate::image::Image, x: f64, y: f64, width: f64, height: f64) {
+        let key = Arc::as_ptr(&image.data) as usize;
+        let index = match self.placed_images.get(&key) {
+            Some(&index) => index,
+            None => {
+                let added = match image.format {
+                    crate::image::ImageFormat::Png => self.add_image_png(&image.data),
+                    crate::image::ImageFormat::Jpeg => self.add_image_jpeg(image.data.to_vec()),
+                };
+                let Ok(index) = added else { return };
+                self.placed_images.insert(key, index);
+                index
+            }
+        };
+        self.draw_image(index, x, y, width, height);
     }
 
     fn link(&mut self, rect: [f64; 4], dest: &LinkDest) {

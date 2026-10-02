@@ -15,7 +15,8 @@ use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
 use crate::node::{self, GlyphData, Ink, Leader, LinerStyle, LinkDest, NNode, Node, Stroke, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
-use crate::pagebuilder::{self, Page, PageBreakSettings};
+use crate::pagebuilder::{self, Page, PageBreakSettings, Underlay};
+use crate::image::{Background, BackgroundFill};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
 use crate::references::{self, CrossReferences, Label, TocEntry};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
@@ -558,6 +559,7 @@ pub struct DocumentBuilder {
     pdf_config: PdfConfig,
     bookmarks: Vec<Bookmark>,
     destinations: usize,
+    background: Option<Background>,
 
     /// What the previous pass found, if there was one.
     previous_references: Option<CrossReferences>,
@@ -610,6 +612,7 @@ impl DocumentBuilder {
             pdf_config: PdfConfig::default(),
             bookmarks: Vec::new(),
             destinations: 0,
+            background: None,
             previous_references: None,
             consulted_references: Default::default(),
             references: CrossReferences::default(),
@@ -930,6 +933,10 @@ impl DocumentBuilder {
 
     /// Space lines TeX/SILE style, baseline to baseline, instead of adding a
     /// fixed `leading` between them. Overrides `set_leading`.
+    pub fn baseline_skip(&self) -> Option<BaselineSkip> {
+        self.settings.baseline_skip
+    }
+
     pub fn set_baseline_skip(&mut self, baseline_skip: Option<BaselineSkip>) -> &mut Self {
         self.settings.baseline_skip = baseline_skip;
         self
@@ -1275,6 +1282,31 @@ impl DocumentBuilder {
         self.font_metrics(|f| (f.strikeout_position(), f.strikeout_size()))
     }
 
+    /// The current font's x-height in points (SILE's `ex`), half an em if
+    /// the font doesn't say.
+    pub fn x_height(&self) -> f64 {
+        let Some(font) = self.settings.font.as_deref().and_then(|f| self.fonts.get(f)) else {
+            return 0.0;
+        };
+        font.face.x_height().map_or(font.spec.size / 2.0, |h| font.face.scale(h, font.spec.size))
+    }
+
+    /// The current font's space width in points (SILE's `spc`).
+    pub fn space_width(&self) -> f64 {
+        let Some(font) = self.settings.font.as_deref().and_then(|f| self.fonts.get(f)) else {
+            return 0.0;
+        };
+        let advance = font.face.glyph_id(' ').and_then(|g| font.face.advance_width(g));
+        advance.map_or(font.spec.size / 4.0, |a| font.face.scale_u(a, font.spec.size))
+    }
+
+    /// The current font's ascender and descender (positive below the
+    /// baseline) in points.
+    pub fn font_extents(&self) -> (f64, f64) {
+        let (ascender, descender) = self.font_metrics(|f| (f.ascender(), f.descender()));
+        (ascender, -descender)
+    }
+
     fn font_metrics(&self, metrics: impl Fn(&FontFace) -> (i16, i16)) -> (f64, f64) {
         let Some(font) = self.settings.font.as_deref().and_then(|f| self.fonts.get(f)) else {
             return (0.0, 0.0);
@@ -1391,7 +1423,7 @@ impl DocumentBuilder {
         }
         let color = Color::Rgb { r: 1.0, g: 0.9, b: 0.9 };
         let page = &mut self.page.as_mut().expect("page").page;
-        page.underlay.push((color, rules));
+        page.underlay.push(Underlay::Rules(color, rules));
         Ok(self)
     }
 
@@ -1697,7 +1729,33 @@ impl DocumentBuilder {
             page: Page::new(self.page_number(), self.paper, frames),
             frame: template.first_content_frame,
         });
+        self.paint_background();
         Ok(())
+    }
+
+    /// Fill this page behind its content and, if `all_pages`, the pages
+    /// after it; `None` stops filling later pages (SILE's `\background`).
+    pub fn set_background(&mut self, background: Option<Background>) -> Result<&mut Self, BuilderError> {
+        self.background = background;
+        if self.page.is_some() {
+            self.paint_background();
+        } else {
+            self.ensure_page()?;
+        }
+        Ok(self)
+    }
+
+    fn paint_background(&mut self) {
+        let Some(background) = &self.background else { return };
+        let Some(state) = self.page.as_mut() else { return };
+        let page = [0.0, 0.0, self.paper.width, self.paper.height];
+        state.page.underlay.push(match &background.fill {
+            BackgroundFill::Color(color) => Underlay::Rules(*color, vec![page]),
+            BackgroundFill::Image(image) => Underlay::Image(image.clone(), page),
+        });
+        if !background.all_pages {
+            self.background = None;
+        }
     }
 
     /// Declare or redeclare frames on the current page only; the next page
