@@ -1,322 +1,153 @@
-use sile_core::builder::{DocumentBuilder, TextAlign};
-use sile_core::color::Color;
-use sile_core::font::{Direction, FontSpec, FontWeight};
+mod markdown;
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Parser, ValueEnum};
+use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback};
+use sile_core::class::{Book, Plain};
+use sile_core::font::FontSpec;
 use sile_core::frame::PaperSize;
+use sile_core::length::Length;
+use sile_core::measurement::Measurement;
+use sile_core::references::lay_out_until_settled;
+use sile_core::toc::{DefaultTocStyle, TableOfContents};
 
-fn main() {
-    let output_path = std::env::args().nth(1).unwrap_or_else(|| "output.pdf".into());
+use markdown::Markdown;
 
-    // Discover a usable system font
-    let (font_data, family) = load_system_font()
-        .expect("no system fonts found — install at least one TrueType/OpenType font");
+/// Typeset a Markdown (CommonMark) document to PDF.
+#[derive(Parser)]
+#[command(name = "sile", version)]
+struct Args {
+    /// The Markdown file to typeset.
+    input: PathBuf,
+    /// Where to write the PDF; the input with a .pdf extension by default.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = Class::Plain)]
+    class: Class,
+    /// A paper size such as a4, a5, letter or "15cm x 6cm".
+    #[arg(long, default_value = "a4", value_parser = |s: &str| s.parse::<PaperSize>())]
+    paper: PaperSize,
+    /// The main font family; the first of Gentium Plus, Gentium Book Plus
+    /// and a few common serif fonts that is installed by default.
+    #[arg(long)]
+    font: Option<String>,
+    /// Font size in points.
+    #[arg(long, default_value_t = 10.0)]
+    size: f64,
+    /// Font families to use, in order, for characters the main font lacks,
+    /// such as a Thai font.
+    #[arg(long = "fallback")]
+    fallbacks: Vec<String>,
+    /// The font family for code; the first of Hack, DejaVu Sans Mono and a
+    /// few common monospaced fonts that is installed by default.
+    #[arg(long)]
+    mono: Option<String>,
+    /// The document's language, for hyphenation and line breaking.
+    #[arg(long, default_value = "en")]
+    language: String,
+    /// More directories to look for fonts in.
+    #[arg(long = "fonts-dir")]
+    fonts_dirs: Vec<PathBuf>,
+    /// Start with a table of contents.
+    #[arg(long)]
+    toc: bool,
+    /// The PDF's title.
+    #[arg(long)]
+    title: Option<String>,
+    /// The PDF's author.
+    #[arg(long)]
+    author: Option<String>,
+}
 
-    println!("Using font: {family}");
+#[derive(Clone, Copy, ValueEnum)]
+enum Class {
+    Plain,
+    Book,
+}
 
-    // --- Build the document ---
+const SERIF: &[&str] = &["Gentium Plus", "Gentium Book Plus", "Gentium Book", "Libertinus Serif", "Noto Serif", "DejaVu Serif", "Liberation Serif", "Times New Roman", "Georgia"];
+const MONO: &[&str] = &["Hack", "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Menlo", "Consolas", "Courier New"];
 
-    let mut doc = DocumentBuilder::new(PaperSize::A4);
-
-    // PDF metadata
-    doc.set_title("A Scandal in Bohemia")
-        .set_author("sile-rust")
-        .set_compress(true);
-
-    // Page margins (1 inch = 72pt)
-    doc.set_margins(72.0, 72.0, 72.0, 72.0);
-
-    // Register two fonts: heading (18pt bold) and body (11pt normal)
-    let heading_spec = FontSpec {
-        family: Some(family.clone()),
-        size: 18.0,
-        weight: FontWeight::BOLD,
-        ..Default::default()
-    };
-    doc.load_font_data("heading", font_data.clone(), heading_spec)
-        .expect("failed to load heading font");
-
-    let body_spec = FontSpec {
-        family: Some(family),
-        size: 11.0,
-        ..Default::default()
-    };
-    doc.load_font_data("body", font_data, body_spec)
-        .expect("failed to load body font");
-
-    // Typographic settings
-    doc.set_language("en");
-    doc.set_paragraph_indent(20.0);
-    doc.set_paragraph_skip(6.0);
-    doc.set_leading(3.0);
-
-    // --- Title ---
-
-    doc.set_font("heading");
-    doc.set_paragraph_indent(0.0);
-    doc.add_text("A Scandal in Bohemia");
-    doc.new_paragraph().expect("title paragraph");
-
-    doc.add_vskip(12.0).expect("vertical skip");
-
-    // --- Body text ---
-
-    doc.set_font("body");
-    doc.set_paragraph_indent(20.0);
-
-    doc.add_text(
-        "To Sherlock Holmes she is always the woman. I have seldom heard him mention \
-         her under any other name. In his eyes she eclipses and predominates the whole \
-         of her sex. It was not that he felt any emotion akin to love for Irene Adler. \
-         All emotions, and that one particularly, were abhorrent to his cold, precise \
-         but admirably balanced mind. He was, I take it, the most perfect reasoning and \
-         observing machine that the world has seen, but as a lover he would have placed \
-         himself in a false position.",
-    );
-    doc.new_paragraph().expect("paragraph 1");
-
-    doc.add_text(
-        "He never spoke of the softer passions, save with a gibe and a sneer. They \
-         were admirable things for the observer \u{2014} excellent for drawing the veil \
-         from men\u{2019}s motives and actions. But for the trained reasoner to admit \
-         such intrusions into his own delicate and finely adjusted temperament was to \
-         introduce a distracting factor which might throw a doubt upon all his mental \
-         results. Grit in a sensitive instrument, or a crack in one of his own \
-         high-power lenses, would not be more disturbing than a strong emotion in a \
-         nature such as his.",
-    );
-    doc.new_paragraph().expect("paragraph 2");
-
-    doc.set_color(Color::Rgb {
-        r: 0.6,
-        g: 0.0,
-        b: 0.0,
-    });
-    doc.add_text(
-        "And yet there was but one woman to him, and that woman was the late Irene \
-         Adler, of dubious and questionable memory.",
-    );
-    doc.clear_color();
-    doc.new_paragraph().expect("paragraph 3");
-
-    doc.add_text(
-        "I had seen little of Holmes lately. My marriage had drifted us away from each \
-         other. My own complete happiness, and the home-centred interests which rise up \
-         around the man who first finds himself master of his own establishment, were \
-         sufficient to absorb all my attention, while Holmes, who loathed every form of \
-         society with his whole Bohemian soul, remained in our lodgings in Baker Street, \
-         buried among his old books, and alternating from week to week between cocaine \
-         and ambition, the drowsiness of the drug, and the fierce energy of his own \
-         keen nature.",
-    );
-    doc.new_paragraph().expect("paragraph 4");
-
-    doc.add_text(
-        "He was still, as ever, deeply attracted by the study of crime, and occupied \
-         his immense faculties and extraordinary powers of observation in following out \
-         those clues, and clearing up those mysteries which had been abandoned as \
-         hopeless by the official police. From time to time I heard some vague account \
-         of his doings: of his summons to Odessa in the case of the Trepoff murder, of \
-         his clearing up of the singular tragedy of the Atkinson brothers at Trincomalee, \
-         and finally of the mission which he had accomplished so delicately and \
-         successfully for the reigning family of Holland.",
-    );
-    doc.new_paragraph().expect("paragraph 5");
-
-    // --- Alignment examples ---
-
-    doc.add_vskip(18.0).expect("vertical skip");
-
-    let demo_text = "The art of typesetting lies in the invisible details — the \
-         spacing between words, the rhythm of line breaks, and the way a paragraph \
-         sits on the page. Good typography is felt, not seen. A well-set page \
-         draws the reader in without calling attention to itself, while a poorly \
-         set one creates a subtle unease that disrupts the reading experience. \
-         From Gutenberg to the present day, compositors have laboured over these \
-         quiet refinements, adjusting the fit of each line so that the texture of \
-         the text block remains even and undisturbed from margin to margin.";
-
-    // Justified (default)
-    doc.set_font("heading");
-    doc.set_alignment(TextAlign::Left);
-    doc.set_paragraph_indent(0.0);
-    doc.add_text("Justified");
-    doc.new_paragraph().expect("alignment heading 1");
-    doc.add_vskip(4.0).expect("vertical skip");
-
-    doc.set_font("body");
-    doc.set_paragraph_indent(20.0);
-    doc.set_alignment(TextAlign::Justify);
-    doc.add_text(demo_text);
-    doc.new_paragraph().expect("justified paragraph");
-
-    // Left-aligned
-    doc.set_font("heading");
-    doc.set_alignment(TextAlign::Left);
-    doc.set_paragraph_indent(0.0);
-    doc.add_text("Left-aligned");
-    doc.new_paragraph().expect("alignment heading 2");
-    doc.add_vskip(4.0).expect("vertical skip");
-
-    doc.set_font("body");
-    doc.set_paragraph_indent(20.0);
-    doc.set_alignment(TextAlign::Left);
-    doc.add_text(demo_text);
-    doc.new_paragraph().expect("left-aligned paragraph");
-
-    // Right-aligned
-    doc.set_font("heading");
-    doc.set_alignment(TextAlign::Left);
-    doc.set_paragraph_indent(0.0);
-    doc.add_text("Right-aligned");
-    doc.new_paragraph().expect("alignment heading 3");
-    doc.add_vskip(4.0).expect("vertical skip");
-
-    doc.set_font("body");
-    doc.set_paragraph_indent(0.0);
-    doc.set_alignment(TextAlign::Right);
-    doc.add_text(demo_text);
-    doc.new_paragraph().expect("right-aligned paragraph");
-
-    // Centered
-    doc.set_font("heading");
-    doc.set_alignment(TextAlign::Left);
-    doc.set_paragraph_indent(0.0);
-    doc.add_text("Centered");
-    doc.new_paragraph().expect("alignment heading 4");
-    doc.add_vskip(4.0).expect("vertical skip");
-
-    doc.set_font("body");
-    doc.set_alignment(TextAlign::Center);
-    doc.add_text(demo_text);
-    doc.new_paragraph().expect("centered paragraph");
-
-    // Reset for the following Urdu section
-    doc.set_alignment(TextAlign::Justify);
-
-    // --- Urdu section (Graphite via Awami Nastaliq) ---
-
-    doc.add_vskip(18.0).expect("vertical skip");
-
-    // Load Awami Nastaliq — a Graphite-enabled font from SIL
-    match find_awami_nastaliq() {
-        None => println!("Skipping Urdu section: Awami Nastaliq not found (https://software.sil.org/awami/)"),
-        Some(awami_path) => {
-            println!("Using Nastaliq font: {}", awami_path.display());
-
-            let awami_heading_spec = FontSpec {
-                family: Some("Awami Nastaliq".to_string()),
-                size: 22.0,
-                direction: Direction::RTL,
-                script: "Arab".to_string(),
-                language: "ur".to_string(),
-                ..Default::default()
-            };
-            doc.load_font_file("urdu-heading", &awami_path, awami_heading_spec)
-                .expect("failed to load Awami Nastaliq heading");
-
-            let awami_body_spec = FontSpec {
-                family: Some("Awami Nastaliq".to_string()),
-                size: 14.0,
-                direction: Direction::RTL,
-                script: "Arab".to_string(),
-                language: "ur".to_string(),
-                ..Default::default()
-            };
-            doc.load_font_file("urdu-body", &awami_path, awami_body_spec)
-                .expect("failed to load Awami Nastaliq body");
-
-            // Urdu heading
-            doc.set_font("urdu-heading");
-            doc.set_language("ur");
-            doc.set_direction(Direction::RTL);
-            doc.set_paragraph_indent(0.0);
-            doc.set_leading(8.0);
-            doc.add_text("\u{0628}\u{0648}\u{06C1}\u{06CC}\u{0645}\u{06CC}\u{0627} \u{0645}\u{06CC}\u{06BA} \u{0627}\u{06CC}\u{06A9} \u{0627}\u{0633}\u{06A9}\u{06CC}\u{0646}\u{0688}\u{0644}");
-            // "بوہیمیا میں ایک اسکینڈل" = "A Scandal in Bohemia"
-            doc.new_paragraph().expect("urdu title");
-
-            doc.add_vskip(8.0).expect("vertical skip");
-
-            // Urdu body text — opening paragraph
-            doc.set_font("urdu-body");
-            doc.set_paragraph_indent(0.0);
-
-            doc.add_text(
-                "\u{0634}\u{0631}\u{0644}\u{0627}\u{06A9} \u{06C1}\u{0648}\u{0645}\u{0632} \u{06A9}\u{06CC} \u{0646}\u{0638}\u{0631} \u{0645}\u{06CC}\u{06BA} \u{0648}\u{06C1} \u{06C1}\u{0645}\u{06CC}\u{0634}\u{06C1} \u{0027}\u{0627}\u{0633} \u{0639}\u{0648}\u{0631}\u{062A}\u{0027} \u{062A}\u{06BE}\u{06CC}\u{06D4} \u{0645}\u{06CC}\u{06BA} \u{0646}\u{06D2} \u{0627}\u{0633}\u{06D2} \u{06A9}\u{0628}\u{06BE}\u{06CC} \u{06A9}\u{0645} \u{06C1}\u{06CC} \u{06A9}\u{0633}\u{06CC} \u{0627}\u{0648}\u{0631} \u{0646}\u{0627}\u{0645} \u{0633}\u{06D2} \u{0627}\u{0633} \u{06A9}\u{0627} \u{0630}\u{06A9}\u{0631} \u{06A9}\u{0631}\u{062A}\u{06D2} \u{0633}\u{0646}\u{0627} \u{06C1}\u{06D2}\u{06D4} \u{0627}\u{0633} \u{06A9}\u{06CC} \u{0646}\u{0638}\u{0631}\u{0648}\u{06BA} \u{0645}\u{06CC}\u{06BA} \u{0648}\u{06C1} \u{067E}\u{0648}\u{0631}\u{06CC} \u{0639}\u{0648}\u{0631}\u{062A} \u{0630}\u{0627}\u{062A} \u{067E}\u{0631} \u{0686}\u{06BE}\u{0627} \u{062C}\u{0627}\u{062A}\u{06CC} \u{06C1}\u{06D2}\u{06D4}",
-            );
-            // "شرلاک ہومز کی نظر میں وہ ہمیشہ 'اس عورت' تھی۔ میں نے اسے کبھی کم ہی کسی اور نام سے اس کا ذکر کرتے سنا ہے۔ اس کی نظروں میں وہ پوری عورت ذات پر چھا جاتی ہے۔"
-            doc.new_paragraph().expect("urdu paragraph 1");
-
-            doc.add_text(
-                "\u{06CC}\u{06C1} \u{0627}\u{0633} \u{0644}\u{06CC}\u{06D2} \u{0646}\u{06C1}\u{06CC}\u{06BA} \u{062A}\u{06BE}\u{0627} \u{06A9}\u{06C1} \u{0627}\u{0633}\u{06D2} \u{0622}\u{0626}\u{0631}\u{06CC}\u{0646} \u{0627}\u{06CC}\u{0688}\u{0644}\u{0631} \u{0633}\u{06D2} \u{0645}\u{062D}\u{0628}\u{062A} \u{062C}\u{06CC}\u{0633}\u{06CC} \u{06A9}\u{0648}\u{0626}\u{06CC} \u{0686}\u{06CC}\u{0632} \u{062A}\u{06BE}\u{06CC}\u{06D4} \u{062A}\u{0645}\u{0627}\u{0645} \u{062C}\u{0630}\u{0628}\u{0627}\u{062A}\u{060C} \u{0627}\u{0648}\u{0631} \u{062E}\u{0627}\u{0635} \u{0637}\u{0648}\u{0631} \u{067E}\u{0631} \u{06CC}\u{06C1} \u{062C}\u{0630}\u{0628}\u{06C1}\u{060C} \u{0627}\u{0633} \u{06A9}\u{06D2} \u{0633}\u{0631}\u{062F} \u{0627}\u{0648}\u{0631} \u{062F}\u{0642}\u{06CC}\u{0642} \u{0644}\u{06CC}\u{06A9}\u{0646} \u{0642}\u{0627}\u{0628}\u{0644}\u{0650} \u{062A}\u{062D}\u{0633}\u{06CC}\u{0646} \u{0645}\u{062A}\u{0648}\u{0627}\u{0632}\u{0646} \u{0630}\u{06C1}\u{0646} \u{06A9}\u{06D2} \u{0644}\u{06CC}\u{06D2} \u{0646}\u{0627}\u{06AF}\u{0648}\u{0627}\u{0631} \u{062A}\u{06BE}\u{06D2}\u{06D4}",
-            );
-            // "یہ اس لیے نہیں تھا کہ اسے آئرین ایڈلر سے محبت جیسی کوئی چیز تھی۔ تمام جذبات، اور خاص طور پر یہ جذبہ، اس کے سرد اور دقیق لیکن قابلِ تحسین متوازن ذہن کے لیے ناگوار تھے۔"
-            doc.new_paragraph().expect("urdu paragraph 2");
+fn main() -> ExitCode {
+    let args = Args::parse();
+    match run(&args) {
+        Ok(output) => {
+            eprintln!("Wrote {}", output.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("sile: {e}");
+            ExitCode::FAILURE
         }
     }
-
-    // --- Render ---
-
-    let pdf_bytes = doc.render().expect("render failed");
-
-    std::fs::write(&output_path, &pdf_bytes).expect("failed to write PDF");
-
-    println!(
-        "Wrote {} bytes to {}",
-        pdf_bytes.len(),
-        output_path
-    );
 }
 
-fn find_awami_nastaliq() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let candidates = [
-        format!("{home}/Library/Fonts/AwamiNastaliq-Regular.ttf"),
-        "/Library/Fonts/AwamiNastaliq-Regular.ttf".to_string(),
-        "/usr/share/fonts/truetype/awami-nastaliq/AwamiNastaliq-Regular.ttf".to_string(),
-    ];
-    candidates
-        .iter()
-        .map(std::path::PathBuf::from)
-        .find(|p| p.exists())
+fn run(args: &Args) -> Result<PathBuf, String> {
+    let src = std::fs::read_to_string(&args.input).map_err(|e| format!("{}: {e}", args.input.display()))?;
+    let base = args.input.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut fonts = fontdb::Database::new();
+    fonts.load_system_fonts();
+    for dir in &args.fonts_dirs {
+        fonts.load_fonts_dir(dir);
+    }
+    let font = pick_family(&fonts, args.font.as_deref(), SERIF).ok_or("no serif font found; name one with --font")?;
+    let mono = pick_family(&fonts, args.mono.as_deref(), MONO).unwrap_or_else(|| font.clone());
+
+    let mut warnings = Vec::new();
+    let layout = lay_out_until_settled(5, |references| -> Result<DocumentBuilder, BuilderError> {
+        let mut doc = DocumentBuilder::new(args.paper);
+        doc.load_system_fonts();
+        for dir in &args.fonts_dirs {
+            doc.load_fonts_dir(dir);
+        }
+        match args.class {
+            Class::Plain => doc.set_class(Plain::new()),
+            Class::Book => doc.set_class(Book::new()),
+        };
+        doc.set_references(references);
+        doc.set_language(args.language.clone()).set_compress(true);
+        if let Some(title) = &args.title {
+            doc.set_title(title.clone());
+        }
+        if let Some(author) = &args.author {
+            doc.set_author(author.clone());
+        }
+        doc.set_font_spec(FontSpec { family: Some(font.clone()), size: args.size, ..Default::default() })?;
+        for family in &args.fallbacks {
+            doc.add_font_fallback(FontFallback { family: Some(family.clone()), ..Default::default() })?;
+        }
+        let skip = Length::new(Measurement::pt(1.2 * args.size), Measurement::pt(1.0), Measurement::pt(0.0));
+        doc.set_baseline_skip(Some(BaselineSkip { skip, lineskip: 1.0 }));
+        doc.set_paragraph_indent(1.2 * args.size);
+        doc.set_paragraph_skip(Length::new(Measurement::pt(0.0), Measurement::pt(1.0), Measurement::pt(0.0)));
+        doc.mark_toplevel();
+        if args.toc {
+            TableOfContents::default().typeset(&mut doc, &DefaultTocStyle)?;
+        }
+        let mut md = Markdown::new(doc, &base, &mono);
+        md.typeset(&src)?;
+        warnings = std::mem::take(&mut md.warnings);
+        Ok(md.finish())
+    })
+    .map_err(|e| e.to_string())?;
+    for warning in warnings {
+        eprintln!("sile: warning: {warning}");
+    }
+
+    let output = args.output.clone().unwrap_or_else(|| args.input.with_extension("pdf"));
+    let pdf = layout.render().map_err(|e| e.to_string())?;
+    std::fs::write(&output, pdf).map_err(|e| format!("{}: {e}", output.display()))?;
+    Ok(output)
 }
 
-fn load_system_font() -> Option<(Vec<u8>, String)> {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
-
-    // Prefer common readable fonts
-    let preferred = [
-        "Gentium Plus",
-        "Georgia",
-        "Times New Roman",
-        "DejaVu Serif",
-        "Liberation Serif",
-        "Noto Serif",
-        "Palatino",
-        "Book Antiqua",
-    ];
-
-    let face_id = preferred
-        .iter()
-        .find_map(|name| {
-            db.faces()
-                .find(|f| f.families.iter().any(|(fam, _)| fam == name))
-                .map(|f| f.id)
-        })
-        .or_else(|| db.faces().next().map(|f| f.id))?;
-
-    let family = db
-        .faces()
-        .find(|f| f.id == face_id)?
-        .families
-        .first()?
-        .0
-        .clone();
-
-    let mut data_out: Option<Vec<u8>> = None;
-    db.with_face_data(face_id, |data, _index| {
-        data_out = Some(data.to_vec());
-    });
-
-    Some((data_out?, family))
+/// The family asked for when it is installed, or else the first of
+/// `defaults` that is.
+fn pick_family(fonts: &fontdb::Database, wanted: Option<&str>, defaults: &[&str]) -> Option<String> {
+    let installed = |name: &str| fonts.faces().flat_map(|f| &f.families).any(|(family, _)| family.eq_ignore_ascii_case(name));
+    match wanted {
+        Some(name) => Some(name.to_string()),
+        None => defaults.iter().find(|name| installed(name)).map(|name| name.to_string()),
+    }
 }

@@ -5,7 +5,7 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 ## Current crates
 
 * `sile-core`: contains the core types and logic
-* `sile-cli`: the entry point for the sile cli tool
+* `sile-cli`: the `sile` command, which typesets Markdown (CommonMark) to PDF through the builder API
 * `sile-parity`: test-only tool that runs SILE's regression tests through `sile-core` and compares layouts with SILE's expected output
 
 ## Features

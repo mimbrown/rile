@@ -1,0 +1,285 @@
+//! CommonMark set through the builder API: headings become the class's
+//! sectioning, and everything else maps onto paragraphs, fonts, lists,
+//! links, images and verbatim blocks.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use sile_core::builder::{BuilderError, DocumentBuilder, LineSkips};
+use sile_core::class::{bigskip, medskip, smallskip, with_font, Book, Heading};
+use sile_core::font::{FontSpec, FontStyle, FontWeight};
+use sile_core::image::Image;
+use sile_core::length::Length;
+use sile_core::lists::{ListKind, ListOptions};
+use sile_core::node::{LinkDest, Stroke};
+
+pub struct Markdown<'a> {
+    doc: DocumentBuilder,
+    /// Where relative image paths start from.
+    base: PathBuf,
+    mono: &'a str,
+    fonts: Vec<Option<FontSpec>>,
+    pub warnings: Vec<String>,
+}
+
+impl AsMut<DocumentBuilder> for Markdown<'_> {
+    fn as_mut(&mut self) -> &mut DocumentBuilder {
+        &mut self.doc
+    }
+}
+
+impl<'a> Markdown<'a> {
+    /// Set Markdown into `doc`, finding images relative to `base` and
+    /// setting code in the `mono` font family.
+    pub fn new(doc: DocumentBuilder, base: &Path, mono: &'a str) -> Self {
+        Self { doc, base: base.to_path_buf(), mono, fonts: Vec::new(), warnings: Vec::new() }
+    }
+
+    pub fn finish(self) -> DocumentBuilder {
+        self.doc
+    }
+
+    pub fn typeset(&mut self, src: &str) -> Result<(), BuilderError> {
+        let events: Vec<Event> = Parser::new_ext(src, Options::ENABLE_SMART_PUNCTUATION).collect();
+        self.events(&events)?;
+        self.doc.new_paragraph()?;
+        Ok(())
+    }
+
+    fn events(&mut self, events: &[Event]) -> Result<(), BuilderError> {
+        let mut i = 0;
+        while i < events.len() {
+            match &events[i] {
+                Event::Start(Tag::Heading { level, .. }) => {
+                    let end = events[i..].iter().position(|e| matches!(e, Event::End(TagEnd::Heading(_)))).map_or(events.len(), |p| i + p);
+                    self.heading(*level, &events[i + 1..end])?;
+                    i = end;
+                }
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    let end = events[i..].iter().position(|e| matches!(e, Event::End(TagEnd::CodeBlock))).map_or(events.len(), |p| i + p);
+                    let code: String = events[i + 1..end].iter().filter_map(|e| if let Event::Text(t) = e { Some(t.as_ref()) } else { None }).collect();
+                    let indented = matches!(kind, CodeBlockKind::Indented);
+                    self.code_block(code.strip_suffix('\n').unwrap_or(&code), indented)?;
+                    i = end;
+                }
+                event => self.event(event)?,
+            }
+            i += 1;
+        }
+        Ok(())
+    }
+
+    fn event(&mut self, event: &Event) -> Result<(), BuilderError> {
+        let doc = &mut self.doc;
+        match event {
+            Event::Text(text) => {
+                doc.add_text(text.to_string());
+            }
+            Event::Code(code) => {
+                let mono = self.mono.to_string();
+                self.push_font(|f| f.family = Some(mono))?;
+                self.doc.add_text(code.to_string());
+                self.pop_font()?;
+            }
+            Event::SoftBreak => {
+                doc.add_text(" ");
+            }
+            Event::HardBreak => {
+                doc.add_hfill().add_penalty(-10_000);
+            }
+            Event::Rule => {
+                doc.new_paragraph()?;
+                doc.add_explicit_vskip(medskip())?;
+                doc.set_current_indent(Some(0.0));
+                doc.add_hrulefill(Stroke { raise: 0.0, thickness: 0.5 });
+                doc.new_paragraph()?;
+                doc.add_explicit_vskip(medskip())?;
+            }
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                doc.new_paragraph()?;
+            }
+            Event::Start(Tag::Emphasis) => self.push_font(|f| f.style = if f.style == FontStyle::Italic { FontStyle::Normal } else { FontStyle::Italic })?,
+            Event::Start(Tag::Strong) => self.push_font(|f| f.weight = FontWeight::BOLD)?,
+            Event::End(TagEnd::Emphasis | TagEnd::Strong) => self.pop_font()?,
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                doc.start_link(LinkDest::Uri(dest_url.to_string()));
+            }
+            Event::End(TagEnd::Link) => {
+                doc.end_hbox();
+            }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let path = self.base.join(dest_url.as_ref());
+                let image = Image::load(&path, dest_url.to_string())?;
+                let skips = self.doc.line_skips();
+                let width = self.doc.frame_size()?.0 - skips.left.to_pt_abs() - skips.right.to_pt_abs();
+                let width = (image.natural_size().0 > width).then_some(width);
+                self.doc.add_image(Arc::new(image), width, None);
+                self.doc.begin_capture();
+            }
+            Event::End(TagEnd::Image) => {
+                self.doc.end_capture();
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                doc.new_paragraph()?;
+                let skips = doc.line_skips();
+                let indent = 2.0 * doc.font_spec().map_or(10.0, |f| f.size);
+                doc.set_line_skips(LineSkips { left: skips.left + Length::pt(indent), right: skips.right + Length::pt(indent), ..skips });
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                doc.new_paragraph()?;
+                let skips = doc.line_skips();
+                let indent = 2.0 * doc.font_spec().map_or(10.0, |f| f.size);
+                doc.set_line_skips(LineSkips { left: skips.left - Length::pt(indent), right: skips.right - Length::pt(indent), ..skips });
+            }
+            Event::Start(Tag::List(start)) => {
+                doc.new_paragraph()?;
+                let kind = if start.is_some() { ListKind::Enumerate } else { ListKind::Itemize };
+                let options = ListOptions { start: start.map(|s| s as i64), ..Default::default() };
+                doc.begin_list(kind, &options)?;
+            }
+            Event::End(TagEnd::List(_)) => {
+                doc.end_list()?;
+            }
+            Event::Start(Tag::Item) => {
+                doc.begin_item(None)?;
+            }
+            Event::End(TagEnd::Item) => {
+                doc.new_paragraph()?;
+                doc.end_item()?;
+            }
+            Event::Html(html) | Event::InlineHtml(html) => self.warnings.push(format!("HTML is not supported: {}", html.trim())),
+            Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => {}
+            other => self.warnings.push(format!("not supported: {other:?}")),
+        }
+        Ok(())
+    }
+
+    fn push_font(&mut self, change: impl FnOnce(&mut FontSpec)) -> Result<(), BuilderError> {
+        self.fonts.push(self.doc.font_spec().cloned());
+        self.doc.update_font(change)?;
+        Ok(())
+    }
+
+    fn pop_font(&mut self) -> Result<(), BuilderError> {
+        if let Some(Some(spec)) = self.fonts.pop() {
+            self.doc.set_font_spec(spec)?;
+        }
+        Ok(())
+    }
+
+    /// Book chapters, sections and subsections for the first three levels
+    /// under the book class; bold unnumbered headings otherwise.
+    fn heading(&mut self, level: HeadingLevel, title: &[Event]) -> Result<(), BuilderError> {
+        let book = self.doc.class_mut::<Book>().is_some();
+        let title = |md: &mut Self| md.events(title);
+        match (book, level) {
+            (true, HeadingLevel::H1) => Book::chapter(self, Heading::default(), title),
+            (true, HeadingLevel::H2) => Book::section(self, Heading::default(), title),
+            (true, HeadingLevel::H3) => Book::subsection(self, Heading::default(), title),
+            _ => {
+                let base = self.doc.font_spec().map_or(10.0, |f| f.size);
+                let (size, skip) = match level {
+                    HeadingLevel::H1 => (base * 1.7, bigskip()),
+                    HeadingLevel::H2 => (base * 1.4, bigskip()),
+                    HeadingLevel::H3 => (base * 1.2, medskip()),
+                    _ => (base, medskip()),
+                };
+                let doc = &mut self.doc;
+                doc.new_paragraph()?;
+                doc.set_current_indent(Some(0.0));
+                doc.add_explicit_vskip(skip)?;
+                doc.add_penalty(-500);
+                with_font(self, |f| {
+                    f.weight = FontWeight::BOLD;
+                    f.size = size;
+                }, title)?;
+                let doc = &mut self.doc;
+                doc.new_paragraph()?;
+                doc.add_vertical_penalty(10_000)?;
+                doc.add_explicit_vskip(smallskip())?;
+                doc.add_vertical_penalty(10_000)?;
+                doc.set_current_indent(Some(0.0));
+                Ok(())
+            }
+        }
+    }
+
+    /// Lines set as they are in the `mono` font, without hyphenation.
+    fn code_block(&mut self, code: &str, indented: bool) -> Result<(), BuilderError> {
+        let doc = &mut self.doc;
+        doc.new_paragraph()?;
+        doc.add_explicit_vskip(smallskip())?;
+        let saved = doc.settings().clone();
+        let mono = self.mono.to_string();
+        let result = (|| -> Result<(), BuilderError> {
+            let doc = &mut self.doc;
+            doc.update_font(|f| f.family = Some(mono))?;
+            doc.set_language("und").set_obey_spaces(true).set_paragraph_indent(0.0).set_paragraph_skip(0.0);
+            let skips = doc.line_skips();
+            let indent = if indented { 2.0 * doc.font_spec().map_or(10.0, |f| f.size) } else { 0.0 };
+            doc.set_line_skips(LineSkips { left: Length::pt(skips.left.to_pt_abs() + indent), right: Length::pt(skips.right.to_pt_abs()), ..skips });
+            for line in code.split('\n') {
+                doc.set_current_indent(Some(0.0));
+                if line.is_empty() {
+                    doc.add_box(sile_core::node::HBox::new(Length::zero(), Length::zero(), Length::zero()));
+                } else {
+                    doc.add_text(line);
+                }
+                doc.new_paragraph()?;
+            }
+            Ok(())
+        })();
+        self.doc.restore_settings(saved);
+        result?;
+        self.doc.add_explicit_vskip(smallskip())?;
+        self.doc.set_current_indent(Some(0.0));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sile_core::class::Plain;
+    use sile_core::frame::PaperSize;
+
+    fn trace(class: impl sile_core::class::DocumentClass, src: &str) -> (String, Vec<String>) {
+        let mut doc = DocumentBuilder::new(PaperSize::A5);
+        doc.set_class(class);
+        doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts"));
+        doc.set_font_spec(FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() }).unwrap();
+        let mut md = Markdown::new(doc, Path::new("."), "Gentium Plus");
+        md.typeset(src).unwrap();
+        let warnings = std::mem::take(&mut md.warnings);
+        (md.finish().render_debug().unwrap(), warnings)
+    }
+
+    fn words(trace: &str) -> Vec<&str> {
+        trace.lines().filter_map(|l| l.rsplit_once('(').and_then(|(_, w)| w.strip_suffix(')'))).collect()
+    }
+
+    #[test]
+    fn book_headings_are_numbered_and_lists_labelled() {
+        let (trace, warnings) = trace(Book::new(), "# Start\n\nSome *text*.\n\n## Part\n\n1. one\n2. two\n\n- dot\n");
+        assert!(warnings.is_empty());
+        let words = words(&trace);
+        for expected in ["Chapter", "Start", "1.1", "Part", "one", "2", "two", "•", "dot"] {
+            assert!(words.contains(&expected), "{expected} missing from {words:?}");
+        }
+    }
+
+    #[test]
+    fn code_blocks_keep_their_lines_and_html_is_reported() {
+        let (trace, warnings) = trace(Plain::new(), "Before\n\n```\nfn main() {\n\n    x\n}\n```\n\n<b>no</b>\n");
+        assert_eq!(warnings, ["HTML is not supported: <b>", "HTML is not supported: </b>"]);
+        let lines: Vec<&str> = trace.lines().collect();
+        let x_of = |word: &str| -> f64 {
+            let at = lines.iter().position(|l| l.ends_with(&format!("({word})"))).unwrap();
+            lines[..at].iter().rev().find_map(|l| l.strip_prefix("Mx \t")).unwrap().parse().unwrap()
+        };
+        assert!(x_of("x") > x_of("fn") + 5.0);
+        assert!((x_of("}") - x_of("fn")).abs() < 1e-3);
+    }
+}

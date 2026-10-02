@@ -2431,27 +2431,7 @@ fn measure(value: &str, font_size: f64) -> Result<f64, String> {
 }
 
 fn paper_size(name: &str) -> Option<PaperSize> {
-    let named = match name.trim().to_lowercase().as_str() {
-        "a3" => Some((841.8897728999999, 1190.551194)),
-        "a4" => Some((595.275597, 841.8897728999999)),
-        "a5" => Some((419.52756359999995, 595.275597)),
-        "a6" => Some((297.6377985, 419.52756359999995)),
-        "a7" => Some((209.76378179999998, 297.6377985)),
-        "a8" => Some((147.40157639999998, 209.76378179999998)),
-        "b5" => Some((498.89764319999995, 708.661425)),
-        "b6" => Some((354.3307125, 498.89764319999995)),
-        "letter" => Some((612.0, 792.0)),
-        "halfletter" => Some((396.0, 612.0)),
-        _ => None,
-    };
-    if let Some((w, h)) = named {
-        return Some(PaperSize::new(w, h));
-    }
-    let (w, h) = name.split_once(" x ")?;
-    Some(PaperSize::new(
-        measure(w, 10.0).ok()?,
-        measure(h, 10.0).ok()?,
-    ))
+    name.parse().ok()
 }
 
 #[cfg(test)]
