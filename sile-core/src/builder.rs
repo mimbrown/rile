@@ -3394,18 +3394,10 @@ fn hyphenation_point(lang: &str, segments: &mut [String], j: usize) -> (String, 
 mod tests {
     use super::*;
 
+    /// The committed Gentium Plus, so tests don't depend on what fonts the
+    /// machine has.
     fn load_any_system_font() -> Option<(Vec<u8>, String)> {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        let info = db.faces().next()?;
-        let family = info.families.first()?.0.clone();
-        let id = info.id;
-        let mut data_out: Option<(Vec<u8>, u32)> = None;
-        db.with_face_data(id, |data, index| {
-            data_out = Some((data.to_vec(), index));
-        });
-        let (data, _index) = data_out?;
-        Some((data, family))
+        Some((crate::class::tests_support::gentium(), "Gentium Plus".to_string()))
     }
 
     fn builder_with_font() -> Option<DocumentBuilder> {
@@ -3505,10 +3497,10 @@ mod tests {
     #[test]
     fn tracking_scales_advances_but_not_glyph_advances() {
         let Some(mut doc) = builder_with_font() else { return };
-        doc.add_text("road");
+        doc.add_text("mini");
         let plain = doc.render_debug().unwrap();
         let Some(mut doc) = builder_with_font() else { return };
-        doc.set_tracking(Some(1.5)).add_text("road");
+        doc.set_tracking(Some(1.5)).add_text("mini");
         let tracked = doc.render_debug().unwrap();
         assert!(plain.contains(" w="), "{plain}");
         assert!(tracked.contains(" a="), "{tracked}");
@@ -3538,15 +3530,15 @@ mod tests {
     #[test]
     fn rtl_frames_set_lines_from_the_right() {
         let Some(mut doc) = builder_with_font() else { return };
-        doc.set_direction(Direction::RTL).set_paragraph_indent(0.0).add_text("one two");
+        doc.set_direction(Direction::RTL).set_paragraph_indent(0.0).add_text("one min");
         let trace = doc.render_debug().unwrap();
         let x = |label: &str| {
             let at = trace.find(&format!("({label})")).unwrap();
             let mx = trace[..at].rfind("Mx \t").unwrap();
             trace[mx + 4..].lines().next().unwrap().parse::<f64>().unwrap()
         };
-        assert!(trace.find("(two)") < trace.find("(one)"), "{trace}");
-        assert!(x("one") < x("two"), "{trace}");
+        assert!(trace.find("(min)") < trace.find("(one)"), "{trace}");
+        assert!(x("one") < x("min"), "{trace}");
     }
 
     #[test]
