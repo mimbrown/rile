@@ -396,17 +396,53 @@ pub struct Stroke {
     pub thickness: f64,
 }
 
+/// What a liner draws along the content it wraps, line by line.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinerStyle {
+    Stroke(Stroke),
+    /// Drawn by a function instead, which also places the content (SILE's
+    /// `typesetter:liner` with an output function).
+    Custom(LinerPainter),
+}
+
+impl From<Stroke> for LinerStyle {
+    fn from(stroke: Stroke) -> Self {
+        LinerStyle::Stroke(stroke)
+    }
+}
+
+#[derive(Clone)]
+pub struct LinerPainter(pub std::sync::Arc<dyn Fn(&mut crate::render::Pen) + Send + Sync>);
+
+impl LinerPainter {
+    pub fn new(paint: impl Fn(&mut crate::render::Pen) + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(paint))
+    }
+}
+
+impl std::fmt::Debug for LinerPainter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LinerPainter")
+    }
+}
+
+impl PartialEq for LinerPainter {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(std::sync::Arc::as_ptr(&self.0), std::sync::Arc::as_ptr(&other.0))
+    }
+}
+
 /// What an hbox draws besides its content.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Ink {
     /// The whole box is solid ink (SILE's `\hrule`).
     Rule,
     /// Content drawn at the line's glue ratio with a stroke along it
     /// (SILE's liners: `\underline`, `\strikethrough`).
-    Liner(Stroke),
+    Liner(LinerStyle),
     /// Zero-size markers around liner content in a paragraph. Each line
     /// wraps what falls between them in its own `Liner` box.
-    LinerStart(Stroke),
+    LinerStart(LinerStyle),
     LinerEnd,
     /// A ruby reading: its content is drawn raised by this much, a box
     /// width on from where it stands, and the pen goes back to where it was

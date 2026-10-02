@@ -86,7 +86,10 @@ impl Parser<'_> {
                         env.unwrap_or("")
                     )));
                 }
-                Some(b'%') => self.comment(),
+                Some(b'%') => {
+                    flush(&mut text, &mut out);
+                    self.comment();
+                }
                 Some(b'\\') => {
                     let next = self.s.get(self.i + 1).copied();
                     if matches!(next, Some(b'\\' | b'{' | b'}' | b'%')) {
@@ -368,9 +371,10 @@ mod tests {
         assert_eq!(doc.name, "document");
         assert_eq!(doc.option("papersize"), Some("a7"));
         let body = doc.content.as_ref().unwrap();
-        assert_eq!(body[0], Content::Text("\nHello ".into()));
-        assert_eq!(cmd(&body[1]).name, "em");
-        assert_eq!(body[2], Content::Text(".\n".into()));
+        assert_eq!(body[0], Content::Text("\n".into()));
+        assert_eq!(body[1], Content::Text("Hello ".into()));
+        assert_eq!(cmd(&body[2]).name, "em");
+        assert_eq!(body[3], Content::Text(".\n".into()));
     }
 
     #[test]
