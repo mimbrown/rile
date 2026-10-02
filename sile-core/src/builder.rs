@@ -2998,11 +2998,10 @@ impl DocumentBuilder {
     fn shape_with_fallbacks<'t>(&self, text: &'t str, fonts: &[(&str, &RegisteredFont)], language: &str, color: Option<Color>) -> Vec<Shaped<'t>> {
         struct Pending {
             font: usize,
-            offset: usize,
             start: usize,
             stop: usize,
         }
-        let mut runs = std::collections::VecDeque::from([Pending { font: 0, offset: 0, start: 0, stop: text.len() }]);
+        let mut runs = std::collections::VecDeque::from([Pending { font: 0, start: 0, stop: text.len() }]);
         let mut shaped: Vec<Shaped> = Vec::new();
         let mut popped = 0;
         while let Some(run) = runs.pop_front() {
@@ -3021,14 +3020,13 @@ impl DocumentBuilder {
                 .map(|i| glyphs.get(i + 1).map_or(chunk.len(), |n| n.cluster as usize))
                 .collect();
             let next_font = (popped + 1 < fonts.len()).then_some(popped + 1);
-            let mut offset = run.offset;
             let mut pending: Option<Pending> = None;
             for (mut glyph, end) in glyphs.into_iter().zip(ends) {
                 let index = glyph.cluster as usize;
                 let found = glyph.gid != 0;
                 if !found && pending.is_none() {
                     if let Some(font) = next_font {
-                        pending = Some(Pending { font, offset, start: run.start + index, stop: run.start + index });
+                        pending = Some(Pending { font, start: run.start + index, stop: run.start + index });
                         continue;
                     }
                 } else if !found {
@@ -3039,8 +3037,7 @@ impl DocumentBuilder {
                 }
                 glyph.cluster += run.start as u32;
                 let item = Item { text: text.get(run.start + index..run.start + end.max(index)).unwrap_or(""), index: run.start + index };
-                shaped.insert(offset, Shaped { glyph, item, font: run.font, color });
-                offset += 1;
+                shaped.push(Shaped { glyph, item, font: run.font, color });
             }
             if let Some(mut p) = pending {
                 p.stop = run.stop;
@@ -3048,6 +3045,7 @@ impl DocumentBuilder {
             }
             popped += 1;
         }
+        shaped.sort_by_key(|s| s.item.index);
         shaped
     }
 
