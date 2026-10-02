@@ -507,6 +507,17 @@ pub struct Material {
 }
 
 impl Material {
+    fn inlines(&self) -> Vec<Inline> {
+        self.items
+            .iter()
+            .flat_map(|item| match item {
+                Captured::Paragraph { inlines, .. } | Captured::Inlines(inlines) => inlines.as_slice(),
+                Captured::Vertical(_) => &[],
+            })
+            .cloned()
+            .collect()
+    }
+
     /// The material's text, without its formatting.
     pub fn text(&self) -> String {
         fn collect(inlines: &[Inline], out: &mut String) {
@@ -632,6 +643,7 @@ pub struct DocumentBuilder {
     // Page building
     vertical_queue: Vec<Node>,
     pub(crate) lists: crate::lists::Lists,
+    pub(crate) tables: Vec<crate::table::TableState>,
     pub(crate) ruby: crate::ruby::Ruby,
     page: Option<PageState>,
     pages: Vec<Page>,
@@ -698,6 +710,7 @@ impl DocumentBuilder {
             page_break_settings: PageBreakSettings::default(),
             vertical_queue: Vec::new(),
             lists: Default::default(),
+            tables: Vec::new(),
             ruby: Default::default(),
             page: None,
             pages: Vec::new(),
@@ -1692,6 +1705,33 @@ impl DocumentBuilder {
 
     pub(crate) fn add_vertical(&mut self, node: Node) {
         self.push_vertical(node);
+    }
+
+    /// Lines made outside the line breaker, spaced as a paragraph's are.
+    pub(crate) fn add_lines(&mut self, lines: Vec<(VBox, bool, Vec<Node>)>) {
+        let mut previous_depth = self.previous_depth;
+        for node in self.stack_lines(lines, &mut previous_depth) {
+            self.push_vertical(node);
+        }
+        self.previous_depth = previous_depth;
+    }
+
+    /// A rule with space `above` and `below` it, after which the next line
+    /// is set without leading.
+    pub(crate) fn add_rule_line(&mut self, indent: f64, width: f64, thickness: f64, [above, below]: [f64; 2]) {
+        let mut rule = node::HBox::new(Length::pt(width), Length::pt(thickness), Length::zero());
+        rule.ink = Some(Ink::Rule);
+        self.push_vertical(Node::vglue(Length::pt(above)));
+        self.push_vertical(Node::VBox(VBox::new(vec![Node::kern(Length::pt(indent)), Node::HBox(rule)], Length::pt(indent + width))));
+        self.push_vertical(Node::penalty(10_000));
+        self.push_vertical(Node::vglue(Length::pt(below)));
+        self.previous_depth = None;
+    }
+
+    /// `material` set on one line at its natural width.
+    pub(crate) fn natural_width(&mut self, material: &Material) -> Result<f64, BuilderError> {
+        let nodes = self.shape_inlines(&material.inlines())?;
+        Ok(pt_of(&natural_hbox(nodes).width))
     }
 
     /// Vertical glue added straight to the vertical list, ahead of the
@@ -3554,6 +3594,12 @@ impl DocumentBuilder {
             lines.push((vbox, broken, migrating));
         }
 
+        self.stack_lines(lines, previous_depth)
+    }
+
+    /// Lines one under another, with the leading, migrating material and
+    /// widow, orphan and broken-line penalties between them.
+    fn stack_lines(&mut self, lines: Vec<(VBox, bool, Vec<Node>)>, previous_depth: &mut Option<f64>) -> Vec<Node> {
         let count = lines.len();
         let mut v_nodes = Vec::new();
         let tate = self.in_tate_frame().then(|| self.zenkaku_width());

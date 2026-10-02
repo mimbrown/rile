@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
+use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, TableHeaderScope};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 
 use crate::color::Color;
 use crate::font::FontFace;
 use crate::pagebuilder::Page;
-use crate::structure::{StructKid, StructTree};
+use crate::structure::{Role, StructKid, StructTree};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -1447,6 +1447,15 @@ impl StructRefs {
             }
             if let Some(text) = &element.actual_text {
                 writer.actual_text(TextStr(text));
+            }
+            match element.role {
+                Role::TH => {
+                    writer.attributes().push().table().scope(TableHeaderScope::Column);
+                }
+                Role::Note => {
+                    writer.id(Str(format!("note{i}").as_bytes()));
+                }
+                _ => {}
             }
             let mut kids = writer.children();
             for kid in &element.kids {
