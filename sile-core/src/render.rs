@@ -188,7 +188,14 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                 if c.backwards() {
                     c.advance_writing(width);
                 }
+                let sideways = matches!(c.dir.writing, Flow::TTB | Flow::BTT) && !nnode.vertical;
+                if sideways {
+                    canvas.push_transform([0.0, 1.0, -1.0, 0.0, c.x + c.y, c.y - c.x]);
+                }
                 canvas.glyphs(nnode, c.x, c.y);
+                if sideways {
+                    canvas.pop_transform();
+                }
                 if !c.backwards() {
                     c.advance_writing(width);
                 }

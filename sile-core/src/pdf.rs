@@ -478,14 +478,18 @@ impl PdfOutputter {
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
 
-        let mut cur_x = x;
+        let (mut cur_x, mut cur_y) = (x, baseline_y);
         for glyph in &nnode.glyphs {
             let px = cur_x + glyph.x_offset;
-            let py = page_height - (baseline_y - glyph.y_offset);
+            let py = page_height - (cur_y - glyph.y_offset);
             page.content
                 .set_text_matrix([1.0, 0.0, 0.0, 1.0, px as f32, py as f32]);
             page.content.show(Str(&glyph.gid.to_be_bytes()));
-            cur_x += glyph.width;
+            if nnode.vertical {
+                cur_y += glyph.width;
+            } else {
+                cur_x += glyph.width;
+            }
         }
 
         page.content.end_text();
