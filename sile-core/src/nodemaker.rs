@@ -1,9 +1,13 @@
 //! Splits shaped text into words, spaces and break penalties, following
 //! SILE's unicode node maker: UAX #14 line boundaries and UAX #29 word
-//! boundaries decide where tokens end and where lines may break.
+//! boundaries decide where tokens end and where lines may break, with
+//! dictionary breaks in scripts written without spaces.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
+use icu_segmenter::options::LineBreakOptions;
+use icu_segmenter::LineSegmenter;
 use unicode_linebreak::{BreakClass, BreakOpportunity, break_property, linebreaks};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -100,7 +104,8 @@ pub fn tokenize(items: &[Item], options: NodeMakerOptions) -> Vec<Token> {
         return japanese::tokenize(items);
     }
     // French drops typed spaces where it sets its own.
-    let (mut kept, mut clean, mut text, mut removed) = (Vec::new(), Vec::new(), String::new(), 0);
+    let start = items.first().map_or(0, |i| i.index);
+    let (mut kept, mut clean, mut text, mut removed) = (Vec::new(), Vec::new(), String::new(), start);
     for (i, item) in items.iter().enumerate() {
         if options.french && french::must_remove(items, i) {
             removed += item.text.len();
@@ -167,9 +172,27 @@ fn boundaries(text: &str) -> Vec<(usize, Boundary)> {
     out.extend(
         linebreaks(text).map(|(i, op)| (i, Boundary::Line { hard: op == BreakOpportunity::Mandatory })),
     );
+    let inside = complex_context(text);
+    if !inside.is_empty() {
+        out.retain(|(i, _)| !inside.contains(i));
+        let segmenter = LineSegmenter::new_dictionary(LineBreakOptions::default());
+        out.extend(segmenter.segment_str(text).filter(|i| inside.contains(i)).map(|i| (i, Boundary::Line { hard: false })));
+    }
     out.sort_by_key(|&(i, b)| (i, b == Boundary::Word));
     out.dedup_by_key(|(i, _)| *i);
     out
+}
+
+/// Offsets between two characters of scripts written without spaces
+/// (Thai, Lao, Khmer, Myanmar), where words are found with a dictionary as
+/// ICU does for SILE.
+fn complex_context(text: &str) -> BTreeSet<usize> {
+    let sa = |c: char| break_property(c as u32) == BreakClass::ComplexContext;
+    text.char_indices()
+        .zip(text.chars().skip(1))
+        .filter(|&((_, a), b)| sa(a) && sa(b))
+        .map(|((i, a), _)| i + a.len_utf8())
+        .collect()
 }
 
 fn class(item: &Item) -> Option<BreakClass> {
@@ -599,6 +622,26 @@ mod tests {
         assert_eq!(render("  a  b", Default::default()), "_[a]_[b]");
         let obey = NodeMakerOptions { obey_spaces: true, ..Default::default() };
         assert_eq!(render("a  b", obey), "[a]__[b]");
+    }
+
+    #[test]
+    fn a_run_cut_from_further_on_breaks_the_same() {
+        let all = items("abc ภาษาไทยง่าย ok");
+        let tail = &all[4..];
+        let words: Vec<String> = tokenize(tail, Default::default())
+            .iter()
+            .map(|t| match t {
+                Token::Word(r) => tail[r.clone()].iter().map(|i| i.text).collect(),
+                Token::Penalty(p) => format!("P{p}"),
+                _ => "_".into(),
+            })
+            .collect();
+        assert_eq!(words, ["ภาษา", "P0", "ไทย", "P0", "ง่าย", "_", "ok"]);
+    }
+
+    #[test]
+    fn thai_breaks_between_dictionary_words() {
+        assert_eq!(render("ภาษาไทยง่ายนิดเดียว ok", Default::default()), "[ภาษา]P0[ไทย]P0[ง่าย]P0[นิด]P0[เดียว]_[ok]");
     }
 
     #[test]
