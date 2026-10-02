@@ -42,6 +42,7 @@ pub enum BuilderError {
     Pdf(PdfError),
     NoFont(String),
     Layout(String),
+    InvalidMetadata(String),
 }
 
 impl std::fmt::Display for BuilderError {
@@ -51,6 +52,7 @@ impl std::fmt::Display for BuilderError {
             Self::Pdf(e) => write!(f, "{e}"),
             Self::NoFont(name) => write!(f, "no font registered with name \"{name}\""),
             Self::Layout(msg) => write!(f, "layout error: {msg}"),
+            Self::InvalidMetadata(msg) => write!(f, "invalid PDF metadata: {msg}"),
         }
     }
 }
@@ -2031,6 +2033,21 @@ impl DocumentBuilder {
         self
     }
 
+    /// Set a document info entry by its PDF key (SILE's `\pdf:metadata`).
+    /// Dates must be PDF dates; `Trapped` is not text and can't be set.
+    pub fn set_pdf_metadata(&mut self, key: &str, value: &str) -> Result<&mut Self, BuilderError> {
+        let invalid = |what: String| Err(BuilderError::InvalidMetadata(what));
+        match key {
+            "Title" => self.pdf_config.title = Some(value.into()),
+            "Author" => self.pdf_config.author = Some(value.into()),
+            "Subject" => self.pdf_config.subject = Some(value.into()),
+            "Trapped" => return invalid("Trapped can't be set as text".into()),
+            "CreationDate" | "ModDate" if !is_pdf_date(value) => return invalid(format!("{key} {value:?} is not a PDF date")),
+            _ => self.pdf_config.info.push((key.into(), value.into())),
+        }
+        Ok(self)
+    }
+
     pub fn set_compress(&mut self, compress: bool) -> &mut Self {
         self.pdf_config.compress = compress;
         self
@@ -2939,6 +2956,19 @@ fn natural_width(node: &Node) -> Length {
     }
 }
 
+/// `D:` and digits, then a `HH'mm'` offset (as SILE checks it).
+fn is_pdf_date(date: &str) -> bool {
+    let Some(rest) = date.strip_prefix("D:") else { return false };
+    let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let squashed: String = rest[digits..].chars().filter(|c| !c.is_whitespace()).collect();
+    let offset = squashed.strip_prefix('-').unwrap_or("");
+    let offset = offset.strip_suffix('\'').unwrap_or(offset);
+    digits > 0
+        && offset.len() == 5
+        && offset.as_bytes()[2] == b'\''
+        && offset.bytes().enumerate().all(|(i, b)| i == 2 || b.is_ascii_digit())
+}
+
 /// `length` with any `em` parts in points for a font of size `em`.
 fn resolve_em(length: Length, em: f64) -> Length {
     let part = |m: Measurement| match m.unit {
@@ -3504,6 +3534,14 @@ mod tests {
         doc.add_text("Page two content.");
         let pdf = doc.render().unwrap();
         assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn pdf_dates_need_an_offset() {
+        assert!(is_pdf_date("D:19990209153925 - 08 ' 00 '"));
+        assert!(is_pdf_date("D:19990209153925-08'00"));
+        assert!(!is_pdf_date("should fail"));
+        assert!(!is_pdf_date("D:19990209153925"));
     }
 
     #[test]
