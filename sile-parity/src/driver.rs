@@ -286,6 +286,7 @@ const SETTINGS: &[&str] = &[
     "languages.am.justification",
     "typesetter.fixedSpacingAfterInitialEmdash",
     "typesetter.softHyphen",
+    "languages.tr.replaceApostropheAtHyphenation",
     "typesetter.breakwidth",
     "harfbuzz.subshapers",
     "dropcaps.bsratio",
@@ -2199,6 +2200,9 @@ impl<'a> Driver<'a> {
             }
             "typesetter.softHyphen" => {
                 self.doc.set_soft_hyphens(truthy(value));
+            }
+            "languages.tr.replaceApostropheAtHyphenation" => {
+                self.doc.set_replace_apostrophe_at_hyphenation(truthy(value));
             }
             "harfbuzz.subshapers" => {
                 let shapers: Vec<&str> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();

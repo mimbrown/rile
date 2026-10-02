@@ -1,6 +1,7 @@
 mod compare;
 mod driver;
 mod fonts;
+mod known;
 mod ports;
 mod report;
 mod sil;
@@ -10,7 +11,7 @@ mod xml;
 
 use std::path::PathBuf;
 
-use compare::Comparison;
+use compare::{Comparison, Status};
 use driver::{Corpus, Failure, Format};
 
 pub enum Outcome {
@@ -26,6 +27,7 @@ pub struct TestResult {
     pub name: String,
     pub expected: trace::Trace,
     pub outcome: Outcome,
+    pub settled: Option<known::Settled>,
 }
 
 const USAGE: &str = "usage: sile-parity [--corpus DIR] [--out DIR] [--trace TEST] [FILTER...]
@@ -121,6 +123,7 @@ fn main() {
 
 /// The test's input and its format, or what is missing to run it.
 fn source(dir: &std::path::Path, name: &str) -> Result<(String, Format), String> {
+    let name = known::source_name(name);
     let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).ok();
     if let Some(src) = read("sil") {
         return Ok((src, Format::Sil));
@@ -167,9 +170,17 @@ fn run_one(name: &str, dir: &std::path::Path, corpus: &Corpus) -> TestResult {
             }
         },
     };
+    let settled = match &outcome {
+        Outcome::Compared { comparison, .. } if comparison.status != Status::Match => {
+            known::divergence(name).map(known::Settled::Explained)
+        }
+        Outcome::Unsupported(missing) => known::unsupported(missing),
+        _ => None,
+    };
     TestResult {
         name: name.to_string(),
         expected,
         outcome,
+        settled,
     }
 }

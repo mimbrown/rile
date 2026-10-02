@@ -377,6 +377,7 @@ pub struct Settings {
     ethiopic_centered: bool,
     fixed_space_after_dash: bool,
     soft_hyphens: bool,
+    replace_apostrophe_at_hyphenation: bool,
     break_width: Option<f64>,
     fallbacks: Vec<FontFallback>,
     /// The fallbacks applied to the current font, as registered fonts.
@@ -404,6 +405,7 @@ impl Default for Settings {
             ethiopic_centered: false,
             fixed_space_after_dash: true,
             soft_hyphens: true,
+            replace_apostrophe_at_hyphenation: false,
             break_width: None,
             fallbacks: Vec::new(),
             fallback_fonts: Vec::new(),
@@ -1117,6 +1119,14 @@ impl DocumentBuilder {
     /// default).
     pub fn set_soft_hyphens(&mut self, on: bool) -> &mut Self {
         self.settings.soft_hyphens = on;
+        self
+    }
+
+    /// Whether a Turkish word broken at an apostrophe sets a hyphen in
+    /// place of the apostrophe, rather than the apostrophe alone (SILE's
+    /// `languages.tr.replaceApostropheAtHyphenation`, off by default).
+    pub fn set_replace_apostrophe_at_hyphenation(&mut self, on: bool) -> &mut Self {
+        self.settings.replace_apostrophe_at_hyphenation = on;
         self
     }
 
@@ -3078,7 +3088,7 @@ impl DocumentBuilder {
             let mut pieces = Vec::new();
             let mut syllables = 0;
             for j in 0..segments.len() {
-                let point = (j + 1 < segments.len()).then(|| hyphenation_point(&lang, &mut segments, j));
+                let point = (j + 1 < segments.len()).then(|| hyphenation_point(&lang, &mut segments, j, self.settings.replace_apostrophe_at_hyphenation));
                 let nnodes: Vec<Node> = self.text_nodes(&segments[j], word).into_iter().filter(Node::is_nnode).collect();
                 syllables += nnodes.len();
                 pieces.extend(nnodes);
@@ -3740,7 +3750,7 @@ fn color_layers<'t>(face: &FontFace, s: Shaped<'t>) -> Vec<Shaped<'t>> {
 /// What a hyphenation point after `segments[j]` sets before the break, and
 /// what it sets when the word stays whole, adjusting the segments for
 /// languages whose spelling changes at a break (SILE's `hyphenateSegments`).
-fn hyphenation_point(lang: &str, segments: &mut [String], j: usize) -> (String, Option<String>) {
+fn hyphenation_point(lang: &str, segments: &mut [String], j: usize, replace_apostrophe: bool) -> (String, Option<String>) {
     let base = lang.split(['-', '_']).next().unwrap_or(lang);
     match base {
         // Catalan punt volat: "l·l" breaks as "l-" / "l".
@@ -3752,12 +3762,16 @@ fn hyphenation_point(lang: &str, segments: &mut [String], j: usize) -> (String, 
                 }
             }
         }
-        // Turkish: a break at an apostrophe keeps the apostrophe, no hyphen.
+        // Turkish: a break at an apostrophe keeps the apostrophe, no
+        // hyphen, unless set to swap the apostrophe for a hyphen.
         "tr" => {
             if let Some(next) = segments.get(j + 1)
                 && let Some(apostrophe) = next.chars().next().filter(|c| matches!(c, '\'' | '’'))
             {
                 segments[j + 1] = next[apostrophe.len_utf8()..].to_string();
+                if replace_apostrophe {
+                    return ("-".to_string(), None);
+                }
                 return (apostrophe.to_string(), Some(apostrophe.to_string()));
             }
         }
@@ -3791,6 +3805,17 @@ mod tests {
         doc.load_font_data("body", data, spec).ok()?;
         doc.set_font("body");
         Some(doc)
+    }
+
+    #[test]
+    fn turkish_breaks_at_an_apostrophe_keep_it_or_swap_it_for_a_hyphen() {
+        let segments = || vec!["İstanbul".to_string(), "’dan".to_string()];
+        let mut kept = segments();
+        assert_eq!(hyphenation_point("tr", &mut kept, 0, false), ("’".into(), Some("’".into())));
+        assert_eq!(kept[1], "dan");
+        let mut swapped = segments();
+        assert_eq!(hyphenation_point("tr", &mut swapped, 0, true), ("-".into(), None));
+        assert_eq!(hyphenation_point("en", &mut segments(), 0, true), ("-".into(), None));
     }
 
     #[test]
