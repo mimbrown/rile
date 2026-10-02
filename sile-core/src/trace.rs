@@ -151,6 +151,10 @@ impl Canvas for TraceCanvas {
         let _ = writeln!(self.out, "Draw image\t{}\t{}\t{}\t{}\t{}", image.src, round(x), round(y), round(width), round(height));
     }
 
+    fn svg(&mut self, figure: &crate::svg_image::SvgFigure, _x: f64, _y: f64, baseline: f64, width: f64, height: f64) {
+        let _ = writeln!(self.out, "Draw SVG\t{}\t{}\t{}\t{}\t{}", round(baseline), round(width), round(height), round(figure.scale), figure.image);
+    }
+
     fn push_color(&mut self, color: Color) {
         let _ = writeln!(self.out, "Push color\t{}", fmt_color(color));
     }

@@ -44,6 +44,9 @@ pub struct PdfConfig {
     pub info: Vec<(String, String)>,
     pub creator: String,
     pub compress: bool,
+    /// The sheet pages are printed on, when bigger than the page: each
+    /// page is centred on it.
+    pub sheet: Option<crate::frame::PaperSize>,
 }
 
 impl Default for PdfConfig {
@@ -55,6 +58,7 @@ impl Default for PdfConfig {
             info: Vec::new(),
             creator: "sile-rust".to_string(),
             compress: true,
+            sheet: None,
         }
     }
 }
@@ -128,6 +132,8 @@ struct ImageEntry {
 struct BuiltPage {
     width: f64,
     height: f64,
+    /// Where the page's origin is on its sheet.
+    offset: (f64, f64),
     content: Vec<u8>,
     annotations: Vec<LinkAnnotation>,
 }
@@ -282,10 +288,18 @@ impl PdfOutputter {
 
     pub fn end_page(&mut self) {
         let page = self.current.take().expect("begin_page() not called");
+        let offset = self.config.sheet.map_or((0.0, 0.0), |s| ((s.width - page.width) / 2.0, (s.height - page.height) / 2.0));
+        let mut content = Content::new();
+        if offset != (0.0, 0.0) {
+            content.transform([1.0, 0.0, 0.0, 1.0, offset.0 as f32, offset.1 as f32]);
+        }
+        let mut content = content.finish();
+        content.extend(page.content.finish());
         self.pages.push(BuiltPage {
             width: page.width,
             height: page.height,
-            content: page.content.finish(),
+            offset,
+            content,
             annotations: page.annotations,
         });
     }
@@ -588,11 +602,12 @@ impl PdfOutputter {
             };
 
             let mut pg = pdf.page(page_ref);
+            let (dx, dy) = built_page.offset;
             pg.media_box(Rect::new(
                 0.0,
                 0.0,
-                built_page.width as f32,
-                built_page.height as f32,
+                (built_page.width + 2.0 * dx) as f32,
+                (built_page.height + 2.0 * dy) as f32,
             ));
             pg.parent(page_tree_ref);
             pg.contents(content_ref);
@@ -649,14 +664,13 @@ impl PdfOutputter {
 
         // -- Write annotations --
         for (i, built_page) in self.pages.iter().enumerate() {
-            let page_height = built_page.height;
             for (j, annot) in built_page.annotations.iter().enumerate() {
                 let annot_ref = annot_refs[i][j];
                 let dest = match &annot.dest {
                     LinkDest::Internal(name) => self.destination(name, &page_ref_list),
                     LinkDest::Uri(_) => None,
                 };
-                write_annotation(&mut pdf, annot, annot_ref, page_height, dest);
+                write_annotation(&mut pdf, annot, annot_ref, built_page, dest);
             }
         }
 
@@ -672,8 +686,9 @@ impl PdfOutputter {
     /// Where `name` is in PDF terms: its page and position from the bottom.
     fn destination(&self, name: &str, page_refs: &[Ref]) -> Option<Dest> {
         let &(page, x, y) = self.destinations.get(name)?;
-        let height = self.pages.get(page)?.height;
-        Some(Dest { page: *page_refs.get(page)?, x: x as f32, y: (height - y) as f32 })
+        let built = self.pages.get(page)?;
+        let (dx, dy) = built.offset;
+        Some(Dest { page: *page_refs.get(page)?, x: (x + dx) as f32, y: (built.height - y + dy) as f32 })
     }
 }
 
@@ -751,6 +766,53 @@ impl crate::render::Canvas for PdfOutputter {
             }
         };
         self.draw_image(index, x, y, width, height);
+    }
+
+    fn svg(&mut self, figure: &crate::svg_image::SvgFigure, x: f64, y: f64, _baseline: f64, _width: f64, _height: f64) {
+        use crate::svg_image::SvgOp;
+        let page = self.current.as_mut().expect("no current page");
+        let s = figure.scale as f32;
+        let c = &mut page.content;
+        c.save_state();
+        c.transform([s, 0.0, 0.0, -s, x as f32, (page.height - y) as f32]);
+        for op in &figure.image.ops {
+            match *op {
+                SvgOp::Move(x, y) => {
+                    c.move_to(x, y);
+                }
+                SvgOp::Curve(p) => {
+                    c.cubic_to(p[0], p[1], p[2], p[3], p[4], p[5]);
+                }
+                SvgOp::LineWidth(w) => {
+                    c.set_line_width(w);
+                }
+                SvgOp::StrokeRgb(r, g, b) => {
+                    c.set_stroke_rgb(r as f32, g as f32, b as f32);
+                }
+                SvgOp::FillRgb(r, g, b) => {
+                    c.set_fill_rgb(r as f32, g as f32, b as f32);
+                }
+                SvgOp::Close => {
+                    c.close_path();
+                }
+                SvgOp::Stroke => {
+                    c.stroke();
+                }
+                SvgOp::CloseStroke => {
+                    c.close_and_stroke();
+                }
+                SvgOp::Fill => {
+                    c.fill_nonzero();
+                }
+                SvgOp::FillEvenOdd => {
+                    c.fill_even_odd();
+                }
+                SvgOp::FillStroke => {
+                    c.fill_nonzero_and_stroke();
+                }
+            }
+        }
+        c.restore_state();
     }
 
     fn link(&mut self, rect: [f64; 4], dest: &LinkDest) {
@@ -1038,10 +1100,12 @@ fn write_image(
 // Annotation writing
 // ---------------------------------------------------------------------------
 
-fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page_height: f64, dest: Option<Dest>) {
+fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page: &BuiltPage, dest: Option<Dest>) {
+    let (dx, dy) = page.offset;
     let [x1, y1, x2, y2] = annot.rect;
-    let pdf_y1 = page_height - y2;
-    let pdf_y2 = page_height - y1;
+    let (x1, x2) = (x1 + dx, x2 + dx);
+    let pdf_y1 = page.height - y2 + dy;
+    let pdf_y2 = page.height - y1 + dy;
 
     let mut writer = pdf.annotation(annot_ref);
     writer.subtype(pdf_writer::types::AnnotationType::Link);
