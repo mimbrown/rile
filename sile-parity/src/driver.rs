@@ -114,6 +114,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "ruby",
     "latin-in-tate",
+    "sync",
     "save-book-title",
     "save-chapter-number",
     "verse-number",
@@ -1322,6 +1323,10 @@ impl<'a> Driver<'a> {
                     label(self, cmd)?;
                 }
                 Bible::verse_number(&mut self.doc, &sil::plain_text(content)).map_err(err)?;
+            }
+            "sync" => {
+                self.sync()?;
+                self.doc.sync_parallel().map_err(err)?;
             }
             "pdf:metadata" => {
                 match self.doc.set_pdf_metadata(opt("key")?, opt("value")?) {
