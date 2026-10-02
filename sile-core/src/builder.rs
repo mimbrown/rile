@@ -409,7 +409,7 @@ impl Layout {
     pub fn render(self) -> Result<Vec<u8>, BuilderError> {
         let mut pdf = PdfOutputter::new(self.pdf_config);
         for (name, entry) in &self.fonts {
-            pdf.register_font(name, Arc::clone(&entry.face));
+            pdf.register_font(name, Arc::clone(&entry.face), entry.face.variations(&entry.spec));
         }
         for bm in self.bookmarks {
             pdf.add_bookmark(bm);

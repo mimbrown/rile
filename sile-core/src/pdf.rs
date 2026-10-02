@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
@@ -114,9 +114,20 @@ impl RefAlloc {
 
 struct FontEntry {
     face: Arc<FontFace>,
-    used_glyphs: BTreeSet<u16>,
-    gid_to_unicode: BTreeMap<u16, String>,
+    /// Axis positions to instance a variable font at.
+    variations: Vec<([u8; 4], f32)>,
+    /// Glyphs in the order pages first use them; content streams address
+    /// each by its index here, which is its glyph id in the subset.
+    remapper: subsetter::GlyphRemapper,
+    /// Text for ToUnicode, by subset glyph id.
+    cid_to_unicode: BTreeMap<u16, String>,
     pdf_name: String,
+}
+
+impl FontEntry {
+    fn cid(&mut self, gid: u16) -> u16 {
+        self.remapper.remap(gid)
+    }
 }
 
 struct ImageEntry {
@@ -182,7 +193,7 @@ impl PdfOutputter {
 
     // -- Font management ---------------------------------------------------
 
-    pub fn register_font(&mut self, key: &str, face: Arc<FontFace>) {
+    pub fn register_font(&mut self, key: &str, face: Arc<FontFace>, variations: Vec<([u8; 4], f32)>) {
         if self.fonts.contains_key(key) {
             return;
         }
@@ -192,20 +203,22 @@ impl PdfOutputter {
             key.to_string(),
             FontEntry {
                 face,
-                used_glyphs: BTreeSet::new(),
-                gid_to_unicode: BTreeMap::new(),
+                variations,
+                remapper: subsetter::GlyphRemapper::new(),
+                cid_to_unicode: BTreeMap::new(),
                 pdf_name,
             },
         );
     }
 
-    fn track_glyph(&mut self, font_key: &str, gid: u16, text: &str) {
-        if let Some(entry) = self.fonts.get_mut(font_key) {
-            entry.used_glyphs.insert(gid);
-            if !text.is_empty() {
-                entry.gid_to_unicode.entry(gid).or_insert_with(|| text.to_string());
-            }
+    /// The code that shows `gid` in the content stream.
+    fn track_glyph(&mut self, font_key: &str, gid: u16, text: &str) -> u16 {
+        let Some(entry) = self.fonts.get_mut(font_key) else { return gid };
+        let cid = entry.cid(gid);
+        if !text.is_empty() {
+            entry.cid_to_unicode.entry(cid).or_insert_with(|| text.to_string());
         }
+        cid
     }
 
     // -- Image management --------------------------------------------------
@@ -348,11 +361,7 @@ impl PdfOutputter {
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
-        // Track glyph usage for font subsetting
-        for &(gid, _, _, _, _) in glyphs {
-            self.track_glyph_on_font(font_key, gid);
-        }
-
+        let cids: Vec<u16> = glyphs.iter().map(|g| self.track_glyph(font_key, g.0, "")).collect();
         let page = self.current.as_mut().expect("no current page");
         page.content.begin_text();
 
@@ -365,22 +374,16 @@ impl PdfOutputter {
 
         let mut cur_x = x;
         let mut cur_y = y;
-        for &(gid, x_advance, y_advance, x_offset, y_offset) in glyphs {
+        for (&(_, x_advance, y_advance, x_offset, y_offset), cid) in glyphs.iter().zip(cids) {
             let px = cur_x + x_offset;
             let py = page_height - (cur_y - y_offset);
             page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, px as f32, py as f32]);
-            page.content.show(Str(&gid.to_be_bytes()));
+            page.content.show(Str(&cid.to_be_bytes()));
             cur_x += x_advance;
             cur_y += y_advance;
         }
 
         page.content.end_text();
-    }
-
-    fn track_glyph_on_font(&mut self, font_key: &str, gid: u16) {
-        if let Some(entry) = self.fonts.get_mut(font_key) {
-            entry.used_glyphs.insert(gid);
-        }
     }
 
     pub fn draw_rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
@@ -462,9 +465,7 @@ impl PdfOutputter {
         // earlier on the page would bleed into everything after it.
         self.set_color(nnode.color.unwrap_or(Color::Grayscale { l: 0.0 }));
 
-        for glyph in &nnode.glyphs {
-            self.track_glyph(&nnode.font_key, glyph.gid, &glyph.text);
-        }
+        let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(&nnode.font_key, g.gid, &g.text)).collect();
 
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
@@ -479,12 +480,12 @@ impl PdfOutputter {
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
 
         let (mut cur_x, mut cur_y) = (x, baseline_y);
-        for glyph in &nnode.glyphs {
+        for (glyph, cid) in nnode.glyphs.iter().zip(cids) {
             let px = cur_x + glyph.x_offset;
             let py = page_height - (cur_y - glyph.y_offset);
             page.content
                 .set_text_matrix([1.0, 0.0, 0.0, 1.0, px as f32, py as f32]);
-            page.content.show(Str(&glyph.gid.to_be_bytes()));
+            page.content.show(Str(&cid.to_be_bytes()));
             if nnode.vertical {
                 cur_y += glyph.width;
             } else {
@@ -524,7 +525,6 @@ impl PdfOutputter {
                         descriptor: alloc.bump(),
                         font_file: alloc.bump(),
                         tounicode: alloc.bump(),
-                        cid_to_gid_map: alloc.bump(),
                     },
                 )
             })
@@ -716,7 +716,6 @@ struct FontRefs {
     descriptor: Ref,
     font_file: Ref,
     tounicode: Ref,
-    cid_to_gid_map: Ref,
 }
 
 // ---------------------------------------------------------------------------
@@ -873,29 +872,24 @@ fn write_font(
     compress: bool,
 ) -> Result<(), PdfError> {
     let (raw_data, face_index) = entry.face.raw_data();
-    let base_name = format!("SILE+Font{}", entry.pdf_name);
-
-    // Try subsetting — get both the subsetted data and the GID remapping
-    // A registered font that no glyph ended up using still gets referenced
-    // by every page's resources; subset it to .notdef alone rather than
-    // embedding the whole file.
-    let mut gids: Vec<u16> = entry.used_glyphs.iter().copied().collect();
-    if gids.is_empty() {
-        gids.push(0);
-    }
-    let subset_result = try_subset(raw_data, face_index, &gids);
-    let (font_data, gid_map) = match &subset_result {
-        Some(result) => (result.data.as_slice(), Some(&result.gid_map)),
-        None => (raw_data, None),
-    };
+    let variations: Vec<(subsetter::Tag, f32)> =
+        entry.variations.iter().map(|(tag, v)| (subsetter::Tag::new(tag), *v)).collect();
+    // Content streams address glyphs by their id in the subset, so the
+    // embedded font is always the subset and CIDs are its glyph ids.
+    let font_data = subsetter::subset_with_variations(raw_data, face_index, &variations, &entry.remapper)
+        .map_err(|e| PdfError::Font(format!("{}: {e:?}", entry.pdf_name)))?;
+    let subset = ttf_parser::Face::parse(&font_data, 0).map_err(|e| PdfError::Font(format!("{}: {e}", entry.pdf_name)))?;
+    let cff = subset.tables().cff.is_some();
+    let scale = 1000.0 / subset.units_per_em() as f32;
+    let face = ttf_parser::Face::parse(raw_data, face_index).map_err(|e| PdfError::Font(format!("{}: {e}", entry.pdf_name)))?;
+    let base_name = subset_name(&face, &entry.pdf_name, &font_data);
 
     let font_bytes = if compress {
-        compress_data(font_data)
+        compress_data(&font_data)
     } else {
-        font_data.to_vec()
+        font_data.clone()
     };
 
-    // Type0 font (composite)
     let mut type0 = pdf.type0_font(refs.type0);
     type0.base_font(Name(base_name.as_bytes()));
     type0.encoding_predefined(Name(b"Identity-H"));
@@ -903,9 +897,8 @@ fn write_font(
     type0.to_unicode(refs.tounicode);
     type0.finish();
 
-    // CIDFont
     let mut cid = pdf.cid_font(refs.cid_font);
-    cid.subtype(CidFontType::Type2);
+    cid.subtype(if cff { CidFontType::Type0 } else { CidFontType::Type2 });
     cid.base_font(Name(base_name.as_bytes()));
     cid.system_info(SystemInfo {
         registry: Str(b"Adobe"),
@@ -913,83 +906,63 @@ fn write_font(
         supplement: 0,
     });
     cid.font_descriptor(refs.descriptor);
-
-    // When we subset, GIDs in the font change. The content stream still uses
-    // original GIDs as character codes. We write a CIDToGIDMap stream that
-    // translates original GIDs (used as CIDs) → new GIDs in the subset font.
-    // Without subsetting, Identity works (CID = GID).
-    if gid_map.is_some() {
-        cid.cid_to_gid_map_stream(refs.cid_to_gid_map);
-    } else {
+    if !cff {
         cid.cid_to_gid_map_predefined(Name(b"Identity"));
     }
-    cid.default_width(1000.0);
-
-    // W (width) array — widths are indexed by CID (= original GID) since
-    // that's what the content stream uses as character codes
-    if !entry.used_glyphs.is_empty() {
-        let units_per_em = entry.face.units_per_em();
-        let mut widths = cid.widths();
-        for &gid in &entry.used_glyphs {
-            let advance = entry.face.advance_width(gid).unwrap_or(0);
-            let w = advance as f32 * 1000.0 / units_per_em as f32;
-            widths.same(gid, gid, w);
-        }
-        widths.finish();
+    cid.default_width(0.0);
+    let mut widths = cid.widths();
+    for g in 0..subset.number_of_glyphs() {
+        let advance = subset.glyph_hor_advance(ttf_parser::GlyphId(g)).unwrap_or(0);
+        widths.same(g, g, advance as f32 * scale);
     }
+    widths.finish();
     cid.finish();
 
-    // FontDescriptor
-    let units_per_em = entry.face.units_per_em();
-    let ascent = entry.face.ascender() as f32 * 1000.0 / units_per_em as f32;
-    let descent = entry.face.descender() as f32 * 1000.0 / units_per_em as f32;
+    let bbox = face.global_bounding_box();
+    let italic_angle = face.italic_angle();
+    let mut flags = FontFlags::SYMBOLIC;
+    flags.set(FontFlags::ITALIC, italic_angle != 0.0);
+    flags.set(FontFlags::FIXED_PITCH, face.is_monospaced());
+    let ascent = face.ascender() as f32 * scale;
+    let descent = face.descender() as f32 * scale;
+    let cap_height = face.capital_height().filter(|h| *h > 0).map_or(ascent, |h| h as f32 * scale);
+    let weight = face.tables().os2.map_or(400, |os2| os2.weight().to_number()) as f32;
 
     let mut desc = pdf.font_descriptor(refs.descriptor);
     desc.name(Name(base_name.as_bytes()));
-    desc.flags(FontFlags::SYMBOLIC | FontFlags::NON_SYMBOLIC);
-    desc.bbox(Rect::new(0.0, descent, 1000.0, ascent));
-    desc.italic_angle(0.0);
+    desc.flags(flags);
+    desc.bbox(Rect::new(
+        bbox.x_min as f32 * scale,
+        bbox.y_min as f32 * scale,
+        bbox.x_max as f32 * scale,
+        bbox.y_max as f32 * scale,
+    ));
+    desc.italic_angle(italic_angle);
     desc.ascent(ascent);
     desc.descent(descent);
-    desc.cap_height(ascent * 0.7);
-    desc.stem_v(80.0);
-    desc.font_file2(refs.font_file);
+    desc.cap_height(cap_height);
+    // The usual estimate from the weight class, as in Typst and pdfTeX.
+    desc.stem_v(10.0 + 0.244 * (weight - 50.0));
+    if cff {
+        desc.font_file3(refs.font_file);
+    } else {
+        desc.font_file2(refs.font_file);
+    }
     desc.finish();
 
-    // Embedded font data
     let mut stream = pdf.stream(refs.font_file, &font_bytes);
     if compress {
         stream.filter(Filter::FlateDecode);
     }
-    stream.pair(Name(b"Length1"), font_data.len() as i32);
+    if cff {
+        stream.pair(Name(b"Subtype"), Name(b"OpenType"));
+    } else {
+        stream.pair(Name(b"Length1"), font_data.len() as i32);
+    }
     stream.finish();
 
-    // CIDToGIDMap stream (only when subsetted)
-    if let Some(map) = gid_map {
-        let max_cid = entry.used_glyphs.iter().copied().max().unwrap_or(0) as usize;
-        // Binary array: 2 bytes per CID, big-endian, from CID 0 to max_cid
-        let mut cid_to_gid_data = vec![0u8; (max_cid + 1) * 2];
-        for (&old_gid, &new_gid) in map {
-            let idx = old_gid as usize * 2;
-            if idx + 1 < cid_to_gid_data.len() {
-                cid_to_gid_data[idx] = (new_gid >> 8) as u8;
-                cid_to_gid_data[idx + 1] = (new_gid & 0xFF) as u8;
-            }
-        }
-        let map_bytes = if compress {
-            compress_data(&cid_to_gid_data)
-        } else {
-            cid_to_gid_data
-        };
-        let mut map_stream = pdf.stream(refs.cid_to_gid_map, &map_bytes);
-        if compress {
-            map_stream.filter(Filter::FlateDecode);
-        }
-        map_stream.finish();
-    }
-
     // ToUnicode CMap
-    let cmap_data = build_tounicode_cmap(&entry.gid_to_unicode);
+    let cmap_data = build_tounicode_cmap(&entry.cid_to_unicode);
     let cmap_bytes = if compress {
         compress_data(&cmap_data)
     } else {
@@ -1004,24 +977,23 @@ fn write_font(
     Ok(())
 }
 
-struct SubsetResult {
-    data: Vec<u8>,
-    gid_map: HashMap<u16, u16>, // old GID → new GID
-}
-
-fn try_subset(data: &[u8], _face_index: u32, gids: &[u16]) -> Option<SubsetResult> {
-    let mapper = subsetter::GlyphRemapper::new_from_glyphs(gids);
-    let subset_data = subsetter::subset(data, 0, &mapper).ok()?;
-    let mut gid_map = HashMap::new();
-    for &old_gid in gids {
-        if let Some(new_gid) = mapper.get(old_gid) {
-            gid_map.insert(old_gid, new_gid);
-        }
+/// The font's PostScript name behind the six-letter tag that marks a
+/// subset, the tag differing between subsets of one font.
+fn subset_name(face: &ttf_parser::Face, pdf_name: &str, subset: &[u8]) -> String {
+    let postscript = face
+        .names()
+        .into_iter()
+        .filter(|n| n.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
+        .find_map(|n| n.to_string())
+        .map(|n| n.chars().filter(|c| c.is_ascii_graphic() && !"[](){}<>/%".contains(*c)).collect::<String>())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| pdf_name.to_string());
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in pdf_name.as_bytes().iter().chain(subset) {
+        hash = (hash ^ b as u64).wrapping_mul(0x0100_0000_01b3);
     }
-    Some(SubsetResult {
-        data: subset_data,
-        gid_map,
-    })
+    let tag: String = (0..6).map(|i| (b'A' + ((hash >> (i * 5)) % 26) as u8) as char).collect();
+    format!("{tag}+{postscript}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1478,7 +1450,7 @@ mod tests {
         page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
         let mut out = PdfOutputter::new(PdfConfig::default());
-        out.register_font("body", face);
+        out.register_font("body", face, Vec::new());
         out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
 
@@ -1534,7 +1506,7 @@ mod tests {
         page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
         let mut out = PdfOutputter::new(PdfConfig::default());
-        out.register_font("body", face);
+        out.register_font("body", face, Vec::new());
         out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
         assert!(bytes.starts_with(b"%PDF"));
@@ -1606,7 +1578,7 @@ mod tests {
             title: Some("Multi-page Test".to_string()),
             ..Default::default()
         });
-        out.register_font("body", face);
+        out.register_font("body", face, Vec::new());
         out.render_pages(&pages);
 
         out.add_bookmark(Bookmark { title: "Page 1".into(), level: 0, dest: "nowhere".into() });
@@ -1627,4 +1599,59 @@ mod tests {
         let (data, index) = data_out?;
         FontFace::from_bytes(data, index).ok()
     }
+
+    fn render_with_test_fonts(fonts: &[(&str, &str)]) -> Vec<u8> {
+        use crate::builder::DocumentBuilder;
+        use crate::font::FontSpec;
+        use crate::frame::PaperSize;
+        let mut doc = DocumentBuilder::new(PaperSize::A5);
+        doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts"));
+        doc.set_compress(false);
+        for (family, variations) in fonts {
+            let spec = FontSpec { family: Some(family.to_string()), variations: variations.to_string(), ..Default::default() };
+            doc.set_font_spec(spec).unwrap();
+            doc.add_text("Hi").new_paragraph().unwrap();
+        }
+        doc.render().unwrap()
+    }
+
+    /// The embedded font programs, found by their `/Length1`.
+    fn truetype_programs(pdf: &[u8]) -> Vec<&[u8]> {
+        let find = |from: usize, what: &[u8]| pdf[from..].windows(what.len()).position(|w| w == what).map(|p| p + from);
+        let mut programs = Vec::new();
+        let mut from = 0;
+        while let Some(at) = find(from, b"/Length1 ") {
+            let digits: String = pdf[at + 9..].iter().take_while(|b| b.is_ascii_digit()).map(|&b| b as char).collect();
+            let start = find(at, b"stream\n").unwrap() + 7;
+            programs.push(&pdf[start..start + digits.parse::<usize>().unwrap()]);
+            from = start;
+        }
+        programs
+    }
+
+    #[test]
+    fn cff_fonts_embed_as_opentype() {
+        let pdf = render_with_test_fonts(&[("Libertinus Mono", "")]);
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(text.contains("/CIDFontType0"));
+        assert!(text.contains("/FontFile3"));
+        assert!(text.contains("/Subtype /OpenType"));
+        assert!(!text.contains("/CIDToGIDMap"));
+        assert!(text.contains("+LibertinusMono-Regular"));
+    }
+
+    #[test]
+    fn variable_fonts_embed_the_instance_used() {
+        let pdf = render_with_test_fonts(&[("Tourney", "wght=100"), ("Tourney", "wght=900")]);
+        let outlines: Vec<Vec<u8>> = truetype_programs(&pdf)
+            .iter()
+            .map(|data| {
+                let face = ttf_parser::Face::parse(data, 0).unwrap();
+                face.raw_face().table(ttf_parser::Tag::from_bytes(b"glyf")).unwrap().to_vec()
+            })
+            .collect();
+        assert_eq!(outlines.len(), 2);
+        assert_ne!(outlines[0], outlines[1]);
+    }
 }
+
