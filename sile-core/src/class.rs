@@ -455,8 +455,7 @@ impl Book {
         })?;
         let doc = ctx.as_mut();
         book(doc).folio.state = FolioState::OffThisPage;
-        doc.new_paragraph()?;
-        doc.set_current_indent(Some(0.0));
+        Self::chapter_post(doc)?;
         with_font(ctx, bold(22.0), &mut title)?;
         ctx.as_mut().begin_capture();
         let captured = with_font(ctx, |f| f.size = 9.0, &mut title);
@@ -531,6 +530,26 @@ impl Book {
             title(ctx)
         })?;
         Ok(Self::heading_end(ctx.as_mut())?)
+    }
+
+    /// Between a chapter's number and its title: a new unindented
+    /// paragraph, but Japanese and Esperanto have their own (SILE's
+    /// `book:chapter:post` and its per-language variants).
+    fn chapter_post(doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+        match doc.language() {
+            "ja" => {
+                doc.add_explicit_vskip(medskip())?;
+            }
+            "eo" => {
+                doc.add_text("a");
+                doc.add_explicit_vskip(medskip())?;
+            }
+            _ => {
+                doc.new_paragraph()?;
+                doc.set_current_indent(Some(0.0));
+            }
+        }
+        Ok(())
     }
 
     fn heading_start(doc: &mut DocumentBuilder, skip: Length) -> Result<(), BuilderError> {
