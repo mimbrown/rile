@@ -73,11 +73,7 @@ pub enum ImageFormat {
 // Link / Bookmark types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub enum LinkDest {
-    Uri(String),
-    Internal(String),
-}
+pub use crate::node::LinkDest;
 
 #[derive(Debug, Clone)]
 pub struct LinkAnnotation {
@@ -85,12 +81,13 @@ pub struct LinkAnnotation {
     pub dest: LinkDest,
 }
 
+/// An entry in the document outline, opening at a named destination.
+/// Entries nest under the closest earlier one with a lower level.
 #[derive(Debug, Clone)]
 pub struct Bookmark {
     pub title: String,
-    pub page_index: usize,
     pub level: u32,
-    pub y_position: f64,
+    pub dest: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +151,8 @@ pub struct PdfOutputter {
     font_counter: usize,
     images: Vec<ImageEntry>,
     bookmarks: Vec<Bookmark>,
+    /// Page index and top-left position of each named destination.
+    destinations: HashMap<String, (usize, f64, f64)>,
     pages: Vec<BuiltPage>,
     current: Option<CurrentPage>,
 }
@@ -166,6 +165,7 @@ impl PdfOutputter {
             font_counter: 0,
             images: Vec::new(),
             bookmarks: Vec::new(),
+            destinations: HashMap::new(),
             pages: Vec::new(),
             current: None,
         }
@@ -256,6 +256,11 @@ impl PdfOutputter {
 
     pub fn add_bookmark(&mut self, bookmark: Bookmark) {
         self.bookmarks.push(bookmark);
+    }
+
+    /// Name the point `(x, y)` on the current page; the first of a name wins.
+    pub fn add_destination(&mut self, name: &str, x: f64, y: f64) {
+        self.destinations.entry(name.to_string()).or_insert((self.pages.len(), x, y));
     }
 
     // -- Imperative page API -----------------------------------------------
@@ -644,24 +649,36 @@ impl PdfOutputter {
             let page_height = built_page.height;
             for (j, annot) in built_page.annotations.iter().enumerate() {
                 let annot_ref = annot_refs[i][j];
-                write_annotation(&mut pdf, annot, annot_ref, page_height);
+                let dest = match &annot.dest {
+                    LinkDest::Internal(name) => self.destination(name, &page_ref_list),
+                    LinkDest::Uri(_) => None,
+                };
+                write_annotation(&mut pdf, annot, annot_ref, page_height, dest);
             }
         }
 
         // -- Write bookmarks --
         if let Some(outline_ref) = outline_ref {
-            write_outlines(
-                &mut pdf,
-                &self.bookmarks,
-                &bookmark_refs,
-                outline_ref,
-                &page_ref_list,
-                &self.pages,
-            );
+            let dests: Vec<_> = self.bookmarks.iter().map(|b| self.destination(&b.dest, &page_ref_list)).collect();
+            write_outlines(&mut pdf, &self.bookmarks, &bookmark_refs, outline_ref, &dests);
         }
 
         Ok(pdf.finish())
     }
+
+    /// Where `name` is in PDF terms: its page and position from the bottom.
+    fn destination(&self, name: &str, page_refs: &[Ref]) -> Option<Dest> {
+        let &(page, x, y) = self.destinations.get(name)?;
+        let height = self.pages.get(page)?.height;
+        Some(Dest { page: *page_refs.get(page)?, x: x as f32, y: (height - y) as f32 })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Dest {
+    page: Ref,
+    x: f32,
+    y: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +727,14 @@ impl crate::render::Canvas for PdfOutputter {
 
     fn pop_color(&mut self) {
         self.current.as_mut().expect("no current page").content.restore_state();
+    }
+
+    fn destination(&mut self, name: &str, x: f64, y: f64) {
+        self.add_destination(name, x, y);
+    }
+
+    fn link(&mut self, rect: [f64; 4], dest: &LinkDest) {
+        self.add_link(rect, dest.clone());
     }
 
     fn frame_outline(&mut self, frame: &crate::framespec::FrameGeometry) {
@@ -993,7 +1018,7 @@ fn write_image(
 // Annotation writing
 // ---------------------------------------------------------------------------
 
-fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page_height: f64) {
+fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page_height: f64, dest: Option<Dest>) {
     let [x1, y1, x2, y2] = annot.rect;
     let pdf_y1 = page_height - y2;
     let pdf_y2 = page_height - y1;
@@ -1010,8 +1035,15 @@ fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page_
                 .action_type(pdf_writer::types::ActionType::Uri)
                 .uri(Str(uri.as_bytes()));
         }
-        LinkDest::Internal(_name) => {
-            // Internal links require named destinations (future enhancement)
+        LinkDest::Internal(_) => {
+            if let Some(d) = dest {
+                writer
+                    .action()
+                    .action_type(pdf_writer::types::ActionType::GoTo)
+                    .destination()
+                    .page(d.page)
+                    .xyz(d.x, d.y, None);
+            }
         }
     }
     writer.finish();
@@ -1021,49 +1053,76 @@ fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page_
 // Outline (bookmarks) writing
 // ---------------------------------------------------------------------------
 
-fn write_outlines(
-    pdf: &mut Pdf,
-    bookmarks: &[Bookmark],
-    bookmark_refs: &[Ref],
-    outline_ref: Ref,
-    page_refs: &[Ref],
-    pages: &[BuiltPage],
-) {
-    if bookmarks.is_empty() {
-        return;
-    }
+fn write_outlines(pdf: &mut Pdf, bookmarks: &[Bookmark], refs: &[Ref], outline_ref: Ref, dests: &[Option<Dest>]) {
+    let parents = outline_parents(bookmarks);
+    let children = |parent: Option<usize>| -> Vec<usize> { (0..bookmarks.len()).filter(|&i| parents[i] == parent).collect() };
+    let descendants = |i: usize| {
+        let mut n = 0;
+        let mut j = i + 1;
+        while j < bookmarks.len() && is_descendant(&parents, j, i) {
+            n += 1;
+            j += 1;
+        }
+        n
+    };
 
-    // Simple flat outline (all at level 0)
-    let first = bookmark_refs[0];
-    let last = *bookmark_refs.last().unwrap();
-
+    let top = children(None);
     let mut outline = pdf.outline(outline_ref);
-    outline.first(first);
-    outline.last(last);
+    outline.first(refs[top[0]]);
+    outline.last(refs[*top.last().unwrap()]);
     outline.count(bookmarks.len() as i32);
     outline.finish();
 
     for (i, bm) in bookmarks.iter().enumerate() {
-        let bm_ref = bookmark_refs[i];
-        let page_idx = bm.page_index.min(page_refs.len().saturating_sub(1));
-        let page_ref = page_refs[page_idx];
-        let page_height = pages.get(page_idx).map(|p| p.height).unwrap_or(842.0);
-        let pdf_y = page_height - bm.y_position;
-
-        let mut item = pdf.outline_item(bm_ref);
+        let siblings = children(parents[i]);
+        let pos = siblings.iter().position(|&s| s == i).unwrap();
+        let mut item = pdf.outline_item(refs[i]);
         item.title(TextStr(&bm.title));
-        item.parent(outline_ref);
-
-        if i > 0 {
-            item.prev(bookmark_refs[i - 1]);
+        item.parent(parents[i].map_or(outline_ref, |p| refs[p]));
+        if pos > 0 {
+            item.prev(refs[siblings[pos - 1]]);
         }
-        if i + 1 < bookmarks.len() {
-            item.next(bookmark_refs[i + 1]);
+        if let Some(&next) = siblings.get(pos + 1) {
+            item.next(refs[next]);
         }
-
-        item.dest().page(page_ref).xyz(0.0, pdf_y as f32, None);
+        let kids = children(Some(i));
+        if let (Some(&first), Some(&last)) = (kids.first(), kids.last()) {
+            item.first(refs[first]);
+            item.last(refs[last]);
+            item.count(descendants(i));
+        }
+        if let Some(d) = dests[i] {
+            item.dest().page(d.page).xyz(d.x, d.y, None);
+        }
         item.finish();
     }
+}
+
+/// Each bookmark's parent: the closest earlier one with a lower level.
+fn outline_parents(bookmarks: &[Bookmark]) -> Vec<Option<usize>> {
+    let mut stack: Vec<usize> = Vec::new();
+    bookmarks
+        .iter()
+        .enumerate()
+        .map(|(i, bm)| {
+            while stack.last().is_some_and(|&p| bookmarks[p].level >= bm.level) {
+                stack.pop();
+            }
+            let parent = stack.last().copied();
+            stack.push(i);
+            parent
+        })
+        .collect()
+}
+
+fn is_descendant(parents: &[Option<usize>], mut i: usize, ancestor: usize) -> bool {
+    while let Some(p) = parents[i] {
+        if p == ancestor {
+            return true;
+        }
+        i = p;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1168,26 +1227,24 @@ mod tests {
     #[test]
     fn bookmarks() {
         let mut out = PdfOutputter::new(PdfConfig::default());
-        out.begin_page(595.0, 842.0);
-        out.end_page();
-        out.begin_page(595.0, 842.0);
-        out.end_page();
-
-        out.add_bookmark(Bookmark {
-            title: "Chapter 1".to_string(),
-            page_index: 0,
-            level: 0,
-            y_position: 72.0,
-        });
-        out.add_bookmark(Bookmark {
-            title: "Chapter 2".to_string(),
-            page_index: 1,
-            level: 0,
-            y_position: 72.0,
-        });
+        for name in ["one", "two"] {
+            out.begin_page(595.0, 842.0);
+            out.add_destination(name, 72.0, 72.0);
+            out.end_page();
+        }
+        for (title, level, dest) in [("Chapter 1", 1, "one"), ("Section 1.1", 2, "one"), ("Chapter 2", 1, "two")] {
+            out.add_bookmark(Bookmark { title: title.into(), level, dest: dest.into() });
+        }
 
         let bytes = out.finish().unwrap();
         assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn outline_nests_under_lower_levels() {
+        let bm = |level| Bookmark { title: String::new(), level, dest: String::new() };
+        let parents = outline_parents(&[bm(1), bm(2), bm(3), bm(2), bm(1), bm(3)]);
+        assert_eq!(parents, [None, Some(0), Some(1), Some(0), None, Some(4)]);
     }
 
     #[test]
@@ -1433,18 +1490,7 @@ mod tests {
         out.register_font("body", face);
         out.render_pages(&pages);
 
-        out.add_bookmark(Bookmark {
-            title: "Page 1".to_string(),
-            page_index: 0,
-            level: 0,
-            y_position: 72.0,
-        });
-        out.add_bookmark(Bookmark {
-            title: "Page 2".to_string(),
-            page_index: 1,
-            level: 0,
-            y_position: 72.0,
-        });
+        out.add_bookmark(Bookmark { title: "Page 1".into(), level: 0, dest: "nowhere".into() });
 
         let bytes = out.finish().unwrap();
         assert!(bytes.starts_with(b"%PDF"));

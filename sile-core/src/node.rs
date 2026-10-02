@@ -403,6 +403,16 @@ pub enum LinerStyle {
     /// Drawn by a function instead, which also places the content (SILE's
     /// `typesetter:liner` with an output function).
     Custom(LinerPainter),
+    /// Content that links to `LinkDest` where it is drawn (SILE's
+    /// `\\pdf:link`).
+    Link(LinkDest),
+}
+
+/// Where a link goes: a web address, or a destination named in the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkDest {
+    Uri(String),
+    Internal(String),
 }
 
 impl From<Stroke> for LinerStyle {
@@ -470,6 +480,9 @@ pub enum Ink {
     Ruby(f64),
     /// Nothing: a marker read back from the page (see `Info`).
     Info(Info),
+    /// A named place links and bookmarks can go to (SILE's
+    /// `\\pdf:destination`).
+    Destination(String),
     /// Latin text set on its side in vertical Japanese, shifted by this
     /// zenkaku width (SILE's `\\latin-in-tate`).
     LatinInTate(f64),

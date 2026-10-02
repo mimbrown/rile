@@ -19,10 +19,12 @@ pub mod node;
 pub mod nodemaker;
 pub mod pagebuilder;
 pub mod pdf;
+pub mod references;
 pub mod render;
 pub mod shaper;
 pub mod svg;
 pub mod textcase;
+pub mod toc;
 pub mod trace;
 
 #[cfg(feature = "harfbuzz")]

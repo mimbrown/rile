@@ -125,6 +125,10 @@ impl DocumentClass for Bible {
         }
         self.book.folio.output(doc)
     }
+
+    fn folio(&self) -> Option<String> {
+        self.book.folio()
+    }
 }
 
 #[cfg(test)]

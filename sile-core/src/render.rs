@@ -1,4 +1,4 @@
-use crate::node::{HBox, Ink, Leader, LinerStyle, NNode, Node};
+use crate::node::{HBox, Ink, Leader, LinerStyle, LinkDest, NNode, Node};
 use crate::color::Color;
 use crate::framespec::{Flow, FrameDirection, FrameGeometry};
 use crate::pagebuilder::Page;
@@ -16,6 +16,10 @@ pub trait Canvas {
     /// Ink what follows in `color` until `pop_color`.
     fn push_color(&mut self, _color: Color) {}
     fn pop_color(&mut self) {}
+    /// A named place at `(x, y)`, the top of its line.
+    fn destination(&mut self, _name: &str, _x: f64, _y: f64) {}
+    /// A link over `[left, top, right, bottom]`.
+    fn link(&mut self, _rect: [f64; 4], _dest: &LinkDest) {}
 }
 
 /// Walk every page and draw its frames' content onto `canvas`.
@@ -44,7 +48,7 @@ fn draw_page(page: &Page, canvas: &mut dyn Canvas) {
         for node in nodes {
             match node {
                 Node::VBox(vbox) => {
-                    let line = Line { ratio: vbox.ratio, end_edge: frame.right };
+                    let line = Line { ratio: vbox.ratio, end_edge: frame.right, height: pt(&vbox.height.length) };
                     c.advance_page(pt(&vbox.height.length));
                     draw_hlist(&vbox.nodes, &mut c, &line, canvas);
                     c.advance_page(pt(&vbox.depth.length));
@@ -120,10 +124,11 @@ struct Line {
     ratio: f64,
     /// Where leaders line up.
     end_edge: f64,
+    height: f64,
 }
 
 impl Line {
-    const NATURAL: Line = Line { ratio: 0.0, end_edge: f64::INFINITY };
+    const NATURAL: Line = Line { ratio: 0.0, end_edge: f64::INFINITY, height: 0.0 };
 
     /// SILE's `rationWidth`.
     fn width(&self, node: &Node) -> f64 {
@@ -191,6 +196,13 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     draw_hlist(&hbox.nodes, c, line, canvas);
                     canvas.rule(ox, oy - s.raise, c.x - ox, s.thickness);
                 }
+                Some(Ink::Liner(LinerStyle::Link(dest))) => {
+                    let (ox, oy) = (c.x, c.y);
+                    draw_hlist(&hbox.nodes, c, line, canvas);
+                    let rect = [ox.min(c.x), oy - pt(&hbox.height.length), ox.max(c.x), oy + pt(&hbox.depth.length)];
+                    canvas.link(rect, dest);
+                }
+                Some(Ink::Destination(name)) => canvas.destination(name, c.x, c.y - line.height),
                 Some(Ink::Liner(LinerStyle::Custom(painter))) => {
                     (painter.0)(&mut Pen { cursor: c, canvas, line, hbox });
                 }
