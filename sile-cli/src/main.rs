@@ -64,6 +64,10 @@ struct Args {
     /// The PDF's author.
     #[arg(long)]
     author: Option<String>,
+    /// Leave out the document structure that makes the PDF accessible to
+    /// screen readers.
+    #[arg(long)]
+    untagged: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -114,9 +118,10 @@ fn run(args: &Args) -> Result<PathBuf, String> {
             Class::Book => doc.set_class(Book::new()),
         };
         doc.set_references(references);
-        doc.set_language(args.language.clone()).set_compress(true);
-        if let Some(title) = &args.title {
-            doc.set_title(title.clone());
+        doc.set_language(args.language.clone()).set_compress(true).set_tagged(!args.untagged);
+        let stem = args.input.file_stem().map(|s| s.to_string_lossy().into_owned());
+        if let Some(title) = args.title.clone().or(stem) {
+            doc.set_title(title);
         }
         if let Some(author) = &args.author {
             doc.set_author(author.clone());

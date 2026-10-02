@@ -32,6 +32,9 @@ pub trait Canvas {
     fn pop_transform(&mut self) {}
     /// A link over `[left, top, right, bottom]`.
     fn link(&mut self, _rect: [f64; 4], _dest: &LinkDest) {}
+    /// What follows belongs to the structure element owning `tag`, or is
+    /// page furniture when `None`.
+    fn set_tag(&mut self, _tag: Option<u32>) {}
 }
 
 /// Walk every page and draw its frames' content onto `canvas`.
@@ -45,6 +48,7 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
         for overlay in &page.overlay {
             draw_decoration(overlay, canvas);
         }
+        canvas.set_tag(None);
         for frame in &page.outlines {
             canvas.frame_outline(frame);
         }
@@ -53,6 +57,7 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
 }
 
 fn draw_decoration(decoration: &Underlay, canvas: &mut impl Canvas) {
+    canvas.set_tag(None);
     match decoration {
         Underlay::Rules(color, rules) => {
             if let Some(color) = color {
@@ -193,6 +198,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                 if sideways {
                     canvas.push_transform([0.0, 1.0, -1.0, 0.0, c.x + c.y, c.y - c.x]);
                 }
+                canvas.set_tag(nnode.tag);
                 canvas.glyphs(nnode, c.x, c.y);
                 if sideways {
                     canvas.pop_transform();
@@ -208,6 +214,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                         let ox = c.x;
                         c.advance_page(-s.raise);
                         c.advance_writing(width);
+                        canvas.set_tag(None);
                         canvas.rule(ox, c.y, c.x - ox, s.thickness);
                         c.advance_page(s.raise);
                     }
@@ -228,18 +235,21 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     let (ox, oy) = (c.x, c.y);
                     c.advance_writing(line.width(node));
                     c.advance_page(height + depth);
+                    canvas.set_tag(None);
                     canvas.rule(ox, oy, c.x - ox, c.y - oy);
                     c.advance_page(-depth);
                 }
                 Some(Ink::Liner(LinerStyle::Stroke(s))) => {
                     let (ox, oy) = (c.x, c.y);
                     draw_hlist(&hbox.nodes, c, line, canvas);
+                    canvas.set_tag(None);
                     canvas.rule(ox, oy - s.raise, c.x - ox, s.thickness);
                 }
                 Some(Ink::Liner(LinerStyle::Link(dest))) => {
                     let (ox, oy) = (c.x, c.y);
                     draw_hlist(&hbox.nodes, c, line, canvas);
                     let rect = [ox.min(c.x), oy - pt(&hbox.height.length), ox.max(c.x), oy + pt(&hbox.depth.length)];
+                    canvas.set_tag(first_tag(&hbox.nodes));
                     canvas.link(rect, dest);
                 }
                 Some(Ink::Image(image)) => {
@@ -247,6 +257,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     if c.backwards() {
                         c.advance_writing(width);
                     }
+                    canvas.set_tag(hbox.tag);
                     canvas.image(image, c.x, c.y - height, width, height);
                     if !c.backwards() {
                         c.advance_writing(width);
@@ -258,6 +269,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     if c.backwards() {
                         c.advance_writing(width);
                     }
+                    canvas.set_tag(hbox.tag);
                     canvas.svg(figure, c.x, c.y - height, c.y, width, height);
                     if !c.backwards() {
                         c.advance_writing(width);
@@ -279,11 +291,13 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                 }
                 Some(Ink::Phantom) => c.advance_writing(line.width(node)),
                 Some(Ink::Math(items)) => {
+                    canvas.set_tag(hbox.tag);
                     draw_math(&items.0, c, line, canvas);
                     c.advance_writing(line.width(node));
                 }
                 Some(Ink::Destination(name)) => canvas.destination(name, c.x, c.y - line.height),
                 Some(Ink::Liner(LinerStyle::Custom(painter))) => {
+                    canvas.set_tag(None);
                     (painter.0)(&mut Pen { cursor: c, canvas, line, hbox });
                 }
                 Some(Ink::LatinInTate(zw)) => {
@@ -412,7 +426,17 @@ impl Pen<'_> {
     /// Draw the wrapped content from the pen, moving it past the content.
     pub fn draw_content(&mut self) {
         draw_hlist(&self.hbox.nodes, self.cursor, self.line, self.canvas);
+        self.canvas.set_tag(None);
     }
+}
+
+fn first_tag(nodes: &[Node]) -> Option<u32> {
+    nodes.iter().find_map(|node| match node {
+        Node::NNode(n) => n.tag,
+        Node::HBox(b) => b.tag.or_else(|| first_tag(&b.nodes)),
+        Node::Discretionary(d) => first_tag(&d.replacement),
+        _ => None,
+    })
 }
 
 fn pt(m: &crate::measurement::Measurement) -> f64 {

@@ -108,6 +108,31 @@ pub enum Node {
     Insertion(Insertion),
 }
 
+/// Leave `nodes` out of the document structure, as page furniture.
+pub fn clear_tags(nodes: &mut [Node]) {
+    for node in nodes {
+        match node {
+            Node::NNode(n) => n.tag = None,
+            Node::HBox(b) | Node::ZeroHBox(b) => {
+                b.tag = None;
+                clear_tags(&mut b.nodes);
+            }
+            Node::Discretionary(d) => {
+                clear_tags(&mut d.prebreak);
+                clear_tags(&mut d.postbreak);
+                clear_tags(&mut d.replacement);
+            }
+            Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => {
+                if let Some(Leader::Box(b)) = &mut g.leader {
+                    clear_tags(&mut b.nodes);
+                }
+            }
+            Node::VBox(v) => clear_tags(&mut v.nodes),
+            _ => {}
+        }
+    }
+}
+
 impl Node {
     /// The type name, matching the Lua `node.type` field.
     pub fn node_type(&self) -> &'static str {
@@ -387,6 +412,8 @@ pub struct HBox {
     /// (SILE's `\raise`).
     pub raise: f64,
     pub ink: Option<Ink>,
+    /// The structure tag of what the box draws itself (see `structure`).
+    pub tag: Option<u32>,
 }
 
 /// A horizontal line whose top edge is `raise` above the baseline.
@@ -551,6 +578,11 @@ pub struct NNode {
     /// Shaped top to bottom; glyphs of horizontal fonts lie on their side
     /// in vertical lines.
     pub vertical: bool,
+    /// The structure tag the text belongs to (see `structure`).
+    pub tag: Option<u32>,
+    /// Followed by a word space, which tagged PDFs spell out for text
+    /// extraction.
+    pub space_after: bool,
 }
 
 /// A hyphenated word and the number of syllables it was split into.
@@ -595,6 +627,8 @@ impl NNode {
             parent: None,
             bidi_level: None,
             vertical: false,
+            tag: None,
+            space_after: false,
         }
     }
 
@@ -624,6 +658,8 @@ impl NNode {
             parent: None,
             bidi_level: None,
             vertical: false,
+            tag: None,
+            space_after: false,
         }
     }
 }

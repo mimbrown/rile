@@ -30,6 +30,7 @@ pub mod pullquote;
 pub mod references;
 pub mod render;
 pub mod shaper;
+pub mod structure;
 pub mod svg;
 pub mod svg_image;
 pub mod textcase;

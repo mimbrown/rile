@@ -7,6 +7,7 @@ use crate::font::{FontSpec, FontWeight};
 use crate::length::Length;
 use crate::node::LinkDest;
 use crate::references::TocEntry;
+use crate::structure::Role;
 
 type Content<'a> = &'a mut dyn FnMut(&mut DocumentBuilder) -> Result<(), BuilderError>;
 
@@ -103,14 +104,17 @@ impl TableOfContents {
         };
         let entries = references.toc.clone();
         style.header(doc)?;
-        for entry in entries.iter().filter(|e| e.level <= self.depth) {
-            let saved = doc.settings().clone();
-            let skips = doc.line_skips();
-            doc.set_line_skips(LineSkips { par_fill: Length::zero(), ..skips });
-            let result = style.item(doc, entry.level, &mut |doc| self.entry(doc, style, entry));
-            doc.restore_settings(saved);
-            result?;
-        }
+        doc.with_structure(Role::TOC, |doc| {
+            for entry in entries.iter().filter(|e| e.level <= self.depth) {
+                let saved = doc.settings().clone();
+                let skips = doc.line_skips();
+                doc.set_line_skips(LineSkips { par_fill: Length::zero(), ..skips });
+                let result = doc.with_structure(Role::TOCI, |doc| style.item(doc, entry.level, &mut |doc| self.entry(doc, style, entry)));
+                doc.restore_settings(saved);
+                result?;
+            }
+            Ok(())
+        })?;
         style.footer(doc)
     }
 
