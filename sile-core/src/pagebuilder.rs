@@ -84,9 +84,16 @@ pub struct Page {
     pub content: Vec<(String, Vec<Node>)>,
     /// Frames to draw the outline of, as they were when asked for.
     pub outlines: Vec<FrameGeometry>,
-    /// Groups of rules (x, y, width, height) drawn in a colour before any
-    /// content.
-    pub underlay: Vec<(Color, Vec<[f64; 4]>)>,
+    /// What is drawn before any content.
+    pub underlay: Vec<Underlay>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Underlay {
+    /// Rules (x, y, width, height) in a colour.
+    Rules(Color, Vec<[f64; 4]>),
+    /// An image over (x, y, width, height).
+    Image(std::sync::Arc<crate::image::Image>, [f64; 4]),
 }
 
 impl Page {

@@ -1,7 +1,8 @@
 use crate::node::{HBox, Ink, Leader, LinerStyle, LinkDest, NNode, Node};
 use crate::color::Color;
 use crate::framespec::{Flow, FrameDirection, FrameGeometry};
-use crate::pagebuilder::Page;
+use crate::image::Image;
+use crate::pagebuilder::{Page, Underlay};
 
 /// A drawing surface for laid-out pages. Coordinates are in points, measured
 /// from the top-left corner of the page, with `y` growing downwards.
@@ -18,6 +19,8 @@ pub trait Canvas {
     fn pop_color(&mut self) {}
     /// A named place at `(x, y)`, the top of its line.
     fn destination(&mut self, _name: &str, _x: f64, _y: f64) {}
+    /// `image` with its top-left corner at `(x, y)`.
+    fn image(&mut self, _image: &Image, _x: f64, _y: f64, _width: f64, _height: f64) {}
     /// A link over `[left, top, right, bottom]`.
     fn link(&mut self, _rect: [f64; 4], _dest: &LinkDest) {}
 }
@@ -26,12 +29,17 @@ pub trait Canvas {
 pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
     for page in pages {
         canvas.begin_page(page.paper.width, page.paper.height);
-        for (color, rules) in &page.underlay {
-            canvas.push_color(*color);
-            for [x, y, width, height] in rules {
-                canvas.rule(*x, *y, *width, *height);
+        for underlay in &page.underlay {
+            match underlay {
+                Underlay::Rules(color, rules) => {
+                    canvas.push_color(*color);
+                    for [x, y, width, height] in rules {
+                        canvas.rule(*x, *y, *width, *height);
+                    }
+                    canvas.pop_color();
+                }
+                Underlay::Image(image, [x, y, width, height]) => canvas.image(image, *x, *y, *width, *height),
             }
-            canvas.pop_color();
         }
         draw_page(page, canvas);
         for frame in &page.outlines {
@@ -202,6 +210,17 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     let rect = [ox.min(c.x), oy - pt(&hbox.height.length), ox.max(c.x), oy + pt(&hbox.depth.length)];
                     canvas.link(rect, dest);
                 }
+                Some(Ink::Image(image)) => {
+                    let (width, height) = (line.width(node), pt(&hbox.height.length));
+                    if c.backwards() {
+                        c.advance_writing(width);
+                    }
+                    canvas.image(image, c.x, c.y - height, width, height);
+                    if !c.backwards() {
+                        c.advance_writing(width);
+                    }
+                }
+                Some(Ink::Phantom) => c.advance_writing(line.width(node)),
                 Some(Ink::Destination(name)) => canvas.destination(name, c.x, c.y - line.height),
                 Some(Ink::Liner(LinerStyle::Custom(painter))) => {
                     (painter.0)(&mut Pen { cursor: c, canvas, line, hbox });

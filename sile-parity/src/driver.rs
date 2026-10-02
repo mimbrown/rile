@@ -2,6 +2,7 @@
 //! SILE's `plain` and `book` classes closely enough to compare layouts.
 //! Anything outside the supported subset is reported rather than approximated.
 
+use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
@@ -12,8 +13,12 @@ use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
-use sile_core::node::{LinkDest, Node, Stroke};
+use sile_core::node::{Ink, LinkDest, Node, Stroke};
 use sile_core::toc::{DefaultTocStyle, TableOfContents};
+use sile_core::pullquote::Pullquote;
+use sile_core::dropcap::Dropcap;
+use sile_core::image::{Background, BackgroundFill, Image};
+use sile_core::url::{url_pieces, UrlPenalties, UrlPiece};
 use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::framespec::{FrameDirection, FrameSpec};
@@ -122,6 +127,14 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "verse-number",
     "pdf:metadata",
     "pdf:destination",
+    "rebox",
+    "dropcap",
+    "pullquote",
+    "img",
+    "background",
+    "url",
+    "href",
+    "code",
     "pdf:bookmark",
     "pdf:link",
     "tocentry",
@@ -247,6 +260,7 @@ const SETTINGS: &[&str] = &[
     "typesetter.fixedSpacingAfterInitialEmdash",
     "typesetter.softHyphen",
     "typesetter.breakwidth",
+    "dropcaps.bsratio",
     "linespacing.method",
     "linespacing.fixed.baselinedistance",
     "linespacing.fit-glyph.extra-space",
@@ -344,7 +358,13 @@ fn check(
                     | "packages.color-fonts"
                     | "packages.bidi"
                     | "packages.pdf"
-                    | "packages.tableofcontents",
+                    | "packages.tableofcontents"
+                    | "packages.rebox"
+                    | "packages.url"
+                    | "packages.dropcaps"
+                    | "packages.pullquote"
+                    | "packages.image"
+                    | "packages.background",
                 ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
@@ -433,6 +453,7 @@ struct Settings {
     skips: LineSkips,
     space: SpaceSettings,
     line_spacing: Option<LineSpacingSettings>,
+    dropcap_bs_ratio: Option<f64>,
 }
 
 /// SILE's `linespacing.*` settings, lengths kept relative to the font.
@@ -572,6 +593,7 @@ impl<'a> Driver<'a> {
                 skips: LineSkips::default(),
                 space: SpaceSettings::default(),
                 line_spacing: None,
+                dropcap_bs_ratio: None,
             },
             synced: None,
             depth: 0,
@@ -585,6 +607,14 @@ impl<'a> Driver<'a> {
     fn finish(mut self) -> Result<String, String> {
         self.par()?;
         self.doc.render_debug().map_err(|e| e.to_string())
+    }
+
+    /// An image file named as SILE's tests name them: from the test's
+    /// directory, or SILE's own.
+    fn image(&self, src: &str) -> Result<Arc<Image>, String> {
+        let root = self.corpus.font_dir.with_file_name("sile");
+        let path = [root.join("tests").join(src), root.join(src)].into_iter().find(|p| p.exists()).ok_or_else(|| format!("no image {src}"))?;
+        Image::load(path, src).map(Arc::new).map_err(|e| e.to_string())
     }
 
     fn folio(&mut self) -> Option<&mut Folio> {
@@ -1345,6 +1375,143 @@ impl<'a> Driver<'a> {
                     Err(e) => return Err(err(e)),
                 }
             }
+            "code" => self.scoped(|d| {
+                let before = d.doc.font_spec().cloned();
+                d.set_font_option("family", cmd.option("family").unwrap_or("Hack"))?;
+                match cmd.option("size") {
+                    Some(size) => d.set_font_option("size", size)?,
+                    None => d.adjust_font_size(cmd.option("adjust").unwrap_or("ex-height"), before)?,
+                }
+                d.process(content)
+            })?,
+            "url" => {
+                let url = sil::plain_text(content);
+                let pieces = url_pieces(&url, UrlPenalties::default())
+                    .into_iter()
+                    .map(|piece| match piece {
+                        UrlPiece::Text(text) => Content::Text(text.to_string()),
+                        UrlPiece::Penalty(p) => Content::Command(Command {
+                            name: "penalty".into(),
+                            options: vec![("penalty".into(), p.to_string())],
+                            content: None,
+                            raw: None,
+                        }),
+                    })
+                    .collect();
+                let style = if self.defines.contains_key("urlstyle") { "urlstyle" } else { "code" };
+                self.scoped(|d| {
+                    d.settings.language = cmd.option("language").unwrap_or("und").to_string();
+                    d.command(&Command { name: style.into(), options: Vec::new(), content: Some(pieces), raw: None })
+                })?;
+            }
+            "href" => {
+                let src = match cmd.option("src") {
+                    Some(src) => src.to_string(),
+                    None => sil::plain_text(content),
+                };
+                self.sync()?;
+                self.doc.start_link(LinkDest::Uri(src));
+                if cmd.option("src").is_some() {
+                    self.process(content)?;
+                } else {
+                    let url = Command { name: "url".into(), options: cmd.options.clone(), content: Some(content.to_vec()), raw: None };
+                    self.command(&url)?;
+                }
+                self.sync()?;
+                self.doc.end_hbox();
+            }
+            "img" => {
+                let image = self.image(opt("src")?)?;
+                let size = |d: &mut Self, key| cmd.option(key).map(|v| d.dimen(v)).transpose().map(|v| v.filter(|v| *v > 0.0));
+                let (width, height) = (size(self, "width")?, size(self, "height")?);
+                self.sync()?;
+                self.doc.add_image(image, width, height);
+            }
+            "background" => {
+                let background = if cmd.option("disable").is_some_and(truthy) {
+                    None
+                } else {
+                    let fill = match (cmd.option("src"), cmd.option("color")) {
+                        (Some(src), _) => BackgroundFill::Image(self.image(src)?),
+                        (None, Some(color)) => BackgroundFill::Color(Color::parse(color)?),
+                        (None, None) => return Err("background needs a color or src".into()),
+                    };
+                    Some(Background { fill, all_pages: cmd.option("allpages").is_none_or(truthy) })
+                };
+                self.doc.set_background(background).map_err(err)?;
+            }
+            "dropcap" => {
+                let mut dropcap = Dropcap { bs_ratio: self.settings.dropcap_bs_ratio, ..Default::default() };
+                let mut font = Vec::new();
+                for (key, value) in &cmd.options {
+                    match key.as_str() {
+                        "lines" => dropcap.lines = value.parse().map_err(|_| format!("bad lines {value}"))?,
+                        "join" => dropcap.join = truthy(value),
+                        "standoff" => dropcap.standoff = Some(self.dimen(value)?),
+                        "raise" => dropcap.raise = self.dimen(value)?,
+                        "shift" => dropcap.shift = self.dimen(value)?,
+                        "size" => dropcap.size = Some(self.dimen(value)?),
+                        "scale" => dropcap.scale = value.parse().map_err(|_| format!("bad scale {value}"))?,
+                        "strict" => dropcap.strict = truthy(value),
+                        "depthadjust" => dropcap.depth_adjust = value.clone(),
+                        "color" => dropcap.color = Some(Color::parse(value)?),
+                        "family" | "style" | "weight" | "features" => font.push((key.clone(), value.clone())),
+                        other => return Err(format!("dropcap option {other}")),
+                    }
+                }
+                dropcap.font = Arc::new(move |f| {
+                    for (key, value) in &font {
+                        match key.as_str() {
+                            "family" => f.family = Some(value.clone()),
+                            "style" => f.style = if value.eq_ignore_ascii_case("italic") { FontStyle::Italic } else { FontStyle::Normal },
+                            "weight" => f.weight = FontWeight(value.parse().unwrap_or(400)),
+                            _ => f.features = value.clone(),
+                        }
+                    }
+                });
+                self.sync()?;
+                dropcap.typeset(self, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+            }
+            "pullquote" => {
+                let mut quote = Pullquote { author: cmd.option("author").map(String::from), ..Default::default() };
+                if let Some(scale) = cmd.option("scale") {
+                    quote.scale = scale.parse().map_err(|_| format!("bad scale {scale}"))?;
+                }
+                if let Some(color) = cmd.option("color") {
+                    quote.color = Color::parse(color)?;
+                }
+                if let Some(setback) = cmd.option("setback") {
+                    quote.setback = Some(self.dimen(setback)?);
+                }
+                if self.target < (0, 15, 0) {
+                    quote.attribution = Arc::new(|doc, author| {
+                        doc.update_font(|f| f.style = FontStyle::Italic)?;
+                        let fill = Length::new(Measurement::pt(0.0), Measurement::pt(INFINITY), Measurement::pt(0.0));
+                        let skips = doc.line_skips();
+                        doc.set_line_skips(LineSkips { left: fill, par_fill: Length::zero(), ..skips }).set_paragraph_indent(0.0);
+                        doc.add_text(format!("— {author}"));
+                        doc.new_paragraph()?;
+                        Ok(())
+                    });
+                }
+                self.sync()?;
+                self.scoped(|d| quote.typeset(d, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e))?;
+            }
+            "rebox" => {
+                self.sync()?;
+                self.doc.start_hbox();
+                self.process(content)?;
+                let mut hbox = self.doc.make_hbox().map_err(err)?;
+                for (key, dimension) in [("width", &mut hbox.width), ("height", &mut hbox.height), ("depth", &mut hbox.depth)] {
+                    if let Some(value) = cmd.option(key) {
+                        *dimension = self.length(value)?;
+                    }
+                }
+                if cmd.option("phantom").is_some_and(truthy) {
+                    hbox.ink = Some(Ink::Phantom);
+                }
+                self.doc.add_box(hbox);
+            }
             "pdf:destination" => {
                 self.sync()?;
                 self.doc.add_destination(opt("name")?);
@@ -1732,6 +1899,9 @@ impl<'a> Driver<'a> {
             }
             "typesetter.softHyphen" => {
                 self.doc.set_soft_hyphens(truthy(value));
+            }
+            "dropcaps.bsratio" => {
+                self.settings.dropcap_bs_ratio = (!value.is_empty()).then(|| value.parse()).transpose().map_err(|_| format!("bad bsratio {value}"))?;
             }
             "typesetter.breakwidth" => {
                 let width = if value.is_empty() { None } else { Some(self.dimen(value)?) };

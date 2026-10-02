@@ -480,6 +480,10 @@ pub enum Ink {
     Ruby(f64),
     /// Nothing: a marker read back from the page (see `Info`).
     Info(Info),
+    /// An image filling the box above the baseline (SILE's `\\img`).
+    Image(std::sync::Arc<crate::image::Image>),
+    /// Takes up its space but draws nothing (SILE's `\\rebox[phantom]`).
+    Phantom,
     /// A named place links and bookmarks can go to (SILE's
     /// `\\pdf:destination`).
     Destination(String),
