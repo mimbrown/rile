@@ -2236,6 +2236,9 @@ impl<'a> Driver<'a> {
             self.settings.parindent = "20pt".into();
             self.settings.space.enlargement_factor = 1.2;
         }
+        if self.target < (0, 15, 10) {
+            self.doc.page_break_settings_mut().broken_penalty = 0;
+        }
         Ok(())
     }
 
