@@ -2903,7 +2903,7 @@ fn rebox_liners(line: Vec<Node>) -> Vec<Node> {
     let mut out = Vec::with_capacity(line.len());
     let mut stack: Vec<node::HBox> = Vec::new();
     let append = |b: &mut node::HBox, n: Node| {
-        b.width = b.width + natural_width(&n);
+        b.width += natural_width(&n);
         b.height = Length::pt(pt_of(&b.height).max(pt_of(&n.height())));
         b.depth = Length::pt(pt_of(&b.depth).max(pt_of(&n.depth())));
         b.nodes.push(n);
