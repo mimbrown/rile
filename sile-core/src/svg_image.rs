@@ -106,7 +106,7 @@ impl DocumentBuilder {
         let (w, h) = (image.width * scale, image.height * scale);
         let figure = SvgFigure { image, scale: scale * density / 72.0, drop };
         let hbox = HBox { ink: Some(Ink::Svg(figure)), ..HBox::new(Length::pt(w), Length::pt(h), Length::zero()) };
-        Ok(self.add_box(hbox))
+        Ok(self.add_figure(hbox))
     }
 }
 

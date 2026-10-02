@@ -15,6 +15,7 @@ use sile_core::length::Length;
 use sile_core::lists::{ListKind, ListOptions};
 use sile_core::math::{MathMode, TexMath};
 use sile_core::node::{LinkDest, Stroke};
+use sile_core::structure::Role;
 
 pub struct Markdown<'a> {
     doc: DocumentBuilder,
@@ -82,7 +83,7 @@ impl<'a> Markdown<'a> {
             Event::Code(code) => {
                 let mono = self.mono.to_string();
                 self.push_font(|f| f.family = Some(mono))?;
-                self.doc.add_text(code.to_string());
+                self.doc.begin_structure(Role::Code).add_text(code.to_string()).end_structure();
                 self.pop_font()?;
             }
             Event::InlineMath(src) => self.math(src, MathMode::Text)?,
@@ -120,20 +121,23 @@ impl<'a> Markdown<'a> {
                 let skips = self.doc.line_skips();
                 let width = self.doc.frame_size()?.0 - skips.left.to_pt_abs() - skips.right.to_pt_abs();
                 let width = (image.natural_size().0 > width).then_some(width);
-                self.doc.add_image(Arc::new(image), width, None);
+                self.doc.begin_structure(Role::Figure).add_image(Arc::new(image), width, None);
                 self.doc.begin_capture();
             }
             Event::End(TagEnd::Image) => {
-                self.doc.end_capture();
+                let alt = self.doc.end_capture().text();
+                self.doc.set_alt_text(alt).end_structure();
             }
             Event::Start(Tag::BlockQuote(_)) => {
                 doc.new_paragraph()?;
+                doc.begin_structure(Role::BlockQuote);
                 let skips = doc.line_skips();
                 let indent = 2.0 * doc.font_spec().map_or(10.0, |f| f.size);
                 doc.set_line_skips(LineSkips { left: skips.left + Length::pt(indent), right: skips.right + Length::pt(indent), ..skips });
             }
             Event::End(TagEnd::BlockQuote(_)) => {
                 doc.new_paragraph()?;
+                doc.end_structure();
                 let skips = doc.line_skips();
                 let indent = 2.0 * doc.font_spec().map_or(10.0, |f| f.size);
                 doc.set_line_skips(LineSkips { left: skips.left - Length::pt(indent), right: skips.right - Length::pt(indent), ..skips });
@@ -210,12 +214,15 @@ impl<'a> Markdown<'a> {
                 doc.set_current_indent(Some(0.0));
                 doc.add_explicit_vskip(skip)?;
                 doc.add_penalty(-500);
-                with_font(self, |f| {
+                doc.begin_structure(Role::heading(level as usize));
+                let titled = with_font(self, |f| {
                     f.weight = FontWeight::BOLD;
                     f.size = size;
-                }, title)?;
+                }, title);
                 let doc = &mut self.doc;
                 doc.new_paragraph()?;
+                doc.end_structure();
+                titled?;
                 doc.add_vertical_penalty(10_000)?;
                 doc.add_explicit_vskip(smallskip())?;
                 doc.add_vertical_penalty(10_000)?;
@@ -236,6 +243,7 @@ impl<'a> Markdown<'a> {
             let doc = &mut self.doc;
             doc.update_font(|f| f.family = Some(mono))?;
             doc.set_language("und").set_obey_spaces(true).set_paragraph_indent(0.0).set_paragraph_skip(0.0);
+            doc.begin_structure(Role::Code);
             let skips = doc.line_skips();
             let indent = if indented { 2.0 * doc.font_spec().map_or(10.0, |f| f.size) } else { 0.0 };
             doc.set_line_skips(LineSkips { left: Length::pt(skips.left.to_pt_abs() + indent), right: Length::pt(skips.right.to_pt_abs()), ..skips });
@@ -251,6 +259,7 @@ impl<'a> Markdown<'a> {
             Ok(())
         })();
         self.doc.restore_settings(saved);
+        self.doc.end_structure();
         result?;
         self.doc.add_explicit_vskip(smallskip())?;
         self.doc.set_current_indent(Some(0.0));

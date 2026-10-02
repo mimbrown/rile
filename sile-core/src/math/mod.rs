@@ -19,6 +19,7 @@ use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::{HBox, Ink, MathInk};
 use crate::shaper::GlyphItem;
+use crate::structure::Role;
 
 pub use layout::{Figure, Glue, GlyphScale, MathItem};
 pub use operators::symbol;
@@ -188,6 +189,88 @@ pub struct Padded {
     pub depth: Option<MathLength>,
     pub lspace: Option<MathLength>,
     pub voffset: Option<MathLength>,
+}
+
+/// The formula as linear text, such as `x^2 + 1`, for readers that can't
+/// see it (a tagged PDF's alternate description).
+impl fmt::Display for MathNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn group(f: &mut fmt::Formatter<'_>, node: &MathNode, open: &str, close: &str) -> fmt::Result {
+            let text = node.to_string();
+            let text = text.trim();
+            if text.chars().count() <= 1 || text.chars().all(char::is_alphanumeric) {
+                f.write_str(text)
+            } else {
+                write!(f, "{open}{text}{close}")
+            }
+        }
+        match self {
+            MathNode::Row(row) => row.children.iter().try_for_each(|c| write!(f, "{c}")),
+            MathNode::Identifier(t) | MathNode::Number(t) => f.write_str(&t.text),
+            MathNode::Operator(o) => match o.text.as_str() {
+                "\u{2061}" | "\u{2062}" | "\u{2063}" | "\u{2064}" => Ok(()),
+                t if t.chars().all(|c| "()[]{}|‖⟨⟩⌊⌋⌈⌉,.;!'′".contains(c)) => f.write_str(t),
+                t => write!(f, " {t} "),
+            },
+            MathNode::Text(t) => f.write_str(t),
+            MathNode::Space(_) => f.write_str(" "),
+            MathNode::Scripts { base, sub, sup } => {
+                group(f, base, "(", ")")?;
+                if let Some(sub) = sub {
+                    f.write_str("_")?;
+                    group(f, sub, "{", "}")?;
+                }
+                if let Some(sup) = sup {
+                    f.write_str("^")?;
+                    group(f, sup, "{", "}")?;
+                }
+                Ok(())
+            }
+            MathNode::UnderOver(u) => {
+                group(f, &u.base, "(", ")")?;
+                if let Some(under) = &u.under {
+                    f.write_str("_")?;
+                    group(f, under, "{", "}")?;
+                }
+                if let Some(over) = &u.over {
+                    f.write_str("^")?;
+                    group(f, over, "{", "}")?;
+                }
+                Ok(())
+            }
+            MathNode::Fraction(fr) => {
+                group(f, &fr.numerator, "(", ")")?;
+                f.write_str("/")?;
+                group(f, &fr.denominator, "(", ")")
+            }
+            MathNode::Root { radicand, index } => {
+                if let Some(index) = index {
+                    write!(f, "root({index})")?;
+                } else {
+                    f.write_str("√")?;
+                }
+                group(f, radicand, "(", ")")
+            }
+            MathNode::Table(t) => {
+                f.write_str("[")?;
+                for (i, row) in t.rows.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str("; ")?;
+                    }
+                    for (j, cell) in row.iter().enumerate() {
+                        if j > 0 {
+                            f.write_str(", ")?;
+                        }
+                        write!(f, "{cell}")?;
+                    }
+                }
+                f.write_str("]")
+            }
+            MathNode::Phantom(_) => Ok(()),
+            MathNode::Padded(p) => write!(f, "{}", p.content),
+            MathNode::Enclose(e) => write!(f, "{}", e.content),
+        }
+    }
 }
 
 impl Default for MathNode {
@@ -618,9 +701,16 @@ impl DocumentBuilder {
     /// centred, with an optional number flush right (SILE's `\math` and
     /// `\mathml`).
     pub fn add_math(&mut self, formula: &MathNode, mode: MathMode) -> Result<&mut Self, BuilderError> {
+        let own = self.current_role() != Some(Role::Formula);
+        if own {
+            self.begin_structure(Role::Formula).set_alt_text(formula.to_string());
+        }
         let saved = self.settings().clone();
         let result = self.add_math_in(formula, mode);
         self.restore_settings(saved);
+        if own {
+            self.end_structure();
+        }
         result?;
         Ok(self)
     }
@@ -703,5 +793,13 @@ mod tests {
         assert_eq!(l, MathLength::med());
         assert_eq!("2pt".parse::<MathLength>().unwrap().natural, Dimen::pt(2.0));
         assert_eq!("0".parse::<MathLength>().unwrap().natural, Dimen::ZERO);
+    }
+
+    #[test]
+    fn formulas_read_as_linear_text() {
+        let mut tex = TexMath::new();
+        let formula = tex.parse(r"x^2 + \frac{a+b}{c} = \sqrt{y_1}").unwrap();
+        assert_eq!(formula.to_string(), "x^2 + (a + b)/c = √(y_1)");
+        assert_eq!(tex.parse(r"\int_0^1 f").unwrap().to_string(), "∫_0^1f");
     }
 }

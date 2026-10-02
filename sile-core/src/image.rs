@@ -148,6 +148,6 @@ impl DocumentBuilder {
     pub fn add_image(&mut self, image: Arc<Image>, width: Option<f64>, height: Option<f64>) -> &mut Self {
         let (w, h) = image.scaled_size(width, height);
         let hbox = HBox { ink: Some(Ink::Image(image)), ..HBox::new(Length::pt(w), Length::pt(h), Length::zero()) };
-        self.add_box(hbox)
+        self.add_figure(hbox)
     }
 }

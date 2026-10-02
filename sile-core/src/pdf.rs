@@ -7,6 +7,7 @@ use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 use crate::color::Color;
 use crate::font::FontFace;
 use crate::pagebuilder::Page;
+use crate::structure::{StructKid, StructTree};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -83,6 +84,8 @@ pub use crate::node::LinkDest;
 pub struct LinkAnnotation {
     pub rect: [f64; 4],
     pub dest: LinkDest,
+    /// The structure tag of the link's text.
+    pub tag: Option<u32>,
 }
 
 /// An entry in the document outline, opening at a named destination.
@@ -147,6 +150,8 @@ struct BuiltPage {
     offset: (f64, f64),
     content: Vec<u8>,
     annotations: Vec<LinkAnnotation>,
+    /// The tag of each marked content sequence, by MCID.
+    marks: Vec<u32>,
 }
 
 struct CurrentPage {
@@ -156,6 +161,18 @@ struct CurrentPage {
     annotations: Vec<LinkAnnotation>,
     current_font: Option<(String, f64)>,
     current_color: Option<Color>,
+    /// The tag of what is drawn next, and of the marked content sequence
+    /// open in the content stream, if one is.
+    tag: Option<u32>,
+    open_mark: Option<Option<u32>>,
+    marks: Vec<u32>,
+}
+
+/// Where content with a tag ended up.
+#[derive(Debug, Clone, Copy)]
+enum Tagged {
+    Mark { page: usize, mcid: usize },
+    Link { page: usize, index: usize },
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +191,8 @@ pub struct PdfOutputter {
     placed_images: HashMap<usize, usize>,
     pages: Vec<BuiltPage>,
     current: Option<CurrentPage>,
+    structure: Option<StructTree>,
+    tagged: Vec<Vec<Tagged>>,
 }
 
 impl PdfOutputter {
@@ -188,6 +207,54 @@ impl PdfOutputter {
             placed_images: HashMap::new(),
             pages: Vec::new(),
             current: None,
+            structure: None,
+            tagged: Vec::new(),
+        }
+    }
+
+    /// Tag the PDF with `structure`, whose tags the drawn content carries.
+    pub fn set_structure(&mut self, structure: StructTree) {
+        self.structure = Some(structure);
+    }
+
+    fn record(&mut self, tag: u32, item: Tagged) {
+        let tag = tag as usize;
+        if self.tagged.len() <= tag {
+            self.tagged.resize(tag + 1, Vec::new());
+        }
+        self.tagged[tag].push(item);
+    }
+
+    /// Open the marked content sequence for what is drawn next, if it
+    /// isn't open already.
+    fn mark(&mut self) {
+        let Some(structure) = &self.structure else { return };
+        let page = self.current.as_mut().expect("no current page");
+        if page.open_mark == Some(page.tag) {
+            return;
+        }
+        if page.open_mark.take().is_some() {
+            page.content.end_marked_content();
+        }
+        page.open_mark = Some(page.tag);
+        let Some(tag) = page.tag else {
+            page.content.begin_marked_content(Name(b"Artifact"));
+            return;
+        };
+        let role = structure.elements[structure.owner(tag)].role.name();
+        let mcid = page.marks.len();
+        page.marks.push(tag);
+        page.content.begin_marked_content_with_properties(Name(role.as_bytes())).properties().identify(mcid as i32);
+        let page = self.pages.len();
+        self.record(tag, Tagged::Mark { page, mcid });
+    }
+
+    /// Close the open marked content sequence, which can't straddle a
+    /// change of graphics state.
+    fn end_mark(&mut self) {
+        let page = self.current.as_mut().expect("no current page");
+        if page.open_mark.take().is_some() {
+            page.content.end_marked_content();
         }
     }
 
@@ -296,10 +363,14 @@ impl PdfOutputter {
             annotations: Vec::new(),
             current_font: None,
             current_color: None,
+            tag: None,
+            open_mark: None,
+            marks: Vec::new(),
         });
     }
 
     pub fn end_page(&mut self) {
+        self.end_mark();
         let page = self.current.take().expect("begin_page() not called");
         let offset = self.config.sheet.map_or((0.0, 0.0), |s| ((s.width - page.width) / 2.0, (s.height - page.height) / 2.0));
         let mut content = Content::new();
@@ -317,6 +388,7 @@ impl PdfOutputter {
             offset,
             content,
             annotations: page.annotations,
+            marks: page.marks,
         });
     }
 
@@ -362,6 +434,7 @@ impl PdfOutputter {
         let page_height = page.height;
 
         let cids: Vec<u16> = glyphs.iter().map(|g| self.track_glyph(font_key, g.0, "")).collect();
+        self.mark();
         let page = self.current.as_mut().expect("no current page");
         page.content.begin_text();
 
@@ -387,6 +460,7 @@ impl PdfOutputter {
     }
 
     pub fn draw_rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        self.mark();
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
         let pdf_y = page_height - y - height;
@@ -405,6 +479,7 @@ impl PdfOutputter {
         width: f64,
         height: f64,
     ) {
+        self.mark();
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
         let pdf_y = page_height - y - height;
@@ -424,11 +499,13 @@ impl PdfOutputter {
     }
 
     pub fn push_state(&mut self) {
+        self.end_mark();
         let page = self.current.as_mut().expect("no current page");
         page.content.save_state();
     }
 
     pub fn pop_state(&mut self) {
+        self.end_mark();
         let page = self.current.as_mut().expect("no current page");
         page.content.restore_state();
     }
@@ -447,7 +524,13 @@ impl PdfOutputter {
 
     pub fn add_link(&mut self, rect: [f64; 4], dest: LinkDest) {
         let page = self.current.as_mut().expect("no current page");
-        page.annotations.push(LinkAnnotation { rect, dest });
+        let tag = page.tag.filter(|_| self.structure.is_some());
+        let index = page.annotations.len();
+        page.annotations.push(LinkAnnotation { rect, dest, tag });
+        if let Some(tag) = tag {
+            let page = self.pages.len();
+            self.record(tag, Tagged::Link { page, index });
+        }
     }
 
     // -- High-level: render from Page objects ---
@@ -466,7 +549,13 @@ impl PdfOutputter {
         self.set_color(nnode.color.unwrap_or(Color::Grayscale { l: 0.0 }));
 
         let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(&nnode.font_key, g.gid, &g.text)).collect();
+        let space = (self.structure.is_some() && nnode.space_after && !nnode.vertical && nnode.bidi_level.unwrap_or(0).is_multiple_of(2))
+            .then(|| self.fonts.get(&nnode.font_key)?.face.glyph_id(' '))
+            .flatten()
+            .filter(|&gid| gid != 0)
+            .map(|gid| self.track_glyph(&nnode.font_key, gid, " "));
 
+        self.mark();
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
@@ -491,6 +580,10 @@ impl PdfOutputter {
             } else {
                 cur_x += glyph.width;
             }
+        }
+        if let Some(cid) = space {
+            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, cur_x as f32, (page_height - cur_y) as f32]);
+            page.content.show(Str(&cid.to_be_bytes()));
         }
 
         page.content.end_text();
@@ -560,11 +653,33 @@ impl PdfOutputter {
             .map(|p| p.annotations.iter().map(|_| alloc.bump()).collect())
             .collect();
 
+        let structure = self.structure.as_ref().map(|tree| StructRefs::new(tree, &self.tagged, &mut alloc));
+        let mut annot_parents = self.pages.len() as i32..;
+        let annot_keys: Vec<Vec<Option<i32>>> = self
+            .pages
+            .iter()
+            .map(|p| p.annotations.iter().map(|a| a.tag.filter(|_| structure.is_some()).map(|_| annot_parents.next().expect("keys"))).collect())
+            .collect();
+
         // -- Write catalog --
         let mut catalog = pdf.catalog(catalog_ref);
         catalog.pages(page_tree_ref);
         if let Some(outline_ref) = outline_ref {
             catalog.outlines(outline_ref);
+        }
+        let metadata = structure.as_ref().map(|_| (alloc.bump(), self.xmp()));
+        if let Some((metadata_ref, _)) = &metadata {
+            catalog.metadata(*metadata_ref);
+        }
+        if let (Some(refs), Some(tree)) = (&structure, &self.structure) {
+            catalog.pair(Name(b"StructTreeRoot"), refs.root);
+            catalog.mark_info().marked(true);
+            if !tree.lang().is_empty() {
+                catalog.lang(TextStr(tree.lang()));
+            }
+            if self.config.title.is_some() {
+                catalog.viewer_preferences().display_doc_title(true);
+            }
         }
         catalog.finish();
 
@@ -645,6 +760,12 @@ impl PdfOutputter {
             if !built_page.annotations.is_empty() {
                 pg.annotations(annot_refs[i].iter().copied());
             }
+            if structure.is_some() {
+                pg.tab_order(pdf_writer::types::TabOrder::StructureOrder);
+                if !built_page.marks.is_empty() {
+                    pg.struct_parents(i as i32);
+                }
+            }
 
             pg.finish();
 
@@ -677,7 +798,7 @@ impl PdfOutputter {
                     LinkDest::Internal(name) => self.destination(name, &page_ref_list),
                     LinkDest::Uri(_) => None,
                 };
-                write_annotation(&mut pdf, annot, annot_ref, built_page, dest);
+                write_annotation(&mut pdf, annot, annot_ref, built_page, dest, annot_keys[i][j]);
             }
         }
 
@@ -687,7 +808,48 @@ impl PdfOutputter {
             write_outlines(&mut pdf, &self.bookmarks, &bookmark_refs, outline_ref, &dests);
         }
 
+        if let Some((metadata_ref, xmp)) = &metadata {
+            pdf.metadata(*metadata_ref, xmp.as_bytes());
+        }
+        if let (Some(refs), Some(tree)) = (&structure, &self.structure) {
+            let page_refs: Vec<Ref> = page_data.iter().map(|(r, _)| *r).collect();
+            refs.write(&mut pdf, tree, &self.tagged, &self.pages, &page_refs, &annot_refs, &annot_keys);
+        }
+
         Ok(pdf.finish())
+    }
+
+    /// The document's XMP metadata. A tagged document with a title, whose
+    /// figures and formulas all have descriptions, claims PDF/UA.
+    fn xmp(&self) -> String {
+        fn escape(s: &str) -> String {
+            s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        }
+        let mut props = String::new();
+        if let Some(title) = &self.config.title {
+            props += &format!("<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>", escape(title));
+        }
+        if let Some(author) = &self.config.author {
+            props += &format!("<dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>", escape(author));
+        }
+        if let Some(subject) = &self.config.subject {
+            props += &format!("<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:description>", escape(subject));
+        }
+        props += &format!("<xmp:CreatorTool>{}</xmp:CreatorTool>", escape(&self.config.creator));
+        let described = self.structure.as_ref().is_some_and(|tree| {
+            use crate::structure::Role;
+            tree.elements.iter().all(|e| !matches!(e.role, Role::Figure | Role::Formula) || e.alt.is_some())
+        });
+        if self.config.title.is_some() && described {
+            props += "<pdfuaid:part>1</pdfuaid:part>";
+        }
+        format!(
+            "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
+             <x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+             <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" \
+             xmlns:pdfuaid=\"http://www.aiim.org/pdfua/ns/id/\">{props}</rdf:Description></rdf:RDF></x:xmpmeta>\
+             <?xpacket end=\"w\"?>"
+        )
     }
 
     /// Where `name` is in PDF terms: its page and position from the bottom.
@@ -740,6 +902,7 @@ impl crate::render::Canvas for PdfOutputter {
     }
 
     fn push_color(&mut self, color: Color) {
+        self.end_mark();
         let page = self.current.as_mut().expect("no current page");
         page.content.save_state();
         match color {
@@ -750,6 +913,7 @@ impl crate::render::Canvas for PdfOutputter {
     }
 
     fn pop_color(&mut self) {
+        self.end_mark();
         self.current.as_mut().expect("no current page").content.restore_state();
     }
 
@@ -776,6 +940,7 @@ impl crate::render::Canvas for PdfOutputter {
 
     fn svg(&mut self, figure: &crate::svg_image::SvgFigure, x: f64, y: f64, _baseline: f64, _width: f64, _height: f64) {
         use crate::svg_image::SvgOp;
+        self.mark();
         let page = self.current.as_mut().expect("no current page");
         let s = figure.scale as f32;
         let c = &mut page.content;
@@ -839,6 +1004,7 @@ impl crate::render::Canvas for PdfOutputter {
     }
 
     fn push_transform(&mut self, [a, b, c, d, e, f]: crate::transform::Matrix) {
+        self.end_mark();
         let page = self.current.as_mut().expect("no current page");
         let h = page.height;
         page.content.save_state();
@@ -846,6 +1012,7 @@ impl crate::render::Canvas for PdfOutputter {
     }
 
     fn pop_transform(&mut self) {
+        self.end_mark();
         self.current.as_mut().expect("no current page").content.restore_state();
     }
 
@@ -853,7 +1020,12 @@ impl crate::render::Canvas for PdfOutputter {
         self.add_link(rect, dest.clone());
     }
 
+    fn set_tag(&mut self, tag: Option<u32>) {
+        self.current.as_mut().expect("no current page").tag = tag;
+    }
+
     fn frame_outline(&mut self, frame: &crate::framespec::FrameGeometry) {
+        self.mark();
         let page = self.current.as_mut().expect("no current page");
         let y = page.height - frame.bottom;
         page.content.save_state();
@@ -1107,7 +1279,7 @@ fn write_image(
 // Annotation writing
 // ---------------------------------------------------------------------------
 
-fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page: &BuiltPage, dest: Option<Dest>) {
+fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page: &BuiltPage, dest: Option<Dest>, struct_parent: Option<i32>) {
     let (dx, dy) = page.offset;
     let [x1, y1, x2, y2] = annot.rect;
     let (x1, x2) = (x1 + dx, x2 + dx);
@@ -1118,6 +1290,13 @@ fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page:
     writer.subtype(pdf_writer::types::AnnotationType::Link);
     writer.rect(Rect::new(x1 as f32, pdf_y1 as f32, x2 as f32, pdf_y2 as f32));
     writer.border(0.0, 0.0, 0.0, None);
+    if let Some(key) = struct_parent {
+        writer.struct_parent(key);
+        writer.contents(TextStr(match &annot.dest {
+            LinkDest::Uri(uri) => uri,
+            LinkDest::Internal(name) => name,
+        }));
+    }
 
     match &annot.dest {
         LinkDest::Uri(uri) => {
@@ -1138,6 +1317,124 @@ fn write_annotation(pdf: &mut Pdf, annot: &LinkAnnotation, annot_ref: Ref, page:
         }
     }
     writer.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Structure tree writing
+// ---------------------------------------------------------------------------
+
+/// References for the structure tree's objects. Elements nothing was
+/// drawn for are left out.
+struct StructRefs {
+    root: Ref,
+    elements: Vec<Option<Ref>>,
+    /// Each page's array of the elements its marked content belongs to.
+    page_parents: Vec<Option<Ref>>,
+}
+
+impl StructRefs {
+    fn new(tree: &StructTree, tagged: &[Vec<Tagged>], alloc: &mut RefAlloc) -> Self {
+        let drawn = |tag: u32| tagged.get(tag as usize).is_some_and(|t| !t.is_empty());
+        let mut keep = vec![false; tree.elements.len()];
+        for (i, element) in tree.elements.iter().enumerate().rev() {
+            keep[i] |= i == 0
+                || element.kids.iter().any(|kid| match *kid {
+                    StructKid::Content(tag) => drawn(tag),
+                    StructKid::Element(e) => keep[e],
+                });
+        }
+        let root = alloc.bump();
+        let elements = keep.iter().map(|&k| k.then(|| alloc.bump())).collect();
+        let mut pages = std::collections::BTreeSet::new();
+        for item in tagged.iter().flatten() {
+            if let Tagged::Mark { page, .. } = item {
+                pages.insert(*page);
+            }
+        }
+        let page_count = pages.last().map_or(0, |p| p + 1);
+        let page_parents = (0..page_count).map(|p| pages.contains(&p).then(|| alloc.bump())).collect();
+        Self { root, elements, page_parents }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write(
+        &self,
+        pdf: &mut Pdf,
+        tree: &StructTree,
+        tagged: &[Vec<Tagged>],
+        pages: &[BuiltPage],
+        page_refs: &[Ref],
+        annot_refs: &[Vec<Ref>],
+        annot_keys: &[Vec<Option<i32>>],
+    ) {
+        let owner = |tag: u32| self.elements[tree.owner(tag)].expect("drawn content's element is kept");
+        let mut root = pdf.indirect(self.root).start::<pdf_writer::writers::StructTreeRoot>();
+        root.child(self.elements[0].expect("document"));
+        let mut next_key = pages.len() as i32;
+        {
+            let mut parent_tree = root.parent_tree();
+            let mut nums = parent_tree.nums();
+            for (i, parents) in self.page_parents.iter().enumerate() {
+                if let Some(r) = parents {
+                    nums.insert(i as i32, *r);
+                }
+            }
+            for (page, keys) in pages.iter().zip(annot_keys) {
+                for (annot, key) in page.annotations.iter().zip(keys) {
+                    if let (Some(tag), Some(key)) = (annot.tag, key) {
+                        nums.insert(*key, owner(tag));
+                        next_key = next_key.max(key + 1);
+                    }
+                }
+            }
+        }
+        root.parent_tree_next_key(next_key);
+        root.finish();
+
+        for (page, parents) in pages.iter().zip(&self.page_parents) {
+            if let Some(r) = parents {
+                pdf.indirect(*r).array().items(page.marks.iter().map(|&tag| owner(tag)));
+            }
+        }
+
+        for (i, element) in tree.elements.iter().enumerate() {
+            let Some(r) = self.elements[i] else { continue };
+            let mut writer = pdf.struct_element(r);
+            writer.custom_kind(Name(element.role.name().as_bytes()));
+            writer.parent(element.parent.and_then(|p| self.elements[p]).unwrap_or(self.root));
+            if let Some(lang) = &element.lang {
+                writer.lang(TextStr(lang));
+            }
+            if let Some(alt) = &element.alt {
+                writer.alt(TextStr(alt));
+            }
+            if let Some(text) = &element.actual_text {
+                writer.actual_text(TextStr(text));
+            }
+            let mut kids = writer.children();
+            for kid in &element.kids {
+                match *kid {
+                    StructKid::Element(e) => {
+                        if let Some(r) = self.elements[e] {
+                            kids.struct_element(r);
+                        }
+                    }
+                    StructKid::Content(tag) => {
+                        for item in tagged.get(tag as usize).into_iter().flatten() {
+                            match *item {
+                                Tagged::Mark { page, mcid } => {
+                                    kids.marked_content_ref().page(page_refs[page]).marked_content_id(mcid as i32);
+                                }
+                                Tagged::Link { page, index } => {
+                                    kids.object_ref().page(page_refs[page]).object(annot_refs[page][index]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

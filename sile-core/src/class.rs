@@ -9,6 +9,7 @@ use crate::font::{FontSpec, FontStyle, FontWeight};
 use crate::framespec::{FrameDirection, FrameSpec};
 use crate::length::Length;
 use crate::measurement::Measurement;
+use crate::structure::Role;
 
 /// The frames of a page and the one content starts in.
 #[derive(Debug, Clone, PartialEq)]
@@ -449,6 +450,7 @@ impl Book {
         book(doc).right_head = None;
         *doc.counter_mut("footnote") = 1;
         let label = title_text(ctx, &mut title)?;
+        ctx.as_mut().begin_structure(Role::H1);
         with_font(ctx, bold(22.0), |ctx| {
             sectioning(ctx.as_mut(), heading, 1, Some("book-chapter-title"), label);
             Ok(())
@@ -456,7 +458,9 @@ impl Book {
         let doc = ctx.as_mut();
         book(doc).folio.state = FolioState::OffThisPage;
         Self::chapter_post(doc)?;
-        with_font(ctx, bold(22.0), &mut title)?;
+        let titled = with_font(ctx, bold(22.0), &mut title);
+        ctx.as_mut().end_structure();
+        titled?;
         ctx.as_mut().begin_capture();
         let captured = with_font(ctx, |f| f.size = 9.0, &mut title);
         let doc = ctx.as_mut();
@@ -481,11 +485,14 @@ impl Book {
     {
         Self::heading_start(ctx.as_mut(), bigskip())?;
         let label = title_text(ctx, &mut title)?;
-        with_font(ctx, bold(15.0), |ctx| {
+        ctx.as_mut().begin_structure(Role::H2);
+        let titled = with_font(ctx, bold(15.0), |ctx| {
             sectioning(ctx.as_mut(), heading, 2, None, label);
             ctx.as_mut().add_text(" ");
             title(ctx)
-        })?;
+        });
+        ctx.as_mut().end_structure();
+        titled?;
         if book(ctx.as_mut()).folio.state == FolioState::On {
             ctx.as_mut().begin_capture();
             let captured = with_font(
@@ -524,11 +531,14 @@ impl Book {
     {
         Self::heading_start(ctx.as_mut(), medskip())?;
         let label = title_text(ctx, &mut title)?;
-        with_font(ctx, bold(12.0), |ctx| {
+        ctx.as_mut().begin_structure(Role::H3);
+        let titled = with_font(ctx, bold(12.0), |ctx| {
             sectioning(ctx.as_mut(), heading, 3, None, label);
             ctx.as_mut().add_text(" ");
             title(ctx)
-        })?;
+        });
+        ctx.as_mut().end_structure();
+        titled?;
         Ok(Self::heading_end(ctx.as_mut())?)
     }
 

@@ -168,6 +168,7 @@ struct TextRun {
     speaker_change: bool,
     /// Embedding level relative to the paragraph's, once bidi has split it.
     bidi_level: Option<u8>,
+    tag: Option<u32>,
 }
 
 /// Paragraph material in the order it was added: text still to be shaped,
@@ -232,6 +233,7 @@ impl RunningText {
                 fallbacks: Vec::new(),
                 speaker_change: false,
                 bidi_level: None,
+                tag: None,
             })
         }));
         line
@@ -403,6 +405,7 @@ pub struct Layout {
     fonts: BTreeMap<String, RegisteredFont>,
     bookmarks: Vec<Bookmark>,
     pdf_config: PdfConfig,
+    structure: Option<crate::structure::StructTree>,
 }
 
 impl Layout {
@@ -413,6 +416,9 @@ impl Layout {
         }
         for bm in self.bookmarks {
             pdf.add_bookmark(bm);
+        }
+        if let Some(structure) = self.structure {
+            pdf.set_structure(structure);
         }
         pdf.render_pages(&self.pages);
         Ok(pdf.finish()?)
@@ -659,6 +665,8 @@ pub struct DocumentBuilder {
     consulted_references: std::cell::Cell<bool>,
     references: CrossReferences,
     pub(crate) math_tables: BTreeMap<String, Arc<crate::math::MathTable>>,
+    pub(crate) structure: Option<crate::structure::StructTree>,
+    pub(crate) untagged: usize,
 }
 
 impl DocumentBuilder {
@@ -715,6 +723,8 @@ impl DocumentBuilder {
             consulted_references: Default::default(),
             references: CrossReferences::default(),
             math_tables: BTreeMap::new(),
+            structure: None,
+            untagged: 0,
         }
     }
 
@@ -1306,6 +1316,7 @@ impl DocumentBuilder {
             fallbacks,
             speaker_change: false,
             bidi_level: None,
+            tag: self.current_tag(),
         }
     }
 
@@ -1377,7 +1388,11 @@ impl DocumentBuilder {
     /// Close the innermost `start_hbox`, `start_leaders` or `start_liner`.
     pub fn end_hbox(&mut self) -> &mut Self {
         if let Some((group, content)) = self.open_boxes.pop() {
+            let link = matches!(group, Group::Liner(LinerStyle::Link(_)));
             self.push_inline(Inline::Box(group, content));
+            if link && self.current_role() == Some(crate::structure::Role::Link) {
+                self.end_structure();
+            }
         }
         self
     }
@@ -1603,7 +1618,14 @@ impl DocumentBuilder {
     }
 
     /// SILE's `initline`: a paragraph opens with a zero box and its indent.
-    fn push_inline(&mut self, item: Inline) {
+    fn push_inline(&mut self, mut item: Inline) {
+        if let Inline::Node(node) = &mut item
+            && let Node::HBox(hbox) = &mut **node
+            && hbox.tag.is_none()
+            && matches!(hbox.ink, Some(Ink::Image(_) | Ink::Svg(_) | Ink::Math(_)))
+        {
+            hbox.tag = self.current_tag();
+        }
         if let Some((_, open)) = self.open_boxes.last_mut() {
             open.push(item);
             return;
@@ -1637,6 +1659,7 @@ impl DocumentBuilder {
     /// full. `independent` only breaks the lines.
     pub fn leave_hmode(&mut self, independent: bool) -> Result<(), BuilderError> {
         self.open_boxes.clear();
+        self.end_tagged_paragraph();
         if let Some(capture) = self.captures.last_mut() {
             if !self.paragraph.is_empty() {
                 capture.items.push(Captured::Paragraph {
@@ -2353,6 +2376,10 @@ impl DocumentBuilder {
     }
 
     fn end_page(&mut self) -> Result<(), BuilderError> {
+        self.untagged(Self::end_page_untagged)
+    }
+
+    fn end_page_untagged(&mut self) -> Result<(), BuilderError> {
         self.ensure_page()?;
         self.output_insertions();
         self.collect_references();
@@ -2374,7 +2401,7 @@ impl DocumentBuilder {
 
     fn new_page(&mut self) -> Result<(), BuilderError> {
         if let Some(mut class) = self.class.take() {
-            let result = class.new_page(self);
+            let result = self.untagged(|doc| class.new_page(doc));
             self.class = Some(class);
             result?;
         }
@@ -2694,6 +2721,7 @@ impl DocumentBuilder {
 
     /// Link what follows, until `end_hbox`, to `dest` (SILE's `\pdf:link`).
     pub fn start_link(&mut self, dest: LinkDest) -> &mut Self {
+        self.begin_structure(crate::structure::Role::Link);
         self.start_liner(LinerStyle::Link(dest))
     }
 
@@ -2864,6 +2892,7 @@ impl DocumentBuilder {
             fonts: self.fonts,
             bookmarks: self.bookmarks,
             pdf_config: self.pdf_config,
+            structure: self.structure,
         })
     }
 
@@ -2889,12 +2918,16 @@ impl DocumentBuilder {
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
         let bidi = self.bidi && direction != Direction::TTB;
-        let h_nodes = if bidi {
+        let mut h_nodes = if bidi {
             let inlines = self.split_bidi_runs(inlines, direction)?;
             self.shape_inlines(&inlines)?
         } else {
             self.shape_inlines(inlines)?
         };
+        if self.is_untagged() {
+            node::clear_tags(&mut h_nodes);
+        }
+        mark_word_spaces(&mut h_nodes);
         Ok(self.break_nodes(h_nodes, hsize, direction, bidi, skips, previous_depth))
     }
 
@@ -3032,7 +3065,10 @@ impl DocumentBuilder {
                     h_nodes.push(liner_mark(Ink::LinerEnd));
                 }
                 Inline::Box(group, content) => {
-                    let hbox = natural_hbox(self.shape_inlines(content)?);
+                    let mut hbox = natural_hbox(self.shape_inlines(content)?);
+                    if matches!(group, Group::Leaders(_)) {
+                        node::clear_tags(&mut hbox.nodes);
+                    }
                     h_nodes.push(match group {
                         Group::Leaders(width) => {
                             let mut glue = match width {
@@ -3145,6 +3181,7 @@ impl DocumentBuilder {
                         let mut nnode = self.build_nnode(&text, &glyphs[range], font_name, spec, color);
                         nnode.language = run.language.clone();
                         nnode.bidi_level = run.bidi_level;
+                        nnode.tag = run.tag;
                         nodes.push(Node::NNode(nnode));
                     }
                     Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.word_space(glyphs[i + lo].width, space))),
@@ -3155,6 +3192,7 @@ impl DocumentBuilder {
                         let mut nnode = self.build_nnode("-", &hyphen, font_name, spec, color);
                         nnode.language = run.language.clone();
                         nnode.bidi_level = run.bidi_level;
+                        nnode.tag = run.tag;
                         nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
                     }
                     Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
@@ -3274,6 +3312,9 @@ impl DocumentBuilder {
                     pieces.push(Node::discretionary(self.text_nodes(&prebreak, word), vec![], replacement));
                 }
             }
+            if let Some(Node::NNode(last)) = pieces.iter_mut().rev().find(|p| p.is_nnode()) {
+                last.space_after = word.space_after;
+            }
             let parent = Arc::new(node::HyphenatedWord { word: word.clone(), syllables });
             for piece in &mut pieces {
                 if let Node::NNode(n) = piece {
@@ -3298,6 +3339,7 @@ impl DocumentBuilder {
             fallbacks: Vec::new(),
             speaker_change: false,
             bidi_level: like.bidi_level,
+            tag: like.tag,
         };
         self.shape_run(&run).unwrap_or_default()
     }
@@ -3666,6 +3708,26 @@ fn reorder_bidi(mut line: Vec<Node>, direction: Direction) -> Vec<Node> {
         out[m] = Some(node);
     }
     out.into_iter().flatten().collect()
+}
+
+fn mark_word_spaces(nodes: &mut [Node]) {
+    let mut word = None;
+    for i in 0..nodes.len() {
+        match &nodes[i] {
+            Node::NNode(_) => word = Some(i),
+            Node::Glue(_) => {
+                if let Some(Node::NNode(n)) = word.take().map(|w| &mut nodes[w]) {
+                    n.space_after = true;
+                }
+            }
+            Node::Penalty(_) | Node::Kern(_) => {}
+            Node::HBox(b) if matches!(b.ink, Some(Ink::LinerStart(_) | Ink::LinerEnd | Ink::Destination(_) | Ink::Info(_))) => {}
+            _ => word = None,
+        }
+    }
+    if let Some(Node::NNode(n)) = word.map(|w| &mut nodes[w]) {
+        n.space_after = true;
+    }
 }
 
 /// Put back whole any hyphenated word whose syllables all landed on this

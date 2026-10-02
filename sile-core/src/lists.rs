@@ -3,6 +3,7 @@
 use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
 use crate::counter::format_number;
 use crate::length::Length;
+use crate::structure::Role;
 use crate::measurement::{Measurement, Unit};
 use crate::node::Node;
 
@@ -115,6 +116,7 @@ impl DocumentBuilder {
         };
         let indent = self.resolve(margin);
         self.list_spacing(true, true, 0)?;
+        self.begin_structure(Role::L);
         let skips = self.line_skips();
         self.lists.levels.push(ListLevel {
             kind,
@@ -134,6 +136,7 @@ impl DocumentBuilder {
             self.set_line_skips(skips).set_paragraph_indent(indent);
         }
         self.list_spacing(true, false, 0)?;
+        self.end_structure();
         Ok(self)
     }
 
@@ -146,6 +149,7 @@ impl DocumentBuilder {
         level.counter += 1;
         let (counter, label, indent) = (level.counter, level.label.clone(), level.indent);
         self.list_spacing(false, true, counter)?;
+        self.begin_structure(Role::LI).begin_structure(Role::Lbl);
         let text = match &label {
             ListLabel::Number { display, before, after } => {
                 format!("{before}{}{after}", format_number(counter, display).unwrap_or_else(|| counter.to_string()))
@@ -161,6 +165,7 @@ impl DocumentBuilder {
         self.add_kern(Length::pt(-stepback));
         mark.width = Length::pt(stepback);
         self.add_box(mark);
+        self.end_structure().begin_structure(Role::LBody);
         Ok(self)
     }
 
@@ -168,6 +173,7 @@ impl DocumentBuilder {
         self.set_current_indent(Some(0.0));
         let counter = self.lists.levels.last().map_or(0, |l| l.counter);
         self.list_spacing(false, false, counter)?;
+        self.end_structure().end_structure();
         Ok(self)
     }
 
