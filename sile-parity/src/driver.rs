@@ -18,6 +18,7 @@ use sile_core::toc::{DefaultTocStyle, TableOfContents};
 use sile_core::pullquote::Pullquote;
 use sile_core::dropcap::Dropcap;
 use sile_core::svg_image::SvgImage;
+use sile_core::index::{DefaultIndexStyle, Indexer};
 use sile_core::cropmarks::Cropmarks;
 use sile_core::features::OtFeatures;
 use sile_core::image::{Background, BackgroundFill, Image};
@@ -144,6 +145,8 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "svg",
     "raw",
     "cropmarks:setup",
+    "indexentry",
+    "printindex",
     "rotate",
     "scalebox",
     "table",
@@ -382,6 +385,7 @@ fn check(
                     | "packages.svg"
                     | "packages.cropmarks"
                     | "packages.autodoc"
+                    | "packages.indexer"
                     | "packages.rotate"
                     | "packages.scalebox"
                     | "packages.simpletable"
@@ -1680,6 +1684,15 @@ impl<'a> Driver<'a> {
                 }
                 self.sync()?;
                 self.scoped(|d| quote.typeset(d, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e))?;
+            }
+            "indexentry" => {
+                let label = cmd.option("label").map_or_else(|| sil::plain_text(content), String::from);
+                self.sync()?;
+                self.doc.add_index_entry(cmd.option("index").unwrap_or("main"), label);
+            }
+            "printindex" => {
+                self.sync()?;
+                Indexer::default().typeset(&mut self.doc, cmd.option("index").unwrap_or("main"), &DefaultIndexStyle).map_err(err)?;
             }
             "rotate" | "scalebox" => {
                 self.sync()?;

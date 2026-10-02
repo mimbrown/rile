@@ -44,6 +44,28 @@ impl MultilevelCounter {
     }
 }
 
+/// A page's number and the numbering system it is shown in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageNumber {
+    pub value: i64,
+    pub display: String,
+}
+
+impl PageNumber {
+    pub fn arabic(value: i64) -> Self {
+        Self { value, display: "arabic".into() }
+    }
+}
+
+impl std::fmt::Display for PageNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match format_number(self.value, &self.display) {
+            Some(s) => f.write_str(&s),
+            None => write!(f, "{}", self.value),
+        }
+    }
+}
+
 /// `n` written in the numbering system `display` (SILE's
 /// `SU.formatNumber`): `arabic`, `alpha`/`ALPHA`, `roman`/`ROMAN`, Greek
 /// (`greklow`, `grek`), Japanese (`jpan`), or a decimal system with its own

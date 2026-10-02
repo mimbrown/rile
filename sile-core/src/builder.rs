@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::color::Color;
-use crate::counter::MultilevelCounter;
+use crate::counter::{MultilevelCounter, PageNumber};
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
@@ -18,7 +18,7 @@ use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
 use crate::pagebuilder::{self, Page, PageBreakSettings, Underlay};
 use crate::image::{Background, BackgroundFill};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
-use crate::references::{self, CrossReferences, Label, TocEntry};
+use crate::references::{self, CrossReferences, IndexMark, IndexPage, Label, TocEntry};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
 // ---------------------------------------------------------------------------
@@ -1211,6 +1211,12 @@ impl DocumentBuilder {
             g.explicit = true;
         }
         self.push_inline(Inline::Node(Box::new(fill)));
+        self
+    }
+
+    /// Space that stretches and shrinks without limit (`\hss`).
+    pub fn add_hss(&mut self) -> &mut Self {
+        self.push_inline(Inline::Node(Box::new(Node::hssglue(Length::zero()))));
         self
     }
 
@@ -2613,10 +2619,18 @@ impl DocumentBuilder {
         self.add_info(references::LABELS, (name, Label { page: String::new(), value, dest }))
     }
 
+    /// Enter `label` in the index called `index` (SILE's `main` by default),
+    /// as on the page this point ends up on (SILE's `\indexentry`).
+    pub fn add_index_entry(&mut self, index: impl Into<String>, label: impl Into<String>) -> &mut Self {
+        let link = self.new_destination();
+        self.add_info(references::INDEX, IndexMark { index: index.into(), label: label.into(), link })
+    }
+
     /// Note the references on the page being finished, numbered as the
     /// class numbers it.
     fn collect_references(&mut self) {
-        let page = self.class.as_ref().and_then(|c| c.folio()).unwrap_or_else(|| (self.pages.len() + 1).to_string());
+        let number = self.class.as_ref().and_then(|c| c.folio()).unwrap_or_else(|| PageNumber::arabic(self.pages.len() as i64 + 1));
+        let page = number.to_string();
         for mut entry in self.page_info::<TocEntry>(references::TOC) {
             entry.page = page.clone();
             self.references.toc.push(entry);
@@ -2624,6 +2638,12 @@ impl DocumentBuilder {
         for (name, mut label) in self.page_info::<(String, Label)>(references::LABELS) {
             label.page = page.clone();
             self.references.labels.entry(name).or_insert(label);
+        }
+        for mark in self.page_info::<IndexMark>(references::INDEX) {
+            let pages = self.references.index.entry(mark.index).or_default().entry(mark.label).or_default();
+            if pages.last().is_none_or(|p| p.page != number) {
+                pages.push(IndexPage { page: number.clone(), link: Some(mark.link) });
+            }
         }
     }
 
