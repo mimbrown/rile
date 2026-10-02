@@ -537,6 +537,9 @@ pub struct NNode {
     pub parent: Option<std::sync::Arc<HyphenatedWord>>,
     /// Embedding level relative to the paragraph's, when bidi assigned one.
     pub bidi_level: Option<u8>,
+    /// Shaped top to bottom; glyphs of horizontal fonts lie on their side
+    /// in vertical lines.
+    pub vertical: bool,
 }
 
 /// A hyphenated word and the number of syllables it was split into.
@@ -580,6 +583,7 @@ impl NNode {
             color: None,
             parent: None,
             bidi_level: None,
+            vertical: false,
         }
     }
 
@@ -608,6 +612,7 @@ impl NNode {
             color: None,
             parent: None,
             bidi_level: None,
+            vertical: false,
         }
     }
 }
