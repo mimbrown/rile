@@ -8,7 +8,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use sile_core::bible::Bible;
-use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
+use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, PageTemplate, Plain};
@@ -29,6 +29,8 @@ use sile_core::frame::PaperSize;
 use sile_core::framespec::{FrameDirection, FrameSpec};
 use sile_core::length::Length;
 use sile_core::lists::{ListKind, ListOptions};
+use sile_core::math::mathml;
+use sile_core::math::{MathLength, MathMode, MathNode, TexMath};
 use sile_core::measurement::{Measurement, Unit};
 use sile_core::node::INFINITY;
 use sile_core::shaper::SpaceSettings;
@@ -186,6 +188,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "neverindent",
     "indent",
     "smallskip",
+    "blockquote",
     "medskip",
     "bigskip",
     "pagebreak",
@@ -313,6 +316,15 @@ const SETTINGS: &[&str] = &[
     "shaper.spaceenlargementfactor",
     "shaper.spacestretchfactor",
     "shaper.spaceshrinkfactor",
+    "typesetter.italicCorrection",
+    "math.font.family",
+    "math.font.filename",
+    "math.font.size",
+    "math.font.weight",
+    "math.font.script.feature",
+    "math.displayskip",
+    "math.predisplaypenalty",
+    "math.postdisplaypenalty",
 ];
 
 fn check(
@@ -404,7 +416,8 @@ fn check(
                     | "packages.dropcaps"
                     | "packages.pullquote"
                     | "packages.image"
-                    | "packages.background",
+                    | "packages.background"
+                    | "packages.math",
                 ) => {}
                 Some(m) if m.starts_with("inc.") && port.is_some() => {}
                 Some(m) => {
@@ -456,6 +469,12 @@ fn check(
                 }
             },
             "lua" | "script" if port.is_some() => {}
+            "math" | "mathml" => {
+                if let Some(mode) = cmd.option("mode").filter(|m| !matches!(*m, "text" | "display")) {
+                    missing.insert(format!("math[mode={mode}]"));
+                }
+                continue;
+            }
             "verse-number" if !port.is_some_and(|p| p.command("bible:verse-number").is_some()) => {
                 missing.insert("\\bible:verse-number".into());
             }
@@ -598,6 +617,7 @@ pub(crate) struct Driver<'a> {
     /// The grid package's spacing, once it is loaded.
     grid_spacing: Option<f64>,
     bibliography: Bibliography,
+    tex: TexMath,
 }
 
 impl AsMut<DocumentBuilder> for Driver<'_> {
@@ -652,6 +672,7 @@ impl<'a> Driver<'a> {
             target: (u32::MAX, 0, 0),
             grid_spacing: None,
             bibliography: Bibliography::default(),
+            tex: TexMath::new(),
         })
     }
 
@@ -807,7 +828,7 @@ impl<'a> Driver<'a> {
             None => None,
         };
         let now = Synced {
-            baseline_skip: BaselineSkip { skip: self.length(&bls)?, lineskip: self.dimen(&lineskip)? },
+            baseline_skip: BaselineSkip { skip: self.em_length(&bls)?, lineskip: self.dimen(&lineskip)? },
             indent: self.dimen(&parindent)?,
             parskip: self.length(&parskip)?,
             skips: self.settings.skips,
@@ -902,6 +923,32 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
+    /// SILE's `handleMath`: the formula inline, or displayed and numbered
+    /// from the `equation` counter or `counter`, or as `number`.
+    fn math(&mut self, cmd: &Command, node: &MathNode) -> Result<(), String> {
+        let counter = cmd.option("counter").or(cmd.option("numbered").filter(|n| truthy(n)).map(|_| "equation"));
+        let mode = match cmd.option("mode").unwrap_or("text") {
+            "text" => MathMode::Text,
+            "display" => {
+                let number = match counter {
+                    Some(id) => {
+                        let counter = self.doc.counter_mut(id);
+                        *counter += 1;
+                        let value = *counter;
+                        let display = self.counter_display.get(id).map_or("arabic", String::as_str);
+                        Some(format_number(value, display).ok_or_else(|| format!("unknown display {display}"))?)
+                    }
+                    None => cmd.option("number").map(str::to_string),
+                };
+                MathMode::Display { number }
+            }
+            mode => return Err(format!("Unknown math mode {mode}")),
+        };
+        self.sync()?;
+        self.doc.add_math(node, mode).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub(crate) fn add_text(&mut self, text: &str) -> Result<(), String> {
         self.sync()?;
         self.doc.add_text(text);
@@ -954,10 +1001,12 @@ impl<'a> Driver<'a> {
         }
         let saved = self.settings.clone();
         let font = self.doc.font_spec().cloned();
+        let math = self.doc.math_settings().clone();
         self.depth += 1;
         let r = f(self);
         self.depth -= 1;
         self.settings = saved;
+        *self.doc.math_settings_mut() = math;
         if let Some(font) = font {
             self.doc.set_font_spec(font).map_err(|e| e.to_string())?;
         }
@@ -1120,6 +1169,20 @@ impl<'a> Driver<'a> {
                 } else {
                     book.right_head = Some(material);
                 }
+            }
+            "math" => {
+                let src = match &cmd.raw {
+                    Some(raw) => raw.clone(),
+                    None => content.iter().filter_map(|c| if let Content::Text(t) = c { Some(t.as_str()) } else { None }).collect(),
+                };
+                let node = self.tex.parse(&src).map_err(|e| e.to_string())?;
+                self.math(cmd, &node)?;
+            }
+            "mathml" => {
+                let mut element = mathml::Element::new("mathml");
+                element.children = math_content(content);
+                let node = element.to_node()?;
+                self.math(cmd, &node)?;
             }
             "discretionary" => {
                 self.sync()?;
@@ -1386,6 +1449,21 @@ impl<'a> Driver<'a> {
             "dotfill" => {
                 self.sync()?;
                 self.doc.add_dotfill();
+            }
+            "blockquote" => {
+                let smallskip = self.length("3pt plus 1pt minus 1pt")?;
+                self.par()?;
+                self.doc.add_explicit_vskip(smallskip).map_err(err)?;
+                self.scoped(|d| {
+                    let indent = Measurement::pt(d.dimen("2em")?);
+                    let s = &mut d.settings.skips;
+                    s.left.length += indent;
+                    s.right.length += indent;
+                    d.update_font(|f| f.size *= 0.95)?;
+                    d.process(content)?;
+                    d.par()
+                })?;
+                self.doc.add_explicit_vskip(smallskip).map_err(err)?;
             }
             "center" => self.aligned(TextAlign::Center, content)?,
             "raggedright" => self.aligned(TextAlign::Left, content)?,
@@ -1951,10 +2029,15 @@ impl<'a> Driver<'a> {
                 }
             }
             "language" => {
-                if let Some(lang) = cmd.option("main") {
-                    self.settings.language = lang.to_string();
+                let lang = opt("main")?.to_string();
+                if cmd.content.is_some() {
+                    self.scoped(|d| {
+                        d.settings.language = lang;
+                        d.process(content)
+                    })?;
+                } else {
+                    self.settings.language = lang;
                 }
-                self.process(content)?;
             }
             "lorem" => {
                 let words = cmd.option("words").and_then(|w| w.parse().ok()).unwrap_or(50);
@@ -2121,6 +2204,19 @@ impl<'a> Driver<'a> {
             "font.features" => self.set_font_option("features", value)?,
             "font.variations" => self.set_font_option("variations", value)?,
             "font.filename" => self.set_font_option("filename", value)?,
+            "typesetter.italicCorrection" => {
+                self.doc.set_italic_correction(truthy(value).then(ItalicCorrection::default));
+            }
+            "math.font.family" => self.doc.math_settings_mut().family = value.to_string(),
+            "math.font.filename" => self.doc.math_settings_mut().filename = Some(value.to_string()).filter(|v| !v.is_empty()),
+            "math.font.size" => self.doc.math_settings_mut().size = Some(num()?),
+            "math.font.weight" => self.doc.math_settings_mut().weight = num()? as u16,
+            "math.font.script.feature" => {
+                self.doc.math_settings_mut().script_feature = Some(value.to_string()).filter(|v| !v.is_empty())
+            }
+            "math.displayskip" => self.doc.math_settings_mut().display_skip = MathLength::from_str(value)?,
+            "math.predisplaypenalty" => self.doc.math_settings_mut().pre_display_penalty = num()? as i32,
+            "math.postdisplaypenalty" => self.doc.math_settings_mut().post_display_penalty = num()? as i32,
             "document.language" => self.settings.language = value.to_string(),
             "document.parindent" => self.settings.parindent = value.to_string(),
             "document.parskip" => self.settings.parskip = value.to_string(),
@@ -2294,6 +2390,19 @@ impl<'a> Driver<'a> {
     }
 
     /// One dimension in any of SILE's units, in points.
+    /// `length`, leaving `em` for the builder to resolve against the font
+    /// in force where it is used.
+    fn em_length(&mut self, value: &str) -> Result<Length, String> {
+        let mut parts = value.splitn(2, " plus ");
+        let natural = parts.next().unwrap_or("").trim();
+        let em = natural.strip_suffix("em").and_then(|n| n.parse::<f64>().ok());
+        let mut length = self.length(value)?;
+        if let Some(n) = em.filter(|_| !natural.contains(" minus ")) {
+            length.length = Measurement::new(n, Unit::Em);
+        }
+        Ok(length)
+    }
+
     pub(crate) fn dimen(&mut self, value: &str) -> Result<f64, String> {
         let value = value.trim();
         let split = value
@@ -2459,4 +2568,22 @@ fn citation_key(cmd: &Command, content: &[Content]) -> String {
 fn cite(cmd: &Command, content: &[Content]) -> Cite {
     let locator = cmd.options.iter().find(|(k, _)| k != "key").cloned();
     Cite { locator, ..Cite::new(citation_key(cmd, content)) }
+}
+
+/// MathML markup as SIL or XML commands.
+fn math_content(content: &[Content]) -> Vec<mathml::Content> {
+    let elements = content.iter().any(|c| matches!(c, Content::Command(_)));
+    content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Text(t) if elements && t.trim().is_empty() => None,
+            Content::Text(t) => Some(mathml::Content::Text(t.clone())),
+            Content::Command(cmd) => {
+                let mut element = mathml::Element::new(cmd.name.clone());
+                element.options = cmd.options.clone();
+                element.children = math_content(cmd.content.as_deref().unwrap_or(&[]));
+                Some(mathml::Content::Element(element))
+            }
+        })
+        .collect()
 }

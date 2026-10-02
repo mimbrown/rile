@@ -34,6 +34,12 @@ pub fn divergence(test: &str) -> Option<&'static str> {
         "content-detection-sil" | "content-detection-xml" => {
             "The expected output still uses Gentium Plus, SILE's default font before 0.15.14; current SILE and sile-rust use Gentium Book. Glyphs and breaks match."
         }
+        "math-bigops" | "math-left-right-tex" | "math-stretchy" | "math-unary-binary-minus" => {
+            "SILE measures size variants of big operators and stretchy delimiters at the math font size cut to whole points (an unsigned int cast in its HarfBuzz glue), so at the default 10.5851pt they come out about 6% narrower and shorter. sile-rust uses the true size; with SILE's truncation these tests match."
+        }
+        "feat-math-display-unnumbered" => {
+            "SILE resolves the ex in math.displayskip against the font in force when the page is output, here the 11pt document font rather than the 10.45pt blockquote font around the formulas. sile-rust uses the font around the formula; with SILE's font the test matches."
+        }
         _ => return None,
     })
 }
@@ -44,8 +50,6 @@ pub fn unsupported(missing: &[String]) -> Option<Settled> {
         Some(Settled::Explained("SILE marks this test KNOWNBAD: its expected output records a bug that is still open upstream."))
     } else if missing.iter().any(|m| m == "Lua input") {
         Some(Settled::Explained("The document is a Lua table, and sile-rust has no Lua."))
-    } else if missing.iter().any(|m| m.contains("math")) {
-        Some(Settled::Skipped("Math is out of scope for now."))
     } else {
         None
     }

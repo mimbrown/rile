@@ -67,7 +67,8 @@ impl Dropcap {
         E: From<BuilderError>,
     {
         let doc = ctx.as_mut();
-        let bs = doc.baseline_skip().map_or(1.2 * doc.font_spec().map_or(10.0, |f| f.size), |b| b.skip.length.to_pt().unwrap_or(0.0));
+        let em = doc.font_spec().map_or(10.0, |f| f.size);
+        let bs = doc.baseline_skip().map_or(1.2 * em, |b| b.skip_at(em).length.to_pt().unwrap_or(0.0));
         let current_size = doc.font_spec().map_or(10.0, |f| f.size);
         let standoff = self.standoff.unwrap_or_else(|| doc.space_width());
         let depth_adjustment = if self.strict {

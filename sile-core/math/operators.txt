@@ -1,0 +1,2658 @@
+21	ord	mathexclam	postfix 0 0	prefix 0 0
+21 21	ord	-	postfix 0 0
+21 3D	ord	-	infix 5 5
+22	ord	-	postfix 0 0
+23	ord	mathoctothorpe
+24	ord	mathdollar
+25	ord	mathpercent	postfix 0 0	infix 3 3
+26	ord	mathampersand	postfix 0 0
+26 26	ord	-	infix 4 4
+27	ord	-	postfix 0 0
+28	open	lparen	prefix 0 0 s
+29	close	rparen	postfix 0 0 s
+2A	ord	-	infix 3 3
+2A 2A	ord	-	infix 3 3
+2A 3D	ord	-	infix 5 5
+2B	bin	mathplus	prefix 0 0	infix 4 4
+2B 2B	ord	-	postfix 0 0
+2B 3D	ord	-	infix 5 5
+2C	punct	mathcomma	infix 0 3
+2D	ord	-	prefix 0 0	infix 4 4
+2D 2D	ord	-	postfix 0 0
+2D 3D	ord	-	infix 5 5
+2D 3E	ord	-	infix 5 5
+2E	punct	mathperiod	infix 3 3
+2F	bin	mathslash	infix 4 4
+2F 2F	ord	-	infix 5 5
+2F 3D	ord	-	infix 5 5
+3A	punct	mathcolon	infix 0 3
+3A 3D	ord	-	infix 5 5
+3B	punct	mathsemicolon	infix 0 3
+3C	rel	less	infix 5 5
+3C 3D	ord	-	infix 5 5
+3C 3E	ord	-	infix 3 3
+3D	rel	equal	infix 5 5
+3D 3D	ord	-	infix 5 5
+3E	rel	greater	infix 5 5
+3E 3D	ord	-	infix 5 5
+3F	punct	mathquestion	infix 3 3
+40	ord	mathatsign	infix 3 3
+5B	open	lbrack	prefix 0 0 s
+5C	bin	backslash	infix 0 0
+5D	close	rbrack	postfix 0 0 s
+5E	ord	-	postfix 0 0 s	infix 3 3
+5F	ord	-	infix 0 0	postfix 0 0 s
+60	ord	-	postfix 0 0
+7B	open	lbrace	prefix 0 0 s
+7C	ord	vert	infix 5 5	prefix 0 0 s	postfix 0 0 s
+7C 7C	ord	-	infix 5 5	prefix 0 0	postfix 0 0
+7D	close	rbrace	postfix 0 0 s
+7E	ord	-	postfix 0 0 s
+A1	punct	-
+A3	ord	mathsterling
+A5	ord	mathyen
+A7	ord	mathsection
+A8	ord	-	postfix 0 0
+AC	ord	neg	prefix 0 0
+AF	ord	-	postfix 0 0 s
+B0	ord	-	postfix 0 0
+B1	bin	pm	prefix 0 0	infix 4 4
+B2	ord	-	postfix 0 0
+B3	ord	-	postfix 0 0
+B4	ord	-	postfix 0 0
+B6	ord	mathparagraph
+B7	bin	cdotp	infix 3 3
+B8	ord	-	postfix 0 0
+B9	ord	-	postfix 0 0
+BF	punct	-
+D7	bin	times	infix 3 3
+F0	ord	matheth
+F7	bin	div	infix 4 4
+1B5	ord	Zbar
+2C6	ord	-	postfix 0 0 s
+2C7	ord	-	postfix 0 0 s
+2C9	ord	-	postfix 0 0 s
+2CA	ord	-	postfix 0 0
+2CB	ord	-	postfix 0 0
+2CD	ord	-	postfix 0 0 s
+2D8	ord	-	postfix 0 0
+2D9	ord	-	postfix 0 0
+2DA	ord	-	postfix 0 0
+2DC	ord	-	postfix 0 0 s
+2DD	ord	-	postfix 0 0
+2F7	ord	-	postfix 0 0 s
+300	accent	grave
+301	accent	acute
+302	accent	hat	postfix 0 0 s
+303	accent	tilde
+304	accent	bar
+305	accent	overbar
+306	accent	breve
+307	accent	dot
+308	accent	ddot
+309	ord	ovhook
+30A	accent	ocirc
+30C	accent	check
+310	ord	candra
+311	accent	-	postfix 0 0
+312	ord	oturnedcomma
+315	ord	ocommatopright
+31A	ord	droang
+323	botaccent	-
+32C	botaccent	-
+32D	botaccent	-
+32E	botaccent	-
+32F	botaccent	-
+330	botaccent	wideutilde
+331	botaccent	-
+332	botaccent	mathunderbar
+333	botaccent	-
+338	ord	notaccent
+33A	botaccent	-
+33F	accent	-
+346	accent	-
+34D	ord	underleftrightarrow
+391	ord	mupAlpha
+392	ord	mupBeta
+393	ord	mupGamma
+394	ord	mupDelta
+395	ord	mupEpsilon
+396	ord	mupZeta
+397	ord	mupEta
+398	ord	mupTheta
+399	ord	mupIota
+39A	ord	mupKappa
+39B	ord	mupLambda
+39C	ord	mupMu
+39D	ord	mupNu
+39E	ord	mupXi
+39F	ord	mupOmicron
+3A0	ord	mupPi
+3A1	ord	mupRho
+3A3	ord	mupSigma
+3A4	ord	mupTau
+3A5	ord	mupUpsilon
+3A6	ord	mupPhi
+3A7	ord	mupChi
+3A8	ord	mupPsi
+3A9	ord	mupOmega
+3B1	ord	mupalpha
+3B2	ord	mupbeta
+3B3	ord	mupgamma
+3B4	ord	mupdelta
+3B5	ord	mupvarepsilon
+3B6	ord	mupzeta
+3B7	ord	mupeta
+3B8	ord	muptheta
+3B9	ord	mupiota
+3BA	ord	mupkappa
+3BB	ord	muplambda
+3BC	ord	mupmu
+3BD	ord	mupnu
+3BE	ord	mupxi
+3BF	ord	mupomicron
+3C0	ord	muppi
+3C1	ord	muprho
+3C2	ord	mupvarsigma
+3C3	ord	mupsigma
+3C4	ord	muptau
+3C5	ord	mupupsilon
+3C6	ord	mupvarphi
+3C7	ord	mupchi
+3C8	ord	muppsi
+3C9	ord	mupomega
+3D1	ord	mupvartheta
+3D5	ord	mupphi
+3D6	ord	mupvarpi
+3DC	ord	upDigamma
+3DD	ord	updigamma
+3F0	ord	mupvarkappa
+3F1	ord	mupvarrho
+3F4	ord	mupvarTheta
+3F5	ord	mupepsilon
+3F6	ord	upbackepsilon
+606	op	-
+607	op	-
+2010	punct	mathhyphen
+2012	punct	-
+2013	punct	-
+2014	punct	-
+2015	ord	horizbar
+2016	ord	Vert	prefix 0 0 s	postfix 0 0 s
+2017	ord	twolowline
+2018	ord	-	prefix 0 0
+2019	ord	-	postfix 0 0
+201A	ord	-	postfix 0 0
+201B	ord	-	postfix 0 0
+201C	ord	-	prefix 0 0
+201D	ord	-	postfix 0 0
+201E	ord	-	postfix 0 0
+201F	ord	-	postfix 0 0
+2020	rel	dagger
+2021	rel	ddagger
+2022	bin	smblkcircle	infix 3 3
+2025	ord	enleadertwodots
+2026	ord	unicodeellipsis
+2032	ord	prime	postfix 0 0
+2033	ord	dprime	postfix 0 0
+2034	ord	trprime	postfix 0 0
+2035	ord	backprime	postfix 0 0
+2036	ord	backdprime	postfix 0 0
+2037	ord	backtrprime	postfix 0 0
+2038	ord	caretinsert
+203C	ord	Exclam
+203E	ord	-	postfix 0 0 s
+2040	bin	tieconcat
+2043	ord	hyphenbullet	infix 3 3
+2044	bin	fracslash	infix 4 4
+2047	ord	Question
+204E	bin	-
+204F	rel	-
+2050	rel	closure
+2057	ord	qprime	postfix 0 0
+2061	bin	-	infix 0 0
+2062	bin	-	infix 0 0
+2063	punct	-	infix 0 0
+2064	ord	-	infix 0 0
+20AC	ord	euro
+20D0	accent	leftharpoonaccent
+20D1	accent	rightharpoonaccent
+20D2	ord	vertoverlay
+20D4	accent	-
+20D5	accent	-
+20D6	accent	overleftarrow
+20D7	accent	overrightarrow
+20DB	accent	dddot	postfix 0 0
+20DC	accent	ddddot	postfix 0 0
+20DD	ord	enclosecircle
+20DE	ord	enclosesquare
+20DF	ord	enclosediamond
+20E1	accent	overleftrightarrow
+20E4	ord	enclosetriangle
+20E7	accent	annuity
+20E8	botaccent	threeunderdot
+20E9	accent	widebridgeabove
+20EC	botaccent	underrightharpoondown
+20ED	botaccent	underleftharpoondown
+20EE	botaccent	underleftarrow
+20EF	botaccent	underrightarrow
+20F0	ord	asteraccent
+2102	ord	BbbC
+2107	ord	Eulerconst
+210A	ord	mscrg
+210B	ord	mscrH
+210C	ord	mfrakH
+210D	ord	BbbH
+210E	ord	Planckconst
+210F	ord	hslash
+2110	ord	mscrI
+2111	ord	Im
+2112	ord	mscrL
+2113	ord	ell
+2115	ord	BbbN
+2118	ord	wp
+2119	ord	BbbP
+211A	ord	BbbQ
+211B	ord	mscrR
+211C	ord	Re
+211D	ord	BbbR
+2124	ord	BbbZ
+2127	ord	mho
+2128	ord	mfrakZ
+2129	ord	turnediota
+212B	ord	Angstrom
+212C	ord	mscrB
+212D	ord	mfrakC
+212F	ord	mscre
+2130	ord	mscrE
+2131	ord	mscrF
+2132	ord	Finv
+2133	ord	mscrM
+2134	ord	mscro
+2135	ord	aleph
+2136	ord	beth
+2137	ord	gimel
+2138	ord	daleth
+213C	ord	Bbbpi
+213D	ord	Bbbgamma
+213E	ord	BbbGamma
+213F	ord	BbbPi
+2140	op	Bbbsum
+2141	ord	Game
+2142	ord	sansLturned
+2143	ord	sansLmirrored
+2144	ord	Yup
+2145	ord	mitBbbD	prefix 3 0
+2146	ord	mitBbbd	prefix 3 0
+2147	ord	mitBbbe
+2148	ord	mitBbbi
+2149	ord	mitBbbj
+214A	ord	PropertyLine
+214B	ord	upand
+2190	rel	leftarrow	infix 5 5 s
+2191	rel	uparrow	infix 5 5 s
+2192	rel	rightarrow	infix 5 5 s
+2193	rel	downarrow	infix 5 5 s
+2194	rel	leftrightarrow	infix 5 5 s
+2195	rel	updownarrow	infix 5 5 s
+2196	rel	nwarrow	infix 5 5
+2197	rel	nearrow	infix 5 5
+2198	rel	searrow	infix 5 5
+2199	rel	swarrow	infix 5 5
+219A	rel	nleftarrow	infix 5 5 s
+219B	rel	nrightarrow	infix 5 5 s
+219C	rel	leftwavearrow	infix 5 5 s
+219D	rel	rightwavearrow	infix 5 5 s
+219E	rel	twoheadleftarrow	infix 5 5 s
+219F	rel	twoheaduparrow	infix 5 5 s
+21A0	rel	twoheadrightarrow	infix 5 5 s
+21A1	rel	twoheaddownarrow	infix 5 5 s
+21A2	rel	leftarrowtail	infix 5 5 s
+21A3	rel	rightarrowtail	infix 5 5 s
+21A4	rel	mapsfrom	infix 5 5 s
+21A5	rel	mapsup	infix 5 5 s
+21A6	rel	mapsto	infix 5 5 s
+21A7	rel	mapsdown	infix 5 5 s
+21A8	rel	updownarrowbar	infix 5 5 s
+21A9	rel	hookleftarrow	infix 5 5 s
+21AA	rel	hookrightarrow	infix 5 5 s
+21AB	rel	looparrowleft	infix 5 5 s
+21AC	rel	looparrowright	infix 5 5 s
+21AD	rel	leftrightsquigarrow	infix 5 5 s
+21AE	rel	nleftrightarrow	infix 5 5 s
+21AF	rel	downzigzagarrow	infix 5 5
+21B0	rel	Lsh	infix 5 5 s
+21B1	rel	Rsh	infix 5 5 s
+21B2	rel	Ldsh	infix 5 5 s
+21B3	rel	Rdsh	infix 5 5 s
+21B4	ord	linefeed	infix 5 5 s
+21B5	ord	carriagereturn	infix 5 5 s
+21B6	rel	curvearrowleft	infix 5 5
+21B7	rel	curvearrowright	infix 5 5
+21B8	ord	barovernorthwestarrow	infix 5 5
+21B9	ord	barleftarrowrightarrowbar	infix 5 5 s
+21BA	rel	acwopencirclearrow	infix 5 5
+21BB	rel	cwopencirclearrow	infix 5 5
+21BC	rel	leftharpoonup	infix 5 5 s
+21BD	rel	leftharpoondown	infix 5 5 s
+21BE	rel	upharpoonright	infix 5 5 s
+21BF	rel	upharpoonleft	infix 5 5 s
+21C0	rel	rightharpoonup	infix 5 5 s
+21C1	rel	rightharpoondown	infix 5 5 s
+21C2	rel	downharpoonright	infix 5 5 s
+21C3	rel	downharpoonleft	infix 5 5 s
+21C4	rel	rightleftarrows	infix 5 5 s
+21C5	rel	updownarrows	infix 5 5 s
+21C6	rel	leftrightarrows	infix 5 5 s
+21C7	rel	leftleftarrows	infix 5 5 s
+21C8	rel	upuparrows	infix 5 5 s
+21C9	rel	rightrightarrows	infix 5 5 s
+21CA	rel	downdownarrows	infix 5 5 s
+21CB	rel	leftrightharpoons	infix 5 5 s
+21CC	rel	rightleftharpoons	infix 5 5 s
+21CD	rel	nLeftarrow	infix 5 5 s
+21CE	rel	nLeftrightarrow	infix 5 5 s
+21CF	rel	nRightarrow	infix 5 5 s
+21D0	rel	Leftarrow	infix 5 5 s
+21D1	rel	Uparrow	infix 5 5 s
+21D2	rel	Rightarrow	infix 5 5 s
+21D3	rel	Downarrow	infix 5 5 s
+21D4	rel	Leftrightarrow	infix 5 5 s
+21D5	rel	Updownarrow	infix 5 5 s
+21D6	rel	Nwarrow	infix 5 5
+21D7	rel	Nearrow	infix 5 5
+21D8	rel	Searrow	infix 5 5
+21D9	rel	Swarrow	infix 5 5
+21DA	rel	Lleftarrow	infix 5 5 s
+21DB	rel	Rrightarrow	infix 5 5 s
+21DC	rel	leftsquigarrow	infix 5 5 s
+21DD	rel	rightsquigarrow	infix 5 5 s
+21DE	rel	nHuparrow	infix 5 5 s
+21DF	rel	nHdownarrow	infix 5 5 s
+21E0	rel	leftdasharrow	infix 5 5 s
+21E1	rel	updasharrow	infix 5 5 s
+21E2	rel	rightdasharrow	infix 5 5 s
+21E3	rel	downdasharrow	infix 5 5 s
+21E4	rel	barleftarrow	infix 5 5 s
+21E5	rel	rightarrowbar	infix 5 5 s
+21E6	rel	leftwhitearrow	infix 5 5 s
+21E7	rel	upwhitearrow	infix 5 5 s
+21E8	rel	rightwhitearrow	infix 5 5 s
+21E9	rel	downwhitearrow	infix 5 5 s
+21EA	rel	whitearrowupfrombar	infix 5 5 s
+21EB	rel	-	infix 5 5 s
+21EC	rel	-	infix 5 5 s
+21ED	rel	-	infix 5 5 s
+21EE	rel	-	infix 5 5 s
+21EF	rel	-	infix 5 5 s
+21F0	rel	-	infix 5 5 s
+21F1	rel	-	infix 5 5
+21F2	rel	-	infix 5 5
+21F3	rel	-	infix 5 5 s
+21F4	rel	circleonrightarrow	infix 5 5 s
+21F5	rel	downuparrows	infix 5 5 s
+21F6	rel	rightthreearrows	infix 5 5 s
+21F7	rel	nvleftarrow	infix 5 5 s
+21F8	rel	nvrightarrow	infix 5 5 s
+21F9	rel	nvleftrightarrow	infix 5 5 s
+21FA	rel	nVleftarrow	infix 5 5 s
+21FB	rel	nVrightarrow	infix 5 5 s
+21FC	rel	nVleftrightarrow	infix 5 5 s
+21FD	rel	leftarrowtriangle	infix 5 5 s
+21FE	rel	rightarrowtriangle	infix 5 5 s
+21FF	rel	leftrightarrowtriangle	infix 5 5 s
+2200	ord	forall	prefix 0 0
+2201	ord	complement	prefix 0 0
+2202	ord	partial	prefix 3 0
+2203	ord	exists	prefix 0 0
+2204	ord	nexists	prefix 0 0
+2205	ord	varnothing
+2206	ord	increment	infix 0 0
+2207	ord	nabla	prefix 0 0
+2208	rel	in	infix 5 5
+2209	rel	notin	infix 5 5
+220A	rel	smallin	infix 5 5
+220B	rel	ni	infix 5 5
+220C	rel	nni	infix 5 5
+220D	rel	smallni	infix 5 5
+220E	ord	QED
+220F	op	prod	prefix 3 3 lm
+2210	op	coprod	prefix 3 3 lm
+2211	op	sum	prefix 3 3 lm
+2212	bin	minus	prefix 0 0	infix 4 4
+2213	bin	mp	prefix 0 0	infix 4 4
+2214	bin	dotplus	infix 4 4
+2215	bin	divslash	infix 4 4
+2216	bin	setminus	infix 4 4
+2217	bin	ast	infix 3 3
+2218	bin	vysmwhtcircle	infix 3 3
+2219	bin	vysmblkcircle	infix 3 3
+221A	op	sqrt	prefix 3 0
+221B	op	cuberoot	prefix 3 0
+221C	op	fourthroot	prefix 3 0
+221D	rel	propto	infix 5 5
+221E	ord	infty
+221F	ord	rightangle	prefix 0 0
+2220	ord	angle	prefix 0 0
+2221	ord	measuredangle	prefix 0 0
+2222	ord	sphericalangle	prefix 0 0
+2223	rel	mid	infix 5 5
+2224	rel	nmid	infix 5 5
+2225	rel	parallel	infix 5 5
+2226	rel	nparallel	infix 5 5
+2227	bin	wedge	infix 4 4
+2228	bin	vee	infix 4 4
+2229	bin	cap	infix 4 4
+222A	bin	cup	infix 4 4
+222B	ord	int	prefix 3 3 l
+222C	ord	iint	prefix 3 3 l
+222D	ord	iiint	prefix 3 3 l
+222E	ord	oint	prefix 3 3 l
+222F	ord	oiint	prefix 3 3 l
+2230	ord	oiiint	prefix 3 3 l
+2231	ord	intclockwise	prefix 3 3 l
+2232	ord	varointclockwise	prefix 3 3 l
+2233	ord	ointctrclockwise	prefix 3 3 l
+2234	rel	therefore	prefix 0 0
+2235	rel	because	prefix 0 0
+2236	rel	mathratio	infix 4 4
+2237	rel	Colon	infix 5 5
+2238	bin	dotminus	infix 4 4
+2239	rel	dashcolon	infix 5 5
+223A	rel	dotsminusdots	infix 5 5
+223B	rel	kernelcontraction	infix 5 5
+223C	rel	sim	infix 5 5	prefix 0 0
+223D	rel	backsim	infix 5 5
+223E	bin	invlazys	infix 5 5
+223F	ord	sinewave
+2240	bin	wr	infix 3 3
+2241	rel	nsim	infix 5 5
+2242	rel	eqsim	infix 5 5
+2243	rel	simeq	infix 5 5
+2244	rel	nsime	infix 5 5
+2245	rel	cong	infix 5 5
+2246	rel	simneqq	infix 5 5
+2247	rel	ncong	infix 5 5
+2248	rel	approx	infix 5 5
+2249	rel	napprox	infix 5 5
+224A	rel	approxeq	infix 5 5
+224B	rel	approxident	infix 5 5
+224C	rel	backcong	infix 5 5
+224D	rel	asymp	infix 5 5
+224E	rel	Bumpeq	infix 5 5
+224F	rel	bumpeq	infix 5 5
+2250	rel	doteq	infix 5 5
+2251	rel	Doteq	infix 5 5
+2252	rel	fallingdotseq	infix 5 5
+2253	rel	risingdotseq	infix 5 5
+2254	rel	coloneq	infix 5 5
+2255	rel	eqcolon	infix 5 5
+2256	rel	eqcirc	infix 5 5
+2257	rel	circeq	infix 5 5
+2258	rel	arceq	infix 5 5
+2259	rel	wedgeq	infix 5 5
+225A	rel	veeeq	infix 5 5
+225B	rel	stareq	infix 5 5
+225C	rel	triangleq	infix 5 5
+225D	rel	eqdef	infix 5 5
+225E	rel	measeq	infix 5 5
+225F	rel	questeq	infix 5 5
+2260	rel	ne	infix 5 5
+2261	rel	equiv	infix 5 5
+2262	rel	nequiv	infix 5 5
+2263	rel	Equiv	infix 5 5
+2264	rel	leq	infix 5 5
+2265	rel	geq	infix 5 5
+2266	rel	leqq	infix 5 5
+2267	rel	geqq	infix 5 5
+2268	rel	lneqq	infix 5 5
+2269	rel	gneqq	infix 5 5
+226A	rel	ll	infix 5 5
+226B	rel	gg	infix 5 5
+226C	rel	between	infix 5 5
+226D	rel	nasymp	infix 5 5
+226E	rel	nless	infix 5 5
+226F	rel	ngtr	infix 5 5
+2270	rel	nleq	infix 5 5
+2271	rel	ngeq	infix 5 5
+2272	rel	lesssim	infix 5 5
+2273	rel	gtrsim	infix 5 5
+2274	rel	nlesssim	infix 5 5
+2275	rel	ngtrsim	infix 5 5
+2276	rel	lessgtr	infix 5 5
+2277	rel	gtrless	infix 5 5
+2278	rel	nlessgtr	infix 5 5
+2279	rel	ngtrless	infix 5 5
+227A	rel	prec	infix 5 5
+227B	rel	succ	infix 5 5
+227C	rel	preccurlyeq	infix 5 5
+227D	rel	succcurlyeq	infix 5 5
+227E	rel	precsim	infix 5 5
+227F	rel	succsim	infix 5 5
+2280	rel	nprec	infix 5 5
+2281	rel	nsucc	infix 5 5
+2282	rel	subset	infix 5 5
+2283	rel	supset	infix 5 5
+2284	rel	nsubset	infix 5 5
+2285	rel	nsupset	infix 5 5
+2286	rel	subseteq	infix 5 5
+2287	rel	supseteq	infix 5 5
+2288	rel	nsubseteq	infix 5 5
+2289	rel	nsupseteq	infix 5 5
+228A	rel	subsetneq	infix 5 5
+228B	rel	supsetneq	infix 5 5
+228C	bin	cupleftarrow	infix 4 4
+228D	bin	cupdot	infix 4 4
+228E	bin	uplus	infix 4 4
+228F	rel	sqsubset	infix 5 5
+2290	rel	sqsupset	infix 5 5
+2291	rel	sqsubseteq	infix 5 5
+2292	rel	sqsupseteq	infix 5 5
+2293	bin	sqcap	infix 4 4
+2294	bin	sqcup	infix 4 4
+2295	bin	oplus	infix 4 4
+2296	bin	ominus	infix 4 4
+2297	bin	otimes	infix 3 3
+2298	bin	oslash	infix 4 4
+2299	bin	odot	infix 3 3
+229A	bin	circledcirc	infix 3 3
+229B	bin	circledast	infix 3 3
+229C	bin	circledequal	infix 5 5
+229D	bin	circleddash	infix 4 4
+229E	bin	boxplus	infix 4 4
+229F	bin	boxminus	infix 4 4
+22A0	bin	boxtimes	infix 3 3
+22A1	bin	boxdot	infix 3 3
+22A2	rel	vdash	infix 5 5
+22A3	rel	dashv	infix 5 5
+22A4	ord	top
+22A5	rel	bot
+22A6	rel	assert	infix 5 5
+22A7	rel	models	infix 5 5
+22A8	rel	vDash	infix 5 5
+22A9	rel	Vdash	infix 5 5
+22AA	rel	Vvdash	infix 5 5
+22AB	rel	VDash	infix 5 5
+22AC	rel	nvdash	infix 5 5
+22AD	rel	nvDash	infix 5 5
+22AE	rel	nVdash	infix 5 5
+22AF	rel	nVDash	infix 5 5
+22B0	rel	prurel	infix 5 5
+22B1	rel	scurel	infix 5 5
+22B2	rel	vartriangleleft	infix 5 5
+22B3	rel	vartriangleright	infix 5 5
+22B4	rel	trianglelefteq	infix 5 5
+22B5	rel	trianglerighteq	infix 5 5
+22B6	rel	origof	infix 5 5
+22B7	rel	imageof	infix 5 5
+22B8	rel	multimap	infix 5 5
+22B9	bin	hermitmatrix
+22BA	bin	intercal	infix 3 3
+22BB	bin	veebar	infix 4 4
+22BC	bin	barwedge	infix 4 4
+22BD	bin	barvee	infix 4 4
+22BE	ord	measuredrightangle	prefix 0 0
+22BF	ord	varlrtriangle	prefix 0 0
+22C0	op	bigwedge	prefix 3 3 lm
+22C1	op	bigvee	prefix 3 3 lm
+22C2	op	bigcap	prefix 3 3 lm
+22C3	op	bigcup	prefix 3 3 lm
+22C4	bin	smwhtdiamond	infix 3 3
+22C5	bin	cdot	infix 3 3
+22C6	bin	star	infix 3 3
+22C7	bin	divideontimes	infix 3 3
+22C8	rel	bowtie	infix 5 5
+22C9	bin	ltimes	infix 3 3
+22CA	bin	rtimes	infix 3 3
+22CB	bin	leftthreetimes	infix 3 3
+22CC	bin	rightthreetimes	infix 3 3
+22CD	rel	backsimeq	infix 5 5
+22CE	bin	curlyvee	infix 4 4
+22CF	bin	curlywedge	infix 4 4
+22D0	rel	Subset	infix 5 5
+22D1	rel	Supset	infix 5 5
+22D2	bin	Cap	infix 4 4
+22D3	bin	Cup	infix 4 4
+22D4	rel	pitchfork	infix 5 5
+22D5	rel	equalparallel	infix 5 5
+22D6	rel	lessdot	infix 5 5
+22D7	rel	gtrdot	infix 5 5
+22D8	rel	lll	infix 5 5
+22D9	rel	ggg	infix 5 5
+22DA	rel	lesseqgtr	infix 5 5
+22DB	rel	gtreqless	infix 5 5
+22DC	rel	eqless	infix 5 5
+22DD	rel	eqgtr	infix 5 5
+22DE	rel	curlyeqprec	infix 5 5
+22DF	rel	curlyeqsucc	infix 5 5
+22E0	rel	npreccurlyeq	infix 5 5
+22E1	rel	nsucccurlyeq	infix 5 5
+22E2	rel	nsqsubseteq	infix 5 5
+22E3	rel	nsqsupseteq	infix 5 5
+22E4	rel	sqsubsetneq	infix 5 5
+22E5	rel	sqsupsetneq	infix 5 5
+22E6	rel	lnsim	infix 5 5
+22E7	rel	gnsim	infix 5 5
+22E8	rel	precnsim	infix 5 5
+22E9	rel	succnsim	infix 5 5
+22EA	rel	nvartriangleleft	infix 5 5
+22EB	rel	nvartriangleright	infix 5 5
+22EC	rel	ntrianglelefteq	infix 5 5
+22ED	rel	ntrianglerighteq	infix 5 5
+22EE	rel	vdots
+22EF	rel	unicodecdots
+22F0	rel	adots
+22F1	rel	ddots
+22F2	rel	disin	infix 5 5
+22F3	rel	varisins	infix 5 5
+22F4	rel	isins	infix 5 5
+22F5	rel	isindot	infix 5 5
+22F6	rel	varisinobar	infix 5 5
+22F7	rel	isinobar	infix 5 5
+22F8	rel	isinvb	infix 5 5
+22F9	rel	isinE	infix 5 5
+22FA	rel	nisd	infix 5 5
+22FB	rel	varnis	infix 5 5
+22FC	rel	nis	infix 5 5
+22FD	rel	varniobar	infix 5 5
+22FE	rel	niobar	infix 5 5
+22FF	rel	bagmember	infix 5 5
+2300	ord	diameter
+2301	ord	-	infix 5 5
+2302	ord	house
+2305	bin	varbarwedge	infix 3 3
+2306	bin	vardoublebarwedge	infix 3 3
+2308	open	lceil	prefix 0 0 s
+2309	close	rceil	postfix 0 0 s
+230A	open	lfloor	prefix 0 0 s
+230B	close	rfloor	postfix 0 0 s
+2310	ord	invnot	prefix 0 0
+2311	ord	sqlozenge
+2312	ord	profline
+2313	ord	profsurf
+2317	ord	viewdata
+2319	ord	turnednot	prefix 0 0
+231C	open	ulcorner
+231D	close	urcorner
+231E	open	llcorner
+231F	close	lrcorner
+2320	ord	inttop
+2321	ord	intbottom
+2322	rel	frown	postfix 0 0 s
+2323	rel	smile	postfix 0 0 s
+2329	ord	-	prefix 0 0 s
+232A	ord	-	postfix 0 0 s
+232C	ord	varhexagonlrbonds
+2332	ord	conictaper
+2336	ord	topbot
+233D	bin	obar
+233F	rel	APLnotslash
+2340	ord	APLnotbackslash
+2353	ord	APLboxupcaret
+2370	ord	APLboxquestion
+237C	rel	rangledownzigzagarrow	infix 5 5
+238B	ord	-	infix 5 5
+2394	ord	hexagon
+239B	ord	lparenuend
+239C	ord	lparenextender
+239D	ord	lparenlend
+239E	ord	rparenuend
+239F	ord	rparenextender
+23A0	ord	rparenlend
+23A1	ord	lbrackuend
+23A2	ord	lbrackextender
+23A3	ord	lbracklend
+23A4	ord	rbrackuend
+23A5	ord	rbrackextender
+23A6	ord	rbracklend
+23A7	ord	lbraceuend
+23A8	ord	lbracemid
+23A9	ord	lbracelend
+23AA	ord	vbraceextender
+23AB	ord	rbraceuend
+23AC	ord	rbracemid
+23AD	ord	rbracelend
+23AE	ord	intextender
+23AF	ord	harrowextender
+23B0	rel	lmoustache
+23B1	rel	rmoustache
+23B2	ord	sumtop
+23B3	ord	sumbottom
+23B4	ord	overbracket	postfix 0 0 s
+23B5	ord	underbracket	postfix 0 0 s
+23B6	ord	bbrktbrk
+23B7	ord	sqrtbottom
+23B8	ord	lvboxline
+23B9	ord	rvboxline
+23CD	ord	-	postfix 0 0
+23CE	ord	varcarriagereturn
+23DC	ord	overparen	postfix 0 0 s
+23DD	ord	underparen	postfix 0 0 s
+23DE	ord	overbrace	postfix 0 0 s
+23DF	ord	underbrace	postfix 0 0 s
+23E0	ord	obrbrak	postfix 0 0 s
+23E1	ord	ubrbrak	postfix 0 0 s
+23E2	ord	trapezium
+23E3	ord	benzenr
+23E4	ord	strns
+23E5	ord	fltns
+23E6	ord	accurrent
+23E7	ord	elinters
+2422	ord	blanksymbol
+2423	ord	mathvisiblespace
+2506	ord	bdtriplevdash
+2580	ord	blockuphalf
+2584	ord	blocklowhalf
+2588	ord	blockfull
+258C	ord	blocklefthalf
+2590	ord	blockrighthalf
+2591	ord	blockqtrshaded
+2592	ord	blockhalfshaded
+2593	ord	blockthreeqtrshaded
+25A0	ord	mdlgblksquare
+25A1	ord	mdlgwhtsquare
+25A2	ord	squoval
+25A3	ord	blackinwhitesquare
+25A4	ord	squarehfill
+25A5	ord	squarevfill
+25A6	ord	squarehvfill
+25A7	ord	squarenwsefill
+25A8	ord	squareneswfill
+25A9	ord	squarecrossfill
+25AA	ord	smblksquare
+25AB	ord	smwhtsquare
+25AC	ord	hrectangleblack
+25AD	ord	hrectangle
+25AE	ord	vrectangleblack
+25AF	ord	vrectangle
+25B0	ord	parallelogramblack
+25B1	ord	parallelogram
+25B2	bin	bigblacktriangleup
+25B3	bin	bigtriangleup
+25B4	bin	blacktriangle
+25B5	bin	vartriangle
+25B6	bin	blacktriangleright
+25B7	bin	triangleright
+25B8	bin	smallblacktriangleright
+25B9	bin	smalltriangleright
+25BA	ord	blackpointerright
+25BB	ord	whitepointerright
+25BC	bin	bigblacktriangledown
+25BD	bin	bigtriangledown
+25BE	bin	blacktriangledown
+25BF	bin	triangledown
+25C0	bin	blacktriangleleft
+25C1	bin	triangleleft
+25C2	bin	smallblacktriangleleft
+25C3	bin	smalltriangleleft
+25C4	bin	blackpointerleft
+25C5	bin	whitepointerleft
+25C6	ord	mdlgblkdiamond
+25C7	ord	mdlgwhtdiamond
+25C8	ord	blackinwhitediamond
+25C9	ord	fisheye
+25CA	bin	mdlgwhtlozenge
+25CB	bin	mdlgwhtcircle
+25CC	ord	dottedcircle
+25CD	ord	circlevertfill
+25CE	ord	bullseye
+25CF	ord	mdlgblkcircle
+25D0	ord	circlelefthalfblack
+25D1	ord	circlerighthalfblack
+25D2	ord	circlebottomhalfblack
+25D3	ord	circletophalfblack
+25D4	ord	circleurquadblack
+25D5	ord	blackcircleulquadwhite
+25D6	ord	blacklefthalfcircle
+25D7	ord	blackrighthalfcircle
+25D8	ord	inversebullet
+25D9	ord	inversewhitecircle
+25DA	ord	invwhiteupperhalfcircle
+25DB	ord	invwhitelowerhalfcircle
+25DC	ord	ularc
+25DD	ord	urarc
+25DE	ord	lrarc
+25DF	ord	llarc
+25E0	ord	topsemicircle
+25E1	ord	botsemicircle
+25E2	ord	lrblacktriangle
+25E3	ord	llblacktriangle
+25E4	ord	ulblacktriangle
+25E5	ord	urblacktriangle
+25E6	bin	smwhtcircle
+25E7	ord	squareleftblack
+25E8	ord	squarerightblack
+25E9	ord	squareulblack
+25EA	ord	squarelrblack
+25EB	bin	boxbar
+25EC	bin	trianglecdot
+25ED	ord	triangleleftblack
+25EE	ord	trianglerightblack
+25EF	ord	lgwhtcircle
+25F0	ord	squareulquad
+25F1	ord	squarellquad
+25F2	ord	squarelrquad
+25F3	ord	squareurquad
+25F4	ord	circleulquad
+25F5	ord	circlellquad
+25F6	ord	circlelrquad
+25F7	ord	circleurquad
+25F8	bin	ultriangle
+25F9	bin	urtriangle
+25FA	bin	lltriangle
+25FB	bin	mdwhtsquare
+25FC	bin	mdblksquare
+25FD	bin	mdsmwhtsquare
+25FE	bin	mdsmblksquare
+25FF	bin	lrtriangle
+2605	bin	bigstar
+2606	bin	bigwhitestar
+2609	ord	astrosun
+2621	ord	danger
+263B	ord	blacksmiley
+263C	ord	sun
+263D	ord	rightmoon
+263E	ord	leftmoon
+2640	ord	female
+2642	ord	male
+2660	ord	spadesuit
+2661	ord	heartsuit
+2662	ord	diamondsuit
+2663	ord	clubsuit
+2664	ord	varspadesuit
+2665	ord	varheartsuit
+2666	ord	vardiamondsuit
+2667	ord	varclubsuit
+2669	ord	quarternote
+266A	ord	eighthnote
+266B	ord	twonotes
+266D	ord	flat
+266E	ord	natural
+266F	ord	sharp
+267E	ord	acidfree
+2680	ord	dicei
+2681	ord	diceii
+2682	ord	diceiii
+2683	ord	diceiv
+2684	ord	dicev
+2685	ord	dicevi
+2686	ord	circledrightdot
+2687	ord	circledtwodots
+2688	ord	blackcircledrightdot
+2689	ord	blackcircledtwodots
+26A5	ord	Hermaphrodite
+26AA	ord	mdwhtcircle
+26AB	ord	mdblkcircle
+26AC	ord	mdsmwhtcircle
+26B2	ord	neuter
+2713	ord	checkmark
+2720	ord	maltese
+272A	ord	circledstar
+2736	ord	varstar
+273D	ord	dingasterisk
+2772	open	lbrbrak	prefix 0 0 s
+2773	close	rbrbrak	postfix 0 0 s
+2794	ord	-	infix 5 5 s
+2795	ord	-	prefix 0 0	infix 4 4
+2796	ord	-	prefix 0 0	infix 4 4
+2797	ord	-	infix 4 4
+2798	ord	-	infix 5 5
+2799	ord	-	infix 5 5 s
+279A	ord	-	infix 5 5
+279B	ord	draftingarrow	infix 5 5 s
+279C	ord	-	infix 5 5 s
+279D	ord	-	infix 5 5 s
+279E	ord	-	infix 5 5 s
+279F	ord	-	infix 5 5 s
+27A0	ord	-	infix 5 5 s
+27A1	ord	-	infix 5 5 s
+27A5	ord	-	infix 5 5 s
+27A6	ord	-	infix 5 5 s
+27A7	ord	-	infix 5 5
+27A8	ord	-	infix 5 5 s
+27A9	ord	-	infix 5 5 s
+27AA	ord	-	infix 5 5 s
+27AB	ord	-	infix 5 5 s
+27AC	ord	-	infix 5 5 s
+27AD	ord	-	infix 5 5 s
+27AE	ord	-	infix 5 5 s
+27AF	ord	-	infix 5 5 s
+27B1	ord	-	infix 5 5 s
+27B2	ord	-	infix 5 5
+27B3	ord	-	infix 5 5 s
+27B4	ord	-	infix 5 5
+27B5	ord	-	infix 5 5 s
+27B6	ord	-	infix 5 5
+27B7	ord	-	infix 5 5
+27B8	ord	-	infix 5 5 s
+27B9	ord	-	infix 5 5
+27BA	ord	-	infix 5 5 s
+27BB	ord	-	infix 5 5 s
+27BC	ord	-	infix 5 5 s
+27BD	ord	-	infix 5 5 s
+27BE	ord	-	infix 5 5 s
+27C0	ord	threedangle	prefix 0 0
+27C1	ord	whiteinwhitetriangle
+27C2	rel	perp	infix 5 5
+27C3	rel	subsetcirc
+27C4	rel	supsetcirc
+27C5	rel	lbag
+27C6	rel	rbag
+27C7	rel	veedot
+27C8	rel	bsolhsub
+27C9	rel	suphsol
+27CA	rel	-
+27CB	rel	diagup	infix 3 3
+27CC	op	longdivision
+27CD	rel	diagdown	infix 3 3
+27CE	bin	-
+27CF	bin	-
+27D0	ord	diamondcdot
+27D1	bin	wedgedot
+27D2	rel	upin
+27D3	rel	pullback
+27D4	rel	pushout
+27D5	op	leftouterjoin
+27D6	op	rightouterjoin
+27D7	op	fullouterjoin
+27D8	op	bigbot
+27D9	op	bigtop
+27DA	rel	DashVDash
+27DB	rel	dashVdash
+27DC	rel	multimapinv
+27DD	rel	vlongdash
+27DE	rel	longdashv
+27DF	rel	cirbot
+27E0	bin	lozengeminus
+27E1	bin	concavediamond
+27E2	bin	concavediamondtickleft
+27E3	bin	concavediamondtickright
+27E4	bin	whitesquaretickleft
+27E5	bin	whitesquaretickright
+27E6	open	lBrack	prefix 0 0 s
+27E7	close	rBrack	postfix 0 0 s
+27E8	open	langle	prefix 0 0 s
+27E9	close	rangle	postfix 0 0 s
+27EA	open	lAngle	prefix 0 0 s
+27EB	close	rAngle	postfix 0 0 s
+27EC	open	Lbrbrak	prefix 0 0 s
+27ED	close	Rbrbrak	postfix 0 0 s
+27EE	open	lgroup	prefix 0 0 s
+27EF	close	rgroup	postfix 0 0 s
+27F0	rel	UUparrow	infix 5 5 s
+27F1	rel	DDownarrow	infix 5 5 s
+27F2	rel	acwgapcirclearrow	infix 5 5
+27F3	rel	cwgapcirclearrow	infix 5 5
+27F4	rel	rightarrowonoplus	infix 5 5 s
+27F5	rel	longleftarrow	infix 5 5 s
+27F6	rel	longrightarrow	infix 5 5 s
+27F7	rel	longleftrightarrow	infix 5 5 s
+27F8	rel	Longleftarrow	infix 5 5 s
+27F9	rel	Longrightarrow	infix 5 5 s
+27FA	rel	Longleftrightarrow	infix 5 5 s
+27FB	rel	longmapsfrom	infix 5 5 s
+27FC	rel	longmapsto	infix 5 5 s
+27FD	rel	Longmapsfrom	infix 5 5 s
+27FE	rel	Longmapsto	infix 5 5 s
+27FF	rel	longrightsquigarrow	infix 5 5 s
+2900	rel	nvtwoheadrightarrow	infix 5 5 s
+2901	rel	nVtwoheadrightarrow	infix 5 5 s
+2902	rel	nvLeftarrow	infix 5 5 s
+2903	rel	nvRightarrow	infix 5 5 s
+2904	rel	nvLeftrightarrow	infix 5 5 s
+2905	rel	twoheadmapsto	infix 5 5 s
+2906	rel	Mapsfrom	infix 5 5 s
+2907	rel	Mapsto	infix 5 5 s
+2908	rel	downarrowbarred	infix 5 5 s
+2909	rel	uparrowbarred	infix 5 5 s
+290A	rel	Uuparrow	infix 5 5 s
+290B	rel	Ddownarrow	infix 5 5 s
+290C	rel	leftbkarrow	infix 5 5 s
+290D	rel	rightbkarrow	infix 5 5 s
+290E	rel	leftdbkarrow	infix 5 5 s
+290F	rel	dbkarrow	infix 5 5 s
+2910	rel	drbkarrow	infix 5 5 s
+2911	rel	rightdotarrow	infix 5 5 s
+2912	rel	baruparrow	infix 5 5 s
+2913	rel	downarrowbar	infix 5 5 s
+2914	rel	nvrightarrowtail	infix 5 5 s
+2915	rel	nVrightarrowtail	infix 5 5 s
+2916	rel	twoheadrightarrowtail	infix 5 5 s
+2917	rel	nvtwoheadrightarrowtail	infix 5 5 s
+2919	rel	lefttail	infix 5 5 s
+291A	rel	righttail	infix 5 5 s
+291B	rel	leftdbltail	infix 5 5 s
+291C	rel	rightdbltail	infix 5 5 s
+291D	rel	diamondleftarrow	infix 5 5 s
+291E	rel	rightarrowdiamond	infix 5 5 s
+291F	rel	diamondleftarrowbar	infix 5 5 s
+2920	rel	barrightarrowdiamond	infix 5 5 s
+2921	rel	nwsearrow	infix 5 5
+2922	rel	neswarrow	infix 5 5
+2923	rel	hknwarrow	infix 5 5
+2924	rel	hknearrow	infix 5 5
+2925	rel	hksearrow	infix 5 5
+2926	rel	hkswarrow	infix 5 5
+2927	rel	tona	infix 5 5
+2928	rel	toea	infix 5 5
+2929	rel	tosa	infix 5 5
+292A	rel	towa	infix 5 5
+292B	rel	rdiagovfdiag	infix 5 5
+292C	rel	fdiagovrdiag	infix 5 5
+292D	rel	seovnearrow	infix 5 5
+292E	rel	neovsearrow	infix 5 5
+292F	rel	fdiagovnearrow	infix 5 5
+2930	rel	rdiagovsearrow	infix 5 5
+2931	rel	neovnwarrow	infix 5 5
+2932	rel	nwovnearrow	infix 5 5
+2933	rel	rightcurvedarrow	infix 5 5
+2934	rel	uprightcurvearrow	infix 5 5 s
+2935	rel	downrightcurvedarrow	infix 5 5 s
+2936	rel	leftdowncurvedarrow	infix 5 5 s
+2937	rel	rightdowncurvedarrow	infix 5 5 s
+2938	rel	cwrightarcarrow	infix 5 5
+2939	rel	acwleftarcarrow	infix 5 5
+293A	rel	acwoverarcarrow	infix 5 5
+293B	rel	acwunderarcarrow	infix 5 5
+293C	rel	curvearrowrightminus	infix 5 5
+293D	rel	curvearrowleftplus	infix 5 5
+293E	rel	cwundercurvearrow	infix 5 5
+293F	rel	ccwundercurvearrow	infix 5 5
+2940	rel	acwcirclearrow	infix 5 5
+2941	rel	cwcirclearrow	infix 5 5
+2942	rel	rightarrowshortleftarrow	infix 5 5 s
+2943	rel	leftarrowshortrightarrow	infix 5 5 s
+2944	rel	shortrightarrowleftarrow	infix 5 5 s
+2945	rel	rightarrowplus	infix 5 5 s
+2946	rel	leftarrowplus	infix 5 5 s
+2947	rel	rightarrowx	infix 5 5 s
+2948	rel	leftrightarrowcircle	infix 5 5 s
+2949	rel	twoheaduparrowcircle	infix 5 5 s
+294A	rel	leftrightharpoonupdown	infix 5 5 s
+294B	rel	leftrightharpoondownup	infix 5 5 s
+294C	rel	updownharpoonrightleft	infix 5 5 s
+294D	rel	updownharpoonleftright	infix 5 5 s
+294E	rel	leftrightharpoonupup	infix 5 5 s
+294F	rel	updownharpoonrightright	infix 5 5 s
+2950	rel	leftrightharpoondowndown	infix 5 5 s
+2951	rel	updownharpoonleftleft	infix 5 5 s
+2952	rel	barleftharpoonup	infix 5 5 s
+2953	rel	rightharpoonupbar	infix 5 5 s
+2954	rel	barupharpoonright	infix 5 5 s
+2955	rel	downharpoonrightbar	infix 5 5 s
+2956	rel	barleftharpoondown	infix 5 5 s
+2957	rel	rightharpoondownbar	infix 5 5 s
+2958	rel	barupharpoonleft	infix 5 5 s
+2959	rel	downharpoonleftbar	infix 5 5 s
+295A	rel	leftharpoonupbar	infix 5 5 s
+295B	rel	barrightharpoonup	infix 5 5 s
+295C	rel	upharpoonrightbar	infix 5 5 s
+295D	rel	bardownharpoonright	infix 5 5 s
+295E	rel	leftharpoondownbar	infix 5 5 s
+295F	rel	barrightharpoondown	infix 5 5 s
+2960	rel	upharpoonleftbar	infix 5 5 s
+2961	rel	bardownharpoonleft	infix 5 5 s
+296A	rel	leftharpoonupdash	infix 5 5 s
+296B	rel	dashleftharpoondown	infix 5 5 s
+296C	rel	rightharpoonupdash	infix 5 5 s
+296D	rel	dashrightharpoondown	infix 5 5 s
+2970	rel	rightimply	infix 5 5 s
+2971	rel	equalrightarrow	infix 5 5 s
+2972	rel	similarrightarrow	infix 5 5 s
+2973	rel	leftarrowsimilar	infix 5 5 s
+2974	rel	rightarrowsimilar	infix 5 5 s
+2975	rel	rightarrowapprox	infix 5 5 s
+2976	rel	ltlarr	infix 5 5
+2977	rel	leftarrowless	infix 5 5
+2978	rel	gtrarr	infix 5 5
+2979	rel	subrarr	infix 5 5
+297A	rel	leftarrowsubset	infix 5 5
+297B	rel	suplarr	infix 5 5
+297C	rel	leftfishtail	infix 5 5 s
+297D	rel	rightfishtail	infix 5 5 s
+297E	rel	upfishtail	infix 5 5 s
+297F	rel	downfishtail	infix 5 5 s
+2980	ord	Vvert	prefix 0 0 s	postfix 0 0 s
+2981	ord	mdsmblkcircle	infix 5 5
+2982	ord	typecolon	infix 5 5
+2983	open	lBrace	prefix 0 0 s
+2984	close	rBrace	postfix 0 0 s
+2985	open	lParen	prefix 0 0 s
+2986	close	rParen	postfix 0 0 s
+2987	open	llparenthesis	prefix 0 0 s
+2988	close	rrparenthesis	postfix 0 0 s
+2989	open	llangle	prefix 0 0 s
+298A	close	rrangle	postfix 0 0 s
+298B	open	lbrackubar	prefix 0 0 s
+298C	close	rbrackubar	postfix 0 0 s
+298D	open	lbrackultick	prefix 0 0 s
+298E	close	rbracklrtick	postfix 0 0 s
+298F	open	lbracklltick	prefix 0 0 s
+2990	close	rbrackurtick	postfix 0 0 s
+2991	open	langledot	prefix 0 0 s
+2992	close	rangledot	postfix 0 0 s
+2993	open	lparenless	prefix 0 0 s
+2994	close	rparengtr	postfix 0 0 s
+2995	open	Lparengtr	prefix 0 0 s
+2996	close	Rparenless	postfix 0 0 s
+2997	open	lblkbrbrak	prefix 0 0 s
+2998	close	rblkbrbrak	postfix 0 0 s
+2999	ord	fourvdots	prefix 0 0 s	postfix 0 0 s
+299A	ord	vzigzag
+299B	ord	measuredangleleft	prefix 0 0
+299C	ord	rightanglesqr	prefix 0 0
+299D	ord	rightanglemdot	prefix 0 0
+299E	ord	angles	prefix 0 0
+299F	ord	angdnr	prefix 0 0
+29A0	ord	gtlpar	prefix 0 0
+29A1	ord	sphericalangleup	prefix 0 0
+29A2	ord	turnangle	prefix 0 0
+29A3	ord	revangle	prefix 0 0
+29A4	ord	angleubar	prefix 0 0
+29A5	ord	revangleubar	prefix 0 0
+29A6	ord	wideangledown	prefix 0 0
+29A7	ord	wideangleup	prefix 0 0
+29A8	ord	measanglerutone	prefix 0 0
+29A9	ord	measanglelutonw	prefix 0 0
+29AB	ord	measangleldtosw	prefix 0 0
+29AC	ord	measangleurtone	prefix 0 0
+29AD	ord	measangleultonw	prefix 0 0
+29AF	ord	measangledltosw	prefix 0 0
+29B0	ord	revemptyset
+29B1	ord	emptysetobar
+29B2	ord	emptysetocirc
+29B3	ord	emptysetoarr
+29B4	ord	emptysetoarrl
+29B5	ord	circlehbar
+29B6	bin	circledvert	infix 5 5
+29B7	bin	circledparallel	infix 5 5
+29B8	bin	obslash	infix 4 4
+29B9	bin	operp	infix 5 5
+29BA	ord	obot
+29BB	ord	olcross
+29BC	ord	odotslashdot	infix 4 4
+29BD	ord	uparrowoncircle
+29BE	ord	circledwhitebullet
+29BF	ord	circledbullet
+29C0	bin	olessthan	infix 5 5
+29C1	bin	ogreaterthan	infix 5 5
+29C2	ord	cirscir
+29C3	ord	cirE
+29C4	bin	boxdiag	infix 4 4
+29C5	bin	boxbslash	infix 4 4
+29C6	bin	boxast	infix 3 3
+29C7	bin	boxcircle	infix 3 3
+29C8	bin	boxbox	infix 3 3
+29C9	ord	boxonbox
+29CA	ord	triangleodot
+29CB	ord	triangleubar
+29CC	ord	triangles
+29CD	ord	triangleserifs
+29CE	rel	rtriltri	infix 5 5
+29CF	rel	ltrivb	infix 5 5
+29D0	rel	vbrtri	infix 5 5
+29D1	rel	lfbowtie	infix 5 5
+29D2	rel	rfbowtie	infix 5 5
+29D3	rel	fbowtie	infix 5 5
+29D4	rel	lftimes	infix 3 3
+29D5	rel	rftimes	infix 3 3
+29D6	bin	hourglass	infix 3 3
+29D7	bin	blackhourglass	infix 3 3
+29D8	open	lvzigzag	prefix 0 0 s
+29D9	close	rvzigzag	postfix 0 0 s
+29DA	open	Lvzigzag	prefix 0 0 s
+29DB	close	Rvzigzag	postfix 0 0 s
+29DC	ord	iinfin
+29DD	ord	tieinfty
+29DE	ord	nvinfty
+29DF	rel	dualmap	infix 5 5
+29E0	ord	laplac
+29E1	rel	lrtriangleeq	infix 5 5
+29E2	bin	shuffle	infix 3 3
+29E3	rel	eparsl	infix 5 5
+29E4	rel	smeparsl	infix 5 5
+29E5	rel	eqvparsl	infix 5 5
+29E6	rel	gleichstark	infix 5 5
+29E7	ord	thermod
+29E8	ord	downtriangleleftblack
+29E9	ord	downtrianglerightblack
+29EA	ord	blackdiamonddownarrow
+29EB	bin	mdlgblklozenge
+29EC	ord	circledownarrow
+29ED	ord	blackcircledownarrow
+29EE	ord	errbarsquare
+29EF	ord	errbarblacksquare
+29F0	ord	errbardiamond
+29F1	ord	errbarblackdiamond
+29F2	ord	errbarcircle
+29F3	ord	errbarblackcircle
+29F4	rel	ruledelayed	infix 5 5
+29F5	bin	reversesolidus	infix 4 4
+29F6	bin	dsol	infix 4 4
+29F7	bin	rsolbar	infix 4 4
+29F8	op	xsol	infix 4 4
+29F9	op	xbsol	infix 4 4
+29FA	bin	doubleplus	infix 4 4
+29FB	bin	tripleplus	infix 4 4
+29FC	open	lcurvyangle	prefix 0 0 s
+29FD	close	rcurvyangle	postfix 0 0 s
+29FE	bin	tplus
+29FF	bin	tminus
+2A00	op	bigodot	prefix 3 3 lm
+2A01	op	bigoplus	prefix 3 3 lm
+2A02	op	bigotimes	prefix 3 3 lm
+2A03	op	bigcupdot	prefix 3 3 lm
+2A04	op	biguplus	prefix 3 3 lm
+2A05	op	bigsqcap	prefix 3 3 lm
+2A06	op	bigsqcup	prefix 3 3 lm
+2A07	op	conjquant	prefix 3 3 lm
+2A08	op	disjquant	prefix 3 3 lm
+2A09	op	bigtimes	prefix 3 3 lm
+2A0A	op	modtwosum	prefix 3 3 lm
+2A0B	ord	sumint	prefix 3 3 l
+2A0C	ord	iiiint	prefix 3 3 l
+2A0D	ord	intbar	prefix 3 3 l
+2A0E	ord	intBar	prefix 3 3 l
+2A0F	ord	fint	prefix 3 3 l
+2A10	op	cirfnint	prefix 3 3 l
+2A11	ord	awint	prefix 3 3 l
+2A12	ord	rppolint	prefix 3 3 l
+2A13	ord	scpolint	prefix 3 3 l
+2A14	ord	npolint	prefix 3 3 l
+2A15	ord	pointint	prefix 3 3 l
+2A16	ord	sqint	prefix 3 3 l
+2A17	ord	intlarhk	prefix 3 3 l
+2A18	ord	intx	prefix 3 3 l
+2A19	ord	intcap	prefix 3 3 l
+2A1A	ord	intcup	prefix 3 3 l
+2A1B	ord	upint	prefix 3 3 l
+2A1C	ord	lowint	prefix 3 3 l
+2A1D	op	Join	infix 3 3	prefix 3 3 lm
+2A1E	op	bigtriangleleft	infix 3 3	prefix 3 3 lm
+2A1F	op	zcmp	infix 4 4
+2A20	op	zpipe	infix 4 4
+2A21	op	zproject	infix 4 4
+2A22	bin	ringplus	infix 4 4
+2A23	bin	plushat	infix 4 4
+2A24	bin	simplus	infix 4 4
+2A25	bin	plusdot	infix 4 4
+2A26	bin	plussim	infix 4 4
+2A27	bin	plussubtwo	infix 4 4
+2A28	bin	plustrif	infix 4 4
+2A29	bin	commaminus	infix 4 4
+2A2A	bin	minusdot	infix 4 4
+2A2B	bin	minusfdots	infix 4 4
+2A2C	bin	minusrdots	infix 4 4
+2A2D	bin	opluslhrim	infix 4 4
+2A2E	bin	oplusrhrim	infix 4 4
+2A2F	bin	vectimes	infix 3 3
+2A30	bin	dottimes	infix 3 3
+2A31	bin	timesbar	infix 3 3
+2A32	bin	btimes	infix 3 3
+2A33	bin	smashtimes	infix 3 3
+2A34	bin	otimeslhrim	infix 3 3
+2A35	bin	otimesrhrim	infix 3 3
+2A36	bin	otimeshat	infix 3 3
+2A37	bin	Otimes	infix 3 3
+2A38	bin	odiv	infix 4 4
+2A39	bin	triangleplus	infix 4 4
+2A3A	bin	triangleminus	infix 4 4
+2A3B	bin	triangletimes	infix 3 3
+2A3C	bin	intprod	infix 3 3
+2A3D	bin	intprodr	infix 3 3
+2A3E	bin	fcmp	infix 4 4
+2A3F	bin	amalg	infix 3 3
+2A40	bin	capdot	infix 4 4
+2A41	bin	uminus	infix 4 4
+2A42	bin	barcup	infix 4 4
+2A43	bin	barcap	infix 4 4
+2A44	bin	capwedge	infix 4 4
+2A45	bin	cupvee	infix 4 4
+2A46	bin	cupovercap	infix 4 4
+2A47	bin	capovercup	infix 4 4
+2A48	bin	cupbarcap	infix 4 4
+2A49	bin	capbarcup	infix 4 4
+2A4A	bin	twocups	infix 4 4
+2A4B	bin	twocaps	infix 4 4
+2A4C	bin	closedvarcup	infix 4 4
+2A4D	bin	closedvarcap	infix 4 4
+2A4E	bin	Sqcap	infix 4 4
+2A4F	bin	Sqcup	infix 4 4
+2A50	bin	closedvarcupsmashprod	infix 3 3
+2A51	bin	wedgeodot	infix 4 4
+2A52	bin	veeodot	infix 4 4
+2A53	bin	Wedge	infix 4 4
+2A54	bin	Vee	infix 4 4
+2A55	bin	wedgeonwedge	infix 4 4
+2A56	bin	veeonvee	infix 4 4
+2A57	bin	bigslopedvee	infix 4 4
+2A58	bin	bigslopedwedge	infix 4 4
+2A59	rel	veeonwedge	infix 4 4
+2A5A	bin	wedgemidvert	infix 4 4
+2A5B	bin	veemidvert	infix 4 4
+2A5C	bin	midbarwedge	infix 4 4
+2A5D	bin	midbarvee	infix 4 4
+2A5E	bin	doublebarwedge	infix 4 4
+2A5F	bin	wedgebar	infix 4 4
+2A60	bin	wedgedoublebar	infix 4 4
+2A61	bin	varveebar	infix 4 4
+2A62	bin	doublebarvee	infix 4 4
+2A63	bin	veedoublebar	infix 4 4
+2A64	bin	dsub	infix 3 3
+2A65	bin	rsub	infix 3 3
+2A66	rel	eqdot	infix 5 5
+2A67	rel	dotequiv	infix 5 5
+2A68	rel	equivVert	infix 5 5
+2A69	rel	equivVvert	infix 5 5
+2A6A	rel	dotsim	infix 5 5
+2A6B	rel	simrdots	infix 5 5
+2A6C	rel	simminussim	infix 5 5
+2A6D	rel	congdot	infix 5 5
+2A6E	rel	asteq	infix 5 5
+2A6F	rel	hatapprox	infix 5 5
+2A70	rel	approxeqq	infix 5 5
+2A71	bin	eqqplus	infix 5 5
+2A72	bin	pluseqq	infix 5 5
+2A73	rel	eqqsim	infix 5 5
+2A74	rel	Coloneq	infix 5 5
+2A75	rel	eqeq	infix 5 5
+2A76	rel	eqeqeq	infix 5 5
+2A77	rel	ddotseq	infix 5 5
+2A78	rel	equivDD	infix 5 5
+2A79	rel	ltcir	infix 5 5
+2A7A	rel	gtcir	infix 5 5
+2A7B	rel	ltquest	infix 5 5
+2A7C	rel	gtquest	infix 5 5
+2A7D	rel	leqslant	infix 5 5
+2A7E	rel	geqslant	infix 5 5
+2A7F	rel	lesdot	infix 5 5
+2A80	rel	gesdot	infix 5 5
+2A81	rel	lesdoto	infix 5 5
+2A82	rel	gesdoto	infix 5 5
+2A83	rel	lesdotor	infix 5 5
+2A84	rel	gesdotol	infix 5 5
+2A85	rel	lessapprox	infix 5 5
+2A86	rel	gtrapprox	infix 5 5
+2A87	rel	lneq	infix 5 5
+2A88	rel	gneq	infix 5 5
+2A89	rel	lnapprox	infix 5 5
+2A8A	rel	gnapprox	infix 5 5
+2A8B	rel	lesseqqgtr	infix 5 5
+2A8C	rel	gtreqqless	infix 5 5
+2A8D	rel	lsime	infix 5 5
+2A8E	rel	gsime	infix 5 5
+2A8F	rel	lsimg	infix 5 5
+2A90	rel	gsiml	infix 5 5
+2A91	rel	lgE	infix 5 5
+2A92	rel	glE	infix 5 5
+2A93	rel	lesges	infix 5 5
+2A94	rel	gesles	infix 5 5
+2A95	rel	eqslantless	infix 5 5
+2A96	rel	eqslantgtr	infix 5 5
+2A97	rel	elsdot	infix 5 5
+2A98	rel	egsdot	infix 5 5
+2A99	rel	eqqless	infix 5 5
+2A9A	rel	eqqgtr	infix 5 5
+2A9B	rel	eqqslantless	infix 5 5
+2A9C	rel	eqqslantgtr	infix 5 5
+2A9D	rel	simless	infix 5 5
+2A9E	rel	simgtr	infix 5 5
+2A9F	rel	simlE	infix 5 5
+2AA0	rel	simgE	infix 5 5
+2AA1	rel	Lt	infix 5 5
+2AA2	rel	Gt	infix 5 5
+2AA3	rel	partialmeetcontraction	infix 5 5
+2AA4	rel	glj	infix 5 5
+2AA5	rel	gla	infix 5 5
+2AA6	rel	ltcc	infix 5 5
+2AA7	rel	gtcc	infix 5 5
+2AA8	rel	lescc	infix 5 5
+2AA9	rel	gescc	infix 5 5
+2AAA	rel	smt	infix 5 5
+2AAB	rel	lat	infix 5 5
+2AAC	rel	smte	infix 5 5
+2AAD	rel	late	infix 5 5
+2AAE	rel	bumpeqq	infix 5 5
+2AAF	rel	preceq	infix 5 5
+2AB0	rel	succeq	infix 5 5
+2AB1	rel	precneq	infix 5 5
+2AB2	rel	succneq	infix 5 5
+2AB3	rel	preceqq	infix 5 5
+2AB4	rel	succeqq	infix 5 5
+2AB5	rel	precneqq	infix 5 5
+2AB6	rel	succneqq	infix 5 5
+2AB7	rel	precapprox	infix 5 5
+2AB8	rel	succapprox	infix 5 5
+2AB9	rel	precnapprox	infix 5 5
+2ABA	rel	succnapprox	infix 5 5
+2ABB	rel	Prec	infix 5 5
+2ABC	rel	Succ	infix 5 5
+2ABD	rel	subsetdot	infix 5 5
+2ABE	rel	supsetdot	infix 5 5
+2ABF	rel	subsetplus	infix 5 5
+2AC0	rel	supsetplus	infix 5 5
+2AC1	rel	submult	infix 5 5
+2AC2	rel	supmult	infix 5 5
+2AC3	rel	subedot	infix 5 5
+2AC4	rel	supedot	infix 5 5
+2AC5	rel	subseteqq	infix 5 5
+2AC6	rel	supseteqq	infix 5 5
+2AC7	rel	subsim	infix 5 5
+2AC8	rel	supsim	infix 5 5
+2AC9	rel	subsetapprox	infix 5 5
+2ACA	rel	supsetapprox	infix 5 5
+2ACB	rel	subsetneqq	infix 5 5
+2ACC	rel	supsetneqq	infix 5 5
+2ACD	rel	lsqhook	infix 5 5
+2ACE	rel	rsqhook	infix 5 5
+2ACF	rel	csub	infix 5 5
+2AD0	rel	csup	infix 5 5
+2AD1	rel	csube	infix 5 5
+2AD2	rel	csupe	infix 5 5
+2AD3	rel	subsup	infix 5 5
+2AD4	rel	supsub	infix 5 5
+2AD5	rel	subsub	infix 5 5
+2AD6	rel	supsup	infix 5 5
+2AD7	rel	suphsub	infix 5 5
+2AD8	rel	supdsub	infix 5 5
+2AD9	rel	forkv	infix 5 5
+2ADA	rel	topfork	infix 5 5
+2ADB	rel	mlcp	infix 4 4
+2ADC	rel	forks	infix 3 3
+2ADD	rel	forksnot	infix 3 3
+2ADE	rel	shortlefttack	infix 5 5
+2ADF	rel	shortdowntack	infix 5 5
+2AE0	rel	shortuptack	infix 5 5
+2AE1	ord	perps	infix 5 5
+2AE2	rel	vDdash	infix 5 5
+2AE3	rel	dashV	infix 5 5
+2AE4	rel	Dashv	infix 5 5
+2AE5	rel	DashV	infix 5 5
+2AE6	rel	varVdash	infix 5 5
+2AE7	rel	Barv	infix 5 5
+2AE8	rel	vBar	infix 5 5
+2AE9	rel	vBarv	infix 5 5
+2AEA	rel	barV	infix 5 5
+2AEB	rel	Vbar	infix 5 5
+2AEC	rel	Not	prefix 0 0
+2AED	rel	bNot	prefix 0 0
+2AEE	rel	revnmid	infix 5 5
+2AEF	rel	cirmid
+2AF0	rel	midcir
+2AF1	ord	topcir
+2AF2	rel	nhpar	infix 5 5
+2AF3	rel	parsim	infix 5 5
+2AF4	bin	interleave	infix 5 5
+2AF5	bin	nhVvert	infix 5 5
+2AF6	bin	threedotcolon	infix 4 4
+2AF7	rel	lllnest	infix 5 5
+2AF8	rel	gggnest	infix 5 5
+2AF9	rel	leqqslant	infix 5 5
+2AFA	rel	geqqslant	infix 5 5
+2AFB	bin	trslash	infix 4 4
+2AFC	op	biginterleave	prefix 3 3 lm
+2AFD	bin	sslash	infix 4 4
+2AFE	bin	talloblong	infix 3 3
+2AFF	op	bigtalloblong	prefix 3 3 lm
+2B00	rel	-	infix 5 5
+2B01	rel	-	infix 5 5
+2B02	rel	-	infix 5 5
+2B03	rel	-	infix 5 5
+2B04	rel	-	infix 5 5 s
+2B05	rel	-	infix 5 5 s
+2B06	rel	-	infix 5 5 s
+2B07	rel	-	infix 5 5 s
+2B08	rel	-	infix 5 5
+2B09	rel	-	infix 5 5
+2B0A	rel	-	infix 5 5
+2B0B	rel	-	infix 5 5
+2B0C	rel	-	infix 5 5 s
+2B0D	rel	-	infix 5 5 s
+2B0E	rel	-	infix 5 5 s
+2B0F	rel	-	infix 5 5 s
+2B10	rel	-	infix 5 5 s
+2B11	rel	-	infix 5 5 s
+2B12	ord	squaretopblack
+2B13	ord	squarebotblack
+2B14	ord	squareurblack
+2B15	ord	squarellblack
+2B16	ord	diamondleftblack
+2B17	ord	diamondrightblack
+2B18	ord	diamondtopblack
+2B19	ord	diamondbotblack
+2B1A	ord	dottedsquare
+2B1B	ord	lgblksquare
+2B1C	ord	lgwhtsquare
+2B1D	ord	vysmblksquare
+2B1E	ord	vysmwhtsquare
+2B1F	ord	pentagonblack
+2B20	ord	pentagon
+2B21	ord	varhexagon
+2B22	ord	varhexagonblack
+2B23	ord	hexagonblack
+2B24	ord	lgblkcircle
+2B25	ord	mdblkdiamond
+2B26	ord	mdwhtdiamond
+2B27	ord	mdblklozenge
+2B28	ord	mdwhtlozenge
+2B29	ord	smblkdiamond
+2B2A	ord	smblklozenge
+2B2B	ord	smwhtlozenge
+2B2C	ord	blkhorzoval
+2B2D	ord	whthorzoval
+2B2E	ord	blkvertoval
+2B2F	ord	whtvertoval
+2B30	rel	circleonleftarrow	infix 5 5 s
+2B31	rel	leftthreearrows	infix 5 5 s
+2B32	rel	leftarrowonoplus	infix 5 5 s
+2B33	rel	longleftsquigarrow	infix 5 5 s
+2B34	rel	nvtwoheadleftarrow	infix 5 5 s
+2B35	rel	nVtwoheadleftarrow	infix 5 5 s
+2B36	rel	twoheadmapsfrom	infix 5 5 s
+2B37	rel	twoheadleftdbkarrow	infix 5 5 s
+2B38	rel	leftdotarrow	infix 5 5 s
+2B39	rel	nvleftarrowtail	infix 5 5 s
+2B3A	rel	nVleftarrowtail	infix 5 5 s
+2B3B	rel	twoheadleftarrowtail	infix 5 5 s
+2B3C	rel	nvtwoheadleftarrowtail	infix 5 5 s
+2B3E	rel	leftarrowx	infix 5 5 s
+2B3F	rel	leftcurvedarrow	infix 5 5
+2B40	rel	equalleftarrow	infix 5 5 s
+2B41	rel	bsimilarleftarrow	infix 5 5 s
+2B42	rel	leftarrowbackapprox	infix 5 5 s
+2B43	rel	rightarrowgtr	infix 5 5 s
+2B44	rel	rightarrowsupset	infix 5 5 s
+2B45	ord	LLeftarrow	infix 5 5 s
+2B46	ord	RRightarrow	infix 5 5 s
+2B47	rel	bsimilarrightarrow	infix 5 5 s
+2B48	rel	rightarrowbackapprox	infix 5 5 s
+2B49	rel	similarleftarrow	infix 5 5 s
+2B4A	rel	leftarrowapprox	infix 5 5 s
+2B4B	rel	leftarrowbsimilar	infix 5 5 s
+2B4C	rel	rightarrowbsimilar	infix 5 5 s
+2B4D	ord	-	infix 5 5
+2B4E	ord	-	infix 5 5
+2B4F	ord	-	infix 5 5
+2B50	ord	medwhitestar
+2B51	ord	medblackstar
+2B52	ord	smwhitestar
+2B53	ord	rightpentagonblack
+2B54	ord	rightpentagon
+2B5A	ord	-	infix 5 5
+2B5B	ord	-	infix 5 5
+2B5C	ord	-	infix 5 5
+2B5D	ord	-	infix 5 5
+2B5E	ord	-	infix 5 5
+2B5F	ord	-	infix 5 5
+2B60	ord	-	infix 5 5 s
+2B61	ord	-	infix 5 5 s
+2B62	ord	-	infix 5 5 s
+2B63	ord	-	infix 5 5 s
+2B64	ord	-	infix 5 5 s
+2B65	ord	-	infix 5 5 s
+2B66	ord	-	infix 5 5
+2B67	ord	-	infix 5 5
+2B68	ord	-	infix 5 5
+2B69	ord	-	infix 5 5
+2B6A	ord	-	infix 5 5 s
+2B6B	ord	-	infix 5 5 s
+2B6C	ord	-	infix 5 5 s
+2B6D	ord	-	infix 5 5 s
+2B6E	ord	-	infix 5 5
+2B6F	ord	-	infix 5 5
+2B70	ord	-	infix 5 5 s
+2B71	ord	-	infix 5 5 s
+2B72	ord	-	infix 5 5 s
+2B73	ord	-	infix 5 5 s
+2B76	ord	-	infix 5 5
+2B77	ord	-	infix 5 5
+2B78	ord	-	infix 5 5
+2B79	ord	-	infix 5 5
+2B7A	ord	-	infix 5 5 s
+2B7B	ord	-	infix 5 5 s
+2B7C	ord	-	infix 5 5 s
+2B7D	ord	-	infix 5 5 s
+2B80	ord	-	infix 5 5 s
+2B81	ord	-	infix 5 5 s
+2B82	ord	-	infix 5 5 s
+2B83	ord	-	infix 5 5 s
+2B84	ord	-	infix 5 5 s
+2B85	ord	-	infix 5 5 s
+2B86	ord	-	infix 5 5 s
+2B87	ord	-	infix 5 5 s
+2B88	ord	-	infix 5 5
+2B89	ord	-	infix 5 5
+2B8A	ord	-	infix 5 5
+2B8B	ord	-	infix 5 5
+2B8C	ord	-	infix 5 5
+2B8D	ord	-	infix 5 5
+2B8E	ord	-	infix 5 5
+2B8F	ord	-	infix 5 5
+2B94	ord	-	infix 5 5
+2B95	ord	-	infix 5 5 s
+2BA0	ord	-	infix 5 5 s
+2BA1	ord	-	infix 5 5 s
+2BA2	ord	-	infix 5 5 s
+2BA3	ord	-	infix 5 5 s
+2BA4	ord	-	infix 5 5 s
+2BA5	ord	-	infix 5 5 s
+2BA6	ord	-	infix 5 5 s
+2BA7	ord	-	infix 5 5 s
+2BA8	ord	-	infix 5 5 s
+2BA9	ord	-	infix 5 5 s
+2BAA	ord	-	infix 5 5 s
+2BAB	ord	-	infix 5 5 s
+2BAC	ord	-	infix 5 5 s
+2BAD	ord	-	infix 5 5 s
+2BAE	ord	-	infix 5 5 s
+2BAF	ord	-	infix 5 5 s
+2BB0	ord	-	infix 5 5
+2BB1	ord	-	infix 5 5
+2BB2	ord	-	infix 5 5
+2BB3	ord	-	infix 5 5
+2BB4	ord	-	infix 5 5
+2BB5	ord	-	infix 5 5
+2BB6	ord	-	infix 5 5
+2BB7	ord	-	infix 5 5
+2BB8	ord	-	infix 5 5 s
+2BD1	ord	-	infix 5 5
+3012	ord	postalmark
+3030	ord	hzigzag
+1D400	ord	mbfA
+1D401	ord	mbfB
+1D402	ord	mbfC
+1D403	ord	mbfD
+1D404	ord	mbfE
+1D405	ord	mbfF
+1D406	ord	mbfG
+1D407	ord	mbfH
+1D408	ord	mbfI
+1D409	ord	mbfJ
+1D40A	ord	mbfK
+1D40B	ord	mbfL
+1D40C	ord	mbfM
+1D40D	ord	mbfN
+1D40E	ord	mbfO
+1D40F	ord	mbfP
+1D410	ord	mbfQ
+1D411	ord	mbfR
+1D412	ord	mbfS
+1D413	ord	mbfT
+1D414	ord	mbfU
+1D415	ord	mbfV
+1D416	ord	mbfW
+1D417	ord	mbfX
+1D418	ord	mbfY
+1D419	ord	mbfZ
+1D41A	ord	mbfa
+1D41B	ord	mbfb
+1D41C	ord	mbfc
+1D41D	ord	mbfd
+1D41E	ord	mbfe
+1D41F	ord	mbff
+1D420	ord	mbfg
+1D421	ord	mbfh
+1D422	ord	mbfi
+1D423	ord	mbfj
+1D424	ord	mbfk
+1D425	ord	mbfl
+1D426	ord	mbfm
+1D427	ord	mbfn
+1D428	ord	mbfo
+1D429	ord	mbfp
+1D42A	ord	mbfq
+1D42B	ord	mbfr
+1D42C	ord	mbfs
+1D42D	ord	mbft
+1D42E	ord	mbfu
+1D42F	ord	mbfv
+1D430	ord	mbfw
+1D431	ord	mbfx
+1D432	ord	mbfy
+1D433	ord	mbfz
+1D434	ord	mitA
+1D435	ord	mitB
+1D436	ord	mitC
+1D437	ord	mitD
+1D438	ord	mitE
+1D439	ord	mitF
+1D43A	ord	mitG
+1D43B	ord	mitH
+1D43C	ord	mitI
+1D43D	ord	mitJ
+1D43E	ord	mitK
+1D43F	ord	mitL
+1D440	ord	mitM
+1D441	ord	mitN
+1D442	ord	mitO
+1D443	ord	mitP
+1D444	ord	mitQ
+1D445	ord	mitR
+1D446	ord	mitS
+1D447	ord	mitT
+1D448	ord	mitU
+1D449	ord	mitV
+1D44A	ord	mitW
+1D44B	ord	mitX
+1D44C	ord	mitY
+1D44D	ord	mitZ
+1D44E	ord	mita
+1D44F	ord	mitb
+1D450	ord	mitc
+1D451	ord	mitd
+1D452	ord	mite
+1D453	ord	mitf
+1D454	ord	mitg
+1D456	ord	miti
+1D457	ord	mitj
+1D458	ord	mitk
+1D459	ord	mitl
+1D45A	ord	mitm
+1D45B	ord	mitn
+1D45C	ord	mito
+1D45D	ord	mitp
+1D45E	ord	mitq
+1D45F	ord	mitr
+1D460	ord	mits
+1D461	ord	mitt
+1D462	ord	mitu
+1D463	ord	mitv
+1D464	ord	mitw
+1D465	ord	mitx
+1D466	ord	mity
+1D467	ord	mitz
+1D468	ord	mbfitA
+1D469	ord	mbfitB
+1D46A	ord	mbfitC
+1D46B	ord	mbfitD
+1D46C	ord	mbfitE
+1D46D	ord	mbfitF
+1D46E	ord	mbfitG
+1D46F	ord	mbfitH
+1D470	ord	mbfitI
+1D471	ord	mbfitJ
+1D472	ord	mbfitK
+1D473	ord	mbfitL
+1D474	ord	mbfitM
+1D475	ord	mbfitN
+1D476	ord	mbfitO
+1D477	ord	mbfitP
+1D478	ord	mbfitQ
+1D479	ord	mbfitR
+1D47A	ord	mbfitS
+1D47B	ord	mbfitT
+1D47C	ord	mbfitU
+1D47D	ord	mbfitV
+1D47E	ord	mbfitW
+1D47F	ord	mbfitX
+1D480	ord	mbfitY
+1D481	ord	mbfitZ
+1D482	ord	mbfita
+1D483	ord	mbfitb
+1D484	ord	mbfitc
+1D485	ord	mbfitd
+1D486	ord	mbfite
+1D487	ord	mbfitf
+1D488	ord	mbfitg
+1D489	ord	mbfith
+1D48A	ord	mbfiti
+1D48B	ord	mbfitj
+1D48C	ord	mbfitk
+1D48D	ord	mbfitl
+1D48E	ord	mbfitm
+1D48F	ord	mbfitn
+1D490	ord	mbfito
+1D491	ord	mbfitp
+1D492	ord	mbfitq
+1D493	ord	mbfitr
+1D494	ord	mbfits
+1D495	ord	mbfitt
+1D496	ord	mbfitu
+1D497	ord	mbfitv
+1D498	ord	mbfitw
+1D499	ord	mbfitx
+1D49A	ord	mbfity
+1D49B	ord	mbfitz
+1D49C	ord	mscrA
+1D49E	ord	mscrC
+1D49F	ord	mscrD
+1D4A2	ord	mscrG
+1D4A5	ord	mscrJ
+1D4A6	ord	mscrK
+1D4A9	ord	mscrN
+1D4AA	ord	mscrO
+1D4AB	ord	mscrP
+1D4AC	ord	mscrQ
+1D4AE	ord	mscrS
+1D4AF	ord	mscrT
+1D4B0	ord	mscrU
+1D4B1	ord	mscrV
+1D4B2	ord	mscrW
+1D4B3	ord	mscrX
+1D4B4	ord	mscrY
+1D4B5	ord	mscrZ
+1D4B6	ord	mscra
+1D4B7	ord	mscrb
+1D4B8	ord	mscrc
+1D4B9	ord	mscrd
+1D4BB	ord	mscrf
+1D4BD	ord	mscrh
+1D4BE	ord	mscri
+1D4BF	ord	mscrj
+1D4C0	ord	mscrk
+1D4C1	ord	mscrl
+1D4C2	ord	mscrm
+1D4C3	ord	mscrn
+1D4C5	ord	mscrp
+1D4C6	ord	mscrq
+1D4C7	ord	mscrr
+1D4C8	ord	mscrs
+1D4C9	ord	mscrt
+1D4CA	ord	mscru
+1D4CB	ord	mscrv
+1D4CC	ord	mscrw
+1D4CD	ord	mscrx
+1D4CE	ord	mscry
+1D4CF	ord	mscrz
+1D4D0	ord	mbfscrA
+1D4D1	ord	mbfscrB
+1D4D2	ord	mbfscrC
+1D4D3	ord	mbfscrD
+1D4D4	ord	mbfscrE
+1D4D5	ord	mbfscrF
+1D4D6	ord	mbfscrG
+1D4D7	ord	mbfscrH
+1D4D8	ord	mbfscrI
+1D4D9	ord	mbfscrJ
+1D4DA	ord	mbfscrK
+1D4DB	ord	mbfscrL
+1D4DC	ord	mbfscrM
+1D4DD	ord	mbfscrN
+1D4DE	ord	mbfscrO
+1D4DF	ord	mbfscrP
+1D4E0	ord	mbfscrQ
+1D4E1	ord	mbfscrR
+1D4E2	ord	mbfscrS
+1D4E3	ord	mbfscrT
+1D4E4	ord	mbfscrU
+1D4E5	ord	mbfscrV
+1D4E6	ord	mbfscrW
+1D4E7	ord	mbfscrX
+1D4E8	ord	mbfscrY
+1D4E9	ord	mbfscrZ
+1D4EA	ord	mbfscra
+1D4EB	ord	mbfscrb
+1D4EC	ord	mbfscrc
+1D4ED	ord	mbfscrd
+1D4EE	ord	mbfscre
+1D4EF	ord	mbfscrf
+1D4F0	ord	mbfscrg
+1D4F1	ord	mbfscrh
+1D4F2	ord	mbfscri
+1D4F3	ord	mbfscrj
+1D4F4	ord	mbfscrk
+1D4F5	ord	mbfscrl
+1D4F6	ord	mbfscrm
+1D4F7	ord	mbfscrn
+1D4F8	ord	mbfscro
+1D4F9	ord	mbfscrp
+1D4FA	ord	mbfscrq
+1D4FB	ord	mbfscrr
+1D4FC	ord	mbfscrs
+1D4FD	ord	mbfscrt
+1D4FE	ord	mbfscru
+1D4FF	ord	mbfscrv
+1D500	ord	mbfscrw
+1D501	ord	mbfscrx
+1D502	ord	mbfscry
+1D503	ord	mbfscrz
+1D504	ord	mfrakA
+1D505	ord	mfrakB
+1D507	ord	mfrakD
+1D508	ord	mfrakE
+1D509	ord	mfrakF
+1D50A	ord	mfrakG
+1D50D	ord	mfrakJ
+1D50E	ord	mfrakK
+1D50F	ord	mfrakL
+1D510	ord	mfrakM
+1D511	ord	mfrakN
+1D512	ord	mfrakO
+1D513	ord	mfrakP
+1D514	ord	mfrakQ
+1D516	ord	mfrakS
+1D517	ord	mfrakT
+1D518	ord	mfrakU
+1D519	ord	mfrakV
+1D51A	ord	mfrakW
+1D51B	ord	mfrakX
+1D51C	ord	mfrakY
+1D51E	ord	mfraka
+1D51F	ord	mfrakb
+1D520	ord	mfrakc
+1D521	ord	mfrakd
+1D522	ord	mfrake
+1D523	ord	mfrakf
+1D524	ord	mfrakg
+1D525	ord	mfrakh
+1D526	ord	mfraki
+1D527	ord	mfrakj
+1D528	ord	mfrakk
+1D529	ord	mfrakl
+1D52A	ord	mfrakm
+1D52B	ord	mfrakn
+1D52C	ord	mfrako
+1D52D	ord	mfrakp
+1D52E	ord	mfrakq
+1D52F	ord	mfrakr
+1D530	ord	mfraks
+1D531	ord	mfrakt
+1D532	ord	mfraku
+1D533	ord	mfrakv
+1D534	ord	mfrakw
+1D535	ord	mfrakx
+1D536	ord	mfraky
+1D537	ord	mfrakz
+1D538	ord	BbbA
+1D539	ord	BbbB
+1D53B	ord	BbbD
+1D53C	ord	BbbE
+1D53D	ord	BbbF
+1D53E	ord	BbbG
+1D540	ord	BbbI
+1D541	ord	BbbJ
+1D542	ord	BbbK
+1D543	ord	BbbL
+1D544	ord	BbbM
+1D546	ord	BbbO
+1D54A	ord	BbbS
+1D54B	ord	BbbT
+1D54C	ord	BbbU
+1D54D	ord	BbbV
+1D54E	ord	BbbW
+1D54F	ord	BbbX
+1D550	ord	BbbY
+1D552	ord	Bbba
+1D553	ord	Bbbb
+1D554	ord	Bbbc
+1D555	ord	Bbbd
+1D556	ord	Bbbe
+1D557	ord	Bbbf
+1D558	ord	Bbbg
+1D559	ord	Bbbh
+1D55A	ord	Bbbi
+1D55B	ord	Bbbj
+1D55C	ord	Bbbk
+1D55D	ord	Bbbl
+1D55E	ord	Bbbm
+1D55F	ord	Bbbn
+1D560	ord	Bbbo
+1D561	ord	Bbbp
+1D562	ord	Bbbq
+1D563	ord	Bbbr
+1D564	ord	Bbbs
+1D565	ord	Bbbt
+1D566	ord	Bbbu
+1D567	ord	Bbbv
+1D568	ord	Bbbw
+1D569	ord	Bbbx
+1D56A	ord	Bbby
+1D56B	ord	Bbbz
+1D56C	ord	mbffrakA
+1D56D	ord	mbffrakB
+1D56E	ord	mbffrakC
+1D56F	ord	mbffrakD
+1D570	ord	mbffrakE
+1D571	ord	mbffrakF
+1D572	ord	mbffrakG
+1D573	ord	mbffrakH
+1D574	ord	mbffrakI
+1D575	ord	mbffrakJ
+1D576	ord	mbffrakK
+1D577	ord	mbffrakL
+1D578	ord	mbffrakM
+1D579	ord	mbffrakN
+1D57A	ord	mbffrakO
+1D57B	ord	mbffrakP
+1D57C	ord	mbffrakQ
+1D57D	ord	mbffrakR
+1D57E	ord	mbffrakS
+1D57F	ord	mbffrakT
+1D580	ord	mbffrakU
+1D581	ord	mbffrakV
+1D582	ord	mbffrakW
+1D583	ord	mbffrakX
+1D584	ord	mbffrakY
+1D585	ord	mbffrakZ
+1D586	ord	mbffraka
+1D587	ord	mbffrakb
+1D588	ord	mbffrakc
+1D589	ord	mbffrakd
+1D58A	ord	mbffrake
+1D58B	ord	mbffrakf
+1D58C	ord	mbffrakg
+1D58D	ord	mbffrakh
+1D58E	ord	mbffraki
+1D58F	ord	mbffrakj
+1D590	ord	mbffrakk
+1D591	ord	mbffrakl
+1D592	ord	mbffrakm
+1D593	ord	mbffrakn
+1D594	ord	mbffrako
+1D595	ord	mbffrakp
+1D596	ord	mbffrakq
+1D597	ord	mbffrakr
+1D598	ord	mbffraks
+1D599	ord	mbffrakt
+1D59A	ord	mbffraku
+1D59B	ord	mbffrakv
+1D59C	ord	mbffrakw
+1D59D	ord	mbffrakx
+1D59E	ord	mbffraky
+1D59F	ord	mbffrakz
+1D5A0	ord	msansA
+1D5A1	ord	msansB
+1D5A2	ord	msansC
+1D5A3	ord	msansD
+1D5A4	ord	msansE
+1D5A5	ord	msansF
+1D5A6	ord	msansG
+1D5A7	ord	msansH
+1D5A8	ord	msansI
+1D5A9	ord	msansJ
+1D5AA	ord	msansK
+1D5AB	ord	msansL
+1D5AC	ord	msansM
+1D5AD	ord	msansN
+1D5AE	ord	msansO
+1D5AF	ord	msansP
+1D5B0	ord	msansQ
+1D5B1	ord	msansR
+1D5B2	ord	msansS
+1D5B3	ord	msansT
+1D5B4	ord	msansU
+1D5B5	ord	msansV
+1D5B6	ord	msansW
+1D5B7	ord	msansX
+1D5B8	ord	msansY
+1D5B9	ord	msansZ
+1D5BA	ord	msansa
+1D5BB	ord	msansb
+1D5BC	ord	msansc
+1D5BD	ord	msansd
+1D5BE	ord	msanse
+1D5BF	ord	msansf
+1D5C0	ord	msansg
+1D5C1	ord	msansh
+1D5C2	ord	msansi
+1D5C3	ord	msansj
+1D5C4	ord	msansk
+1D5C5	ord	msansl
+1D5C6	ord	msansm
+1D5C7	ord	msansn
+1D5C8	ord	msanso
+1D5C9	ord	msansp
+1D5CA	ord	msansq
+1D5CB	ord	msansr
+1D5CC	ord	msanss
+1D5CD	ord	msanst
+1D5CE	ord	msansu
+1D5CF	ord	msansv
+1D5D0	ord	msansw
+1D5D1	ord	msansx
+1D5D2	ord	msansy
+1D5D3	ord	msansz
+1D5D4	ord	mbfsansA
+1D5D5	ord	mbfsansB
+1D5D6	ord	mbfsansC
+1D5D7	ord	mbfsansD
+1D5D8	ord	mbfsansE
+1D5D9	ord	mbfsansF
+1D5DA	ord	mbfsansG
+1D5DB	ord	mbfsansH
+1D5DC	ord	mbfsansI
+1D5DD	ord	mbfsansJ
+1D5DE	ord	mbfsansK
+1D5DF	ord	mbfsansL
+1D5E0	ord	mbfsansM
+1D5E1	ord	mbfsansN
+1D5E2	ord	mbfsansO
+1D5E3	ord	mbfsansP
+1D5E4	ord	mbfsansQ
+1D5E5	ord	mbfsansR
+1D5E6	ord	mbfsansS
+1D5E7	ord	mbfsansT
+1D5E8	ord	mbfsansU
+1D5E9	ord	mbfsansV
+1D5EA	ord	mbfsansW
+1D5EB	ord	mbfsansX
+1D5EC	ord	mbfsansY
+1D5ED	ord	mbfsansZ
+1D5EE	ord	mbfsansa
+1D5EF	ord	mbfsansb
+1D5F0	ord	mbfsansc
+1D5F1	ord	mbfsansd
+1D5F2	ord	mbfsanse
+1D5F3	ord	mbfsansf
+1D5F4	ord	mbfsansg
+1D5F5	ord	mbfsansh
+1D5F6	ord	mbfsansi
+1D5F7	ord	mbfsansj
+1D5F8	ord	mbfsansk
+1D5F9	ord	mbfsansl
+1D5FA	ord	mbfsansm
+1D5FB	ord	mbfsansn
+1D5FC	ord	mbfsanso
+1D5FD	ord	mbfsansp
+1D5FE	ord	mbfsansq
+1D5FF	ord	mbfsansr
+1D600	ord	mbfsanss
+1D601	ord	mbfsanst
+1D602	ord	mbfsansu
+1D603	ord	mbfsansv
+1D604	ord	mbfsansw
+1D605	ord	mbfsansx
+1D606	ord	mbfsansy
+1D607	ord	mbfsansz
+1D608	ord	mitsansA
+1D609	ord	mitsansB
+1D60A	ord	mitsansC
+1D60B	ord	mitsansD
+1D60C	ord	mitsansE
+1D60D	ord	mitsansF
+1D60E	ord	mitsansG
+1D60F	ord	mitsansH
+1D610	ord	mitsansI
+1D611	ord	mitsansJ
+1D612	ord	mitsansK
+1D613	ord	mitsansL
+1D614	ord	mitsansM
+1D615	ord	mitsansN
+1D616	ord	mitsansO
+1D617	ord	mitsansP
+1D618	ord	mitsansQ
+1D619	ord	mitsansR
+1D61A	ord	mitsansS
+1D61B	ord	mitsansT
+1D61C	ord	mitsansU
+1D61D	ord	mitsansV
+1D61E	ord	mitsansW
+1D61F	ord	mitsansX
+1D620	ord	mitsansY
+1D621	ord	mitsansZ
+1D622	ord	mitsansa
+1D623	ord	mitsansb
+1D624	ord	mitsansc
+1D625	ord	mitsansd
+1D626	ord	mitsanse
+1D627	ord	mitsansf
+1D628	ord	mitsansg
+1D629	ord	mitsansh
+1D62A	ord	mitsansi
+1D62B	ord	mitsansj
+1D62C	ord	mitsansk
+1D62D	ord	mitsansl
+1D62E	ord	mitsansm
+1D62F	ord	mitsansn
+1D630	ord	mitsanso
+1D631	ord	mitsansp
+1D632	ord	mitsansq
+1D633	ord	mitsansr
+1D634	ord	mitsanss
+1D635	ord	mitsanst
+1D636	ord	mitsansu
+1D637	ord	mitsansv
+1D638	ord	mitsansw
+1D639	ord	mitsansx
+1D63A	ord	mitsansy
+1D63B	ord	mitsansz
+1D63C	ord	mbfitsansA
+1D63D	ord	mbfitsansB
+1D63E	ord	mbfitsansC
+1D63F	ord	mbfitsansD
+1D640	ord	mbfitsansE
+1D641	ord	mbfitsansF
+1D642	ord	mbfitsansG
+1D643	ord	mbfitsansH
+1D644	ord	mbfitsansI
+1D645	ord	mbfitsansJ
+1D646	ord	mbfitsansK
+1D647	ord	mbfitsansL
+1D648	ord	mbfitsansM
+1D649	ord	mbfitsansN
+1D64A	ord	mbfitsansO
+1D64B	ord	mbfitsansP
+1D64C	ord	mbfitsansQ
+1D64D	ord	mbfitsansR
+1D64E	ord	mbfitsansS
+1D64F	ord	mbfitsansT
+1D650	ord	mbfitsansU
+1D651	ord	mbfitsansV
+1D652	ord	mbfitsansW
+1D653	ord	mbfitsansX
+1D654	ord	mbfitsansY
+1D655	ord	mbfitsansZ
+1D656	ord	mbfitsansa
+1D657	ord	mbfitsansb
+1D658	ord	mbfitsansc
+1D659	ord	mbfitsansd
+1D65A	ord	mbfitsanse
+1D65B	ord	mbfitsansf
+1D65C	ord	mbfitsansg
+1D65D	ord	mbfitsansh
+1D65E	ord	mbfitsansi
+1D65F	ord	mbfitsansj
+1D660	ord	mbfitsansk
+1D661	ord	mbfitsansl
+1D662	ord	mbfitsansm
+1D663	ord	mbfitsansn
+1D664	ord	mbfitsanso
+1D665	ord	mbfitsansp
+1D666	ord	mbfitsansq
+1D667	ord	mbfitsansr
+1D668	ord	mbfitsanss
+1D669	ord	mbfitsanst
+1D66A	ord	mbfitsansu
+1D66B	ord	mbfitsansv
+1D66C	ord	mbfitsansw
+1D66D	ord	mbfitsansx
+1D66E	ord	mbfitsansy
+1D66F	ord	mbfitsansz
+1D670	ord	mttA
+1D671	ord	mttB
+1D672	ord	mttC
+1D673	ord	mttD
+1D674	ord	mttE
+1D675	ord	mttF
+1D676	ord	mttG
+1D677	ord	mttH
+1D678	ord	mttI
+1D679	ord	mttJ
+1D67A	ord	mttK
+1D67B	ord	mttL
+1D67C	ord	mttM
+1D67D	ord	mttN
+1D67E	ord	mttO
+1D67F	ord	mttP
+1D680	ord	mttQ
+1D681	ord	mttR
+1D682	ord	mttS
+1D683	ord	mttT
+1D684	ord	mttU
+1D685	ord	mttV
+1D686	ord	mttW
+1D687	ord	mttX
+1D688	ord	mttY
+1D689	ord	mttZ
+1D68A	ord	mtta
+1D68B	ord	mttb
+1D68C	ord	mttc
+1D68D	ord	mttd
+1D68E	ord	mtte
+1D68F	ord	mttf
+1D690	ord	mttg
+1D691	ord	mtth
+1D692	ord	mtti
+1D693	ord	mttj
+1D694	ord	mttk
+1D695	ord	mttl
+1D696	ord	mttm
+1D697	ord	mttn
+1D698	ord	mtto
+1D699	ord	mttp
+1D69A	ord	mttq
+1D69B	ord	mttr
+1D69C	ord	mtts
+1D69D	ord	mttt
+1D69E	ord	mttu
+1D69F	ord	mttv
+1D6A0	ord	mttw
+1D6A1	ord	mttx
+1D6A2	ord	mtty
+1D6A3	ord	mttz
+1D6A4	ord	imath
+1D6A5	ord	jmath
+1D6A8	ord	mbfAlpha
+1D6A9	ord	mbfBeta
+1D6AA	ord	mbfGamma
+1D6AB	ord	mbfDelta
+1D6AC	ord	mbfEpsilon
+1D6AD	ord	mbfZeta
+1D6AE	ord	mbfEta
+1D6AF	ord	mbfTheta
+1D6B0	ord	mbfIota
+1D6B1	ord	mbfKappa
+1D6B2	ord	mbfLambda
+1D6B3	ord	mbfMu
+1D6B4	ord	mbfNu
+1D6B5	ord	mbfXi
+1D6B6	ord	mbfOmicron
+1D6B7	ord	mbfPi
+1D6B8	ord	mbfRho
+1D6B9	ord	mbfvarTheta
+1D6BA	ord	mbfSigma
+1D6BB	ord	mbfTau
+1D6BC	ord	mbfUpsilon
+1D6BD	ord	mbfPhi
+1D6BE	ord	mbfChi
+1D6BF	ord	mbfPsi
+1D6C0	ord	mbfOmega
+1D6C1	ord	mbfnabla
+1D6C2	ord	mbfalpha
+1D6C3	ord	mbfbeta
+1D6C4	ord	mbfgamma
+1D6C5	ord	mbfdelta
+1D6C6	ord	mbfvarepsilon
+1D6C7	ord	mbfzeta
+1D6C8	ord	mbfeta
+1D6C9	ord	mbftheta
+1D6CA	ord	mbfiota
+1D6CB	ord	mbfkappa
+1D6CC	ord	mbflambda
+1D6CD	ord	mbfmu
+1D6CE	ord	mbfnu
+1D6CF	ord	mbfxi
+1D6D0	ord	mbfomicron
+1D6D1	ord	mbfpi
+1D6D2	ord	mbfrho
+1D6D3	ord	mbfvarsigma
+1D6D4	ord	mbfsigma
+1D6D5	ord	mbftau
+1D6D6	ord	mbfupsilon
+1D6D7	ord	mbfvarphi
+1D6D8	ord	mbfchi
+1D6D9	ord	mbfpsi
+1D6DA	ord	mbfomega
+1D6DB	ord	mbfpartial
+1D6DC	ord	mbfepsilon
+1D6DD	ord	mbfvartheta
+1D6DE	ord	mbfvarkappa
+1D6DF	ord	mbfphi
+1D6E0	ord	mbfvarrho
+1D6E1	ord	mbfvarpi
+1D6E2	ord	mitAlpha
+1D6E3	ord	mitBeta
+1D6E4	ord	mitGamma
+1D6E5	ord	mitDelta
+1D6E6	ord	mitEpsilon
+1D6E7	ord	mitZeta
+1D6E8	ord	mitEta
+1D6E9	ord	mitTheta
+1D6EA	ord	mitIota
+1D6EB	ord	mitKappa
+1D6EC	ord	mitLambda
+1D6ED	ord	mitMu
+1D6EE	ord	mitNu
+1D6EF	ord	mitXi
+1D6F0	ord	mitOmicron
+1D6F1	ord	mitPi
+1D6F2	ord	mitRho
+1D6F3	ord	mitvarTheta
+1D6F4	ord	mitSigma
+1D6F5	ord	mitTau
+1D6F6	ord	mitUpsilon
+1D6F7	ord	mitPhi
+1D6F8	ord	mitChi
+1D6F9	ord	mitPsi
+1D6FA	ord	mitOmega
+1D6FB	ord	mitnabla
+1D6FC	ord	mitalpha
+1D6FD	ord	mitbeta
+1D6FE	ord	mitgamma
+1D6FF	ord	mitdelta
+1D700	ord	mitvarepsilon
+1D701	ord	mitzeta
+1D702	ord	miteta
+1D703	ord	mittheta
+1D704	ord	mitiota
+1D705	ord	mitkappa
+1D706	ord	mitlambda
+1D707	ord	mitmu
+1D708	ord	mitnu
+1D709	ord	mitxi
+1D70A	ord	mitomicron
+1D70B	ord	mitpi
+1D70C	ord	mitrho
+1D70D	ord	mitvarsigma
+1D70E	ord	mitsigma
+1D70F	ord	mittau
+1D710	ord	mitupsilon
+1D711	ord	mitvarphi
+1D712	ord	mitchi
+1D713	ord	mitpsi
+1D714	ord	mitomega
+1D715	ord	mitpartial
+1D716	ord	mitepsilon
+1D717	ord	mitvartheta
+1D718	ord	mitvarkappa
+1D719	ord	mitphi
+1D71A	ord	mitvarrho
+1D71B	ord	mitvarpi
+1D71C	ord	mbfitAlpha
+1D71D	ord	mbfitBeta
+1D71E	ord	mbfitGamma
+1D71F	ord	mbfitDelta
+1D720	ord	mbfitEpsilon
+1D721	ord	mbfitZeta
+1D722	ord	mbfitEta
+1D723	ord	mbfitTheta
+1D724	ord	mbfitIota
+1D725	ord	mbfitKappa
+1D726	ord	mbfitLambda
+1D727	ord	mbfitMu
+1D728	ord	mbfitNu
+1D729	ord	mbfitXi
+1D72A	ord	mbfitOmicron
+1D72B	ord	mbfitPi
+1D72C	ord	mbfitRho
+1D72D	ord	mbfitvarTheta
+1D72E	ord	mbfitSigma
+1D72F	ord	mbfitTau
+1D730	ord	mbfitUpsilon
+1D731	ord	mbfitPhi
+1D732	ord	mbfitChi
+1D733	ord	mbfitPsi
+1D734	ord	mbfitOmega
+1D735	ord	mbfitnabla
+1D736	ord	mbfitalpha
+1D737	ord	mbfitbeta
+1D738	ord	mbfitgamma
+1D739	ord	mbfitdelta
+1D73A	ord	mbfitvarepsilon
+1D73B	ord	mbfitzeta
+1D73C	ord	mbfiteta
+1D73D	ord	mbfittheta
+1D73E	ord	mbfitiota
+1D73F	ord	mbfitkappa
+1D740	ord	mbfitlambda
+1D741	ord	mbfitmu
+1D742	ord	mbfitnu
+1D743	ord	mbfitxi
+1D744	ord	mbfitomicron
+1D745	ord	mbfitpi
+1D746	ord	mbfitrho
+1D747	ord	mbfitvarsigma
+1D748	ord	mbfitsigma
+1D749	ord	mbfittau
+1D74A	ord	mbfitupsilon
+1D74B	ord	mbfitvarphi
+1D74C	ord	mbfitchi
+1D74D	ord	mbfitpsi
+1D74E	ord	mbfitomega
+1D74F	ord	mbfitpartial
+1D750	ord	mbfitepsilon
+1D751	ord	mbfitvartheta
+1D752	ord	mbfitvarkappa
+1D753	ord	mbfitphi
+1D754	ord	mbfitvarrho
+1D755	ord	mbfitvarpi
+1D756	ord	mbfsansAlpha
+1D757	ord	mbfsansBeta
+1D758	ord	mbfsansGamma
+1D759	ord	mbfsansDelta
+1D75A	ord	mbfsansEpsilon
+1D75B	ord	mbfsansZeta
+1D75C	ord	mbfsansEta
+1D75D	ord	mbfsansTheta
+1D75E	ord	mbfsansIota
+1D75F	ord	mbfsansKappa
+1D760	ord	mbfsansLambda
+1D761	ord	mbfsansMu
+1D762	ord	mbfsansNu
+1D763	ord	mbfsansXi
+1D764	ord	mbfsansOmicron
+1D765	ord	mbfsansPi
+1D766	ord	mbfsansRho
+1D767	ord	mbfsansvarTheta
+1D768	ord	mbfsansSigma
+1D769	ord	mbfsansTau
+1D76A	ord	mbfsansUpsilon
+1D76B	ord	mbfsansPhi
+1D76C	ord	mbfsansChi
+1D76D	ord	mbfsansPsi
+1D76E	ord	mbfsansOmega
+1D76F	ord	mbfsansnabla
+1D770	ord	mbfsansalpha
+1D771	ord	mbfsansbeta
+1D772	ord	mbfsansgamma
+1D773	ord	mbfsansdelta
+1D774	ord	mbfsansvarepsilon
+1D775	ord	mbfsanszeta
+1D776	ord	mbfsanseta
+1D777	ord	mbfsanstheta
+1D778	ord	mbfsansiota
+1D779	ord	mbfsanskappa
+1D77A	ord	mbfsanslambda
+1D77B	ord	mbfsansmu
+1D77C	ord	mbfsansnu
+1D77D	ord	mbfsansxi
+1D77E	ord	mbfsansomicron
+1D77F	ord	mbfsanspi
+1D780	ord	mbfsansrho
+1D781	ord	mbfsansvarsigma
+1D782	ord	mbfsanssigma
+1D783	ord	mbfsanstau
+1D784	ord	mbfsansupsilon
+1D785	ord	mbfsansvarphi
+1D786	ord	mbfsanschi
+1D787	ord	mbfsanspsi
+1D788	ord	mbfsansomega
+1D789	ord	mbfsanspartial
+1D78A	ord	mbfsansepsilon
+1D78B	ord	mbfsansvartheta
+1D78C	ord	mbfsansvarkappa
+1D78D	ord	mbfsansphi
+1D78E	ord	mbfsansvarrho
+1D78F	ord	mbfsansvarpi
+1D790	ord	mbfitsansAlpha
+1D791	ord	mbfitsansBeta
+1D792	ord	mbfitsansGamma
+1D793	ord	mbfitsansDelta
+1D794	ord	mbfitsansEpsilon
+1D795	ord	mbfitsansZeta
+1D796	ord	mbfitsansEta
+1D797	ord	mbfitsansTheta
+1D798	ord	mbfitsansIota
+1D799	ord	mbfitsansKappa
+1D79A	ord	mbfitsansLambda
+1D79B	ord	mbfitsansMu
+1D79C	ord	mbfitsansNu
+1D79D	ord	mbfitsansXi
+1D79E	ord	mbfitsansOmicron
+1D79F	ord	mbfitsansPi
+1D7A0	ord	mbfitsansRho
+1D7A1	ord	mbfitsansvarTheta
+1D7A2	ord	mbfitsansSigma
+1D7A3	ord	mbfitsansTau
+1D7A4	ord	mbfitsansUpsilon
+1D7A5	ord	mbfitsansPhi
+1D7A6	ord	mbfitsansChi
+1D7A7	ord	mbfitsansPsi
+1D7A8	ord	mbfitsansOmega
+1D7A9	ord	mbfitsansnabla
+1D7AA	ord	mbfitsansalpha
+1D7AB	ord	mbfitsansbeta
+1D7AC	ord	mbfitsansgamma
+1D7AD	ord	mbfitsansdelta
+1D7AE	ord	mbfitsansvarepsilon
+1D7AF	ord	mbfitsanszeta
+1D7B0	ord	mbfitsanseta
+1D7B1	ord	mbfitsanstheta
+1D7B2	ord	mbfitsansiota
+1D7B3	ord	mbfitsanskappa
+1D7B4	ord	mbfitsanslambda
+1D7B5	ord	mbfitsansmu
+1D7B6	ord	mbfitsansnu
+1D7B7	ord	mbfitsansxi
+1D7B8	ord	mbfitsansomicron
+1D7B9	ord	mbfitsanspi
+1D7BA	ord	mbfitsansrho
+1D7BB	ord	mbfitsansvarsigma
+1D7BC	ord	mbfitsanssigma
+1D7BD	ord	mbfitsanstau
+1D7BE	ord	mbfitsansupsilon
+1D7BF	ord	mbfitsansvarphi
+1D7C0	ord	mbfitsanschi
+1D7C1	ord	mbfitsanspsi
+1D7C2	ord	mbfitsansomega
+1D7C3	ord	mbfitsanspartial
+1D7C4	ord	mbfitsansepsilon
+1D7C5	ord	mbfitsansvartheta
+1D7C6	ord	mbfitsansvarkappa
+1D7C7	ord	mbfitsansphi
+1D7C8	ord	mbfitsansvarrho
+1D7C9	ord	mbfitsansvarpi
+1D7CA	ord	mbfDigamma
+1D7CB	ord	mbfdigamma
+1D7CE	ord	mbfzero
+1D7CF	ord	mbfone
+1D7D0	ord	mbftwo
+1D7D1	ord	mbfthree
+1D7D2	ord	mbffour
+1D7D3	ord	mbffive
+1D7D4	ord	mbfsix
+1D7D5	ord	mbfseven
+1D7D6	ord	mbfeight
+1D7D7	ord	mbfnine
+1D7D8	ord	Bbbzero
+1D7D9	ord	Bbbone
+1D7DA	ord	Bbbtwo
+1D7DB	ord	Bbbthree
+1D7DC	ord	Bbbfour
+1D7DD	ord	Bbbfive
+1D7DE	ord	Bbbsix
+1D7DF	ord	Bbbseven
+1D7E0	ord	Bbbeight
+1D7E1	ord	Bbbnine
+1D7E2	ord	msanszero
+1D7E3	ord	msansone
+1D7E4	ord	msanstwo
+1D7E5	ord	msansthree
+1D7E6	ord	msansfour
+1D7E7	ord	msansfive
+1D7E8	ord	msanssix
+1D7E9	ord	msansseven
+1D7EA	ord	msanseight
+1D7EB	ord	msansnine
+1D7EC	ord	mbfsanszero
+1D7ED	ord	mbfsansone
+1D7EE	ord	mbfsanstwo
+1D7EF	ord	mbfsansthree
+1D7F0	ord	mbfsansfour
+1D7F1	ord	mbfsansfive
+1D7F2	ord	mbfsanssix
+1D7F3	ord	mbfsansseven
+1D7F4	ord	mbfsanseight
+1D7F5	ord	mbfsansnine
+1D7F6	ord	mttzero
+1D7F7	ord	mttone
+1D7F8	ord	mtttwo
+1D7F9	ord	mttthree
+1D7FA	ord	mttfour
+1D7FB	ord	mttfive
+1D7FC	ord	mttsix
+1D7FD	ord	mttseven
+1D7FE	ord	mtteight
+1D7FF	ord	mttnine
+1EEF0	ord	arabicmaj	postfix 0 0 s
+1EEF1	ord	arabichad	postfix 0 0 s

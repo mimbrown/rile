@@ -5,7 +5,7 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 ## Current crates
 
 * `sile-core`: contains the core types and logic
-* `sile-cli`: the `sile` command, which typesets Markdown (CommonMark) to PDF through the builder API
+* `sile-cli`: the `sile` command, which typesets Markdown (CommonMark, with `$`/`$$` math) to PDF through the builder API
 * `sile-parity`: test-only tool that runs SILE's regression tests through `sile-core` and compares layouts with SILE's expected output
 
 ## Features
@@ -15,6 +15,10 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 ## Language data
 
 Patterns are SILE's own, converted to `sile-core/languages/*.pat`; localized messages are SILE's Fluent files (`*.ftl`). Both are embedded via `sile-core/src/language_data.rs`; regenerate with `scripts/import-sile-languages.py <sile checkout>`.
+
+## Math
+
+`sile-core/src/math` ports SILE's math package. Formulas are a typed `MathNode` tree; `TexMath` parses SILE's TeX-like syntax into it and `mathml::Element` converts MathML (the parity driver uses this for `\mathml`). `DocumentBuilder::add_math` sets a formula inline or displayed. The operator dictionary `sile-core/math/operators.txt` is generated from SILE's by `scripts/import-sile-math.py <sile checkout>`.
 
 ## SILE parity
 

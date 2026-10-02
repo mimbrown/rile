@@ -462,6 +462,15 @@ impl PartialEq for Info {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MathInk(pub std::sync::Arc<Vec<crate::math::MathItem>>);
+
+impl PartialEq for MathInk {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// What an hbox draws besides its content.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ink {
@@ -494,6 +503,8 @@ pub enum Ink {
     Svg(crate::svg_image::SvgFigure),
     /// Content drawn transformed, starting this far back from the pen.
     Transform(crate::transform::Transform, f64),
+    /// A formula's glyphs, rules and drawings (SILE's `math` package).
+    Math(MathInk),
 }
 
 impl HBox {

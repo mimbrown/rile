@@ -2,6 +2,7 @@ use crate::node::{HBox, Ink, Leader, LinerStyle, LinkDest, NNode, Node};
 use crate::color::Color;
 use crate::framespec::{Flow, FrameDirection, FrameGeometry};
 use crate::image::Image;
+use crate::math::MathItem;
 use crate::pagebuilder::{Page, Underlay};
 use crate::svg_image::SvgFigure;
 use crate::transform::{Matrix, Transform};
@@ -277,6 +278,10 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     c.advance_writing(width);
                 }
                 Some(Ink::Phantom) => c.advance_writing(line.width(node)),
+                Some(Ink::Math(items)) => {
+                    draw_math(&items.0, c, line, canvas);
+                    c.advance_writing(line.width(node));
+                }
                 Some(Ink::Destination(name)) => canvas.destination(name, c.x, c.y - line.height),
                 Some(Ink::Liner(LinerStyle::Custom(painter))) => {
                     (painter.0)(&mut Pen { cursor: c, canvas, line, hbox });
@@ -314,6 +319,33 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                 }
             },
             _ => {}
+        }
+    }
+}
+
+fn draw_math(items: &[MathItem], c: &Cursor, line: &Line, canvas: &mut dyn Canvas) {
+    let r = line.ratio;
+    for item in items {
+        match item {
+            MathItem::Glyphs { x, y, nnode, scale } => {
+                let (gx, gy) = (c.x + x.at(r), c.y + y);
+                if let Some(s) = scale {
+                    let oy = c.y + s.origin_y;
+                    canvas.push_transform([s.x, 0.0, 0.0, s.y, gx - s.x * gx, oy - s.y * oy]);
+                }
+                canvas.glyphs(nnode, gx, gy);
+                if scale.is_some() {
+                    canvas.pop_transform();
+                }
+            }
+            MathItem::Rule { x, y, width, height } => canvas.rule(c.x + x.at(r), c.y + y, width.at(r), *height),
+            MathItem::Figure { x, baseline, height, figure } => {
+                let (ops, width) = figure.ops(r);
+                let image = std::sync::Arc::new(crate::svg_image::SvgImage { ops, width, height: *height });
+                let figure = SvgFigure { image, scale: 1.0, drop: false };
+                let baseline = c.y + baseline;
+                canvas.svg(&figure, c.x + x.at(r), baseline - height, baseline, width, *height);
+            }
         }
     }
 }
