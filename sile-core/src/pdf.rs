@@ -294,6 +294,9 @@ impl PdfOutputter {
             content.transform([1.0, 0.0, 0.0, 1.0, offset.0 as f32, offset.1 as f32]);
         }
         let mut content = content.finish();
+        if !content.is_empty() {
+            content.push(b'\n');
+        }
         content.extend(page.content.finish());
         self.pages.push(BuiltPage {
             width: page.width,
@@ -813,6 +816,17 @@ impl crate::render::Canvas for PdfOutputter {
             }
         }
         c.restore_state();
+    }
+
+    fn push_transform(&mut self, [a, b, c, d, e, f]: crate::transform::Matrix) {
+        let page = self.current.as_mut().expect("no current page");
+        let h = page.height;
+        page.content.save_state();
+        page.content.transform([a, -b, -c, d, c * h + e, h * (1.0 - d) - f].map(|v| v as f32));
+    }
+
+    fn pop_transform(&mut self) {
+        self.current.as_mut().expect("no current page").content.restore_state();
     }
 
     fn link(&mut self, rect: [f64; 4], dest: &LinkDest) {

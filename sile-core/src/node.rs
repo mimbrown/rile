@@ -492,6 +492,8 @@ pub enum Ink {
     LatinInTate(f64),
     /// An SVG drawing standing on the baseline (SILE's `\\svg`).
     Svg(crate::svg_image::SvgFigure),
+    /// Content drawn transformed, starting this far back from the pen.
+    Transform(crate::transform::Transform, f64),
 }
 
 impl HBox {

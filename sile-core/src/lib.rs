@@ -33,6 +33,7 @@ pub mod textcase;
 pub mod url;
 pub mod toc;
 pub mod trace;
+pub mod transform;
 
 #[cfg(feature = "harfbuzz")]
 mod harfbuzz_ffi;
