@@ -4,6 +4,7 @@ use crate::framespec::{Flow, FrameDirection, FrameGeometry};
 use crate::image::Image;
 use crate::pagebuilder::{Page, Underlay};
 use crate::svg_image::SvgFigure;
+use crate::transform::{Matrix, Transform};
 
 /// A drawing surface for laid-out pages. Coordinates are in points, measured
 /// from the top-left corner of the page, with `y` growing downwards.
@@ -25,6 +26,9 @@ pub trait Canvas {
     /// `figure` with its top-left corner at `(x, y)`, `baseline` being where
     /// its box stands.
     fn svg(&mut self, _figure: &SvgFigure, _x: f64, _y: f64, _baseline: f64, _width: f64, _height: f64) {}
+    /// Draw what follows through `matrix` until `pop_transform`.
+    fn push_transform(&mut self, _matrix: Matrix) {}
+    fn pop_transform(&mut self) {}
     /// A link over `[left, top, right, bottom]`.
     fn link(&mut self, _rect: [f64; 4], _dest: &LinkDest) {}
 }
@@ -250,6 +254,20 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     if !c.backwards() {
                         c.advance_writing(width);
                     }
+                }
+                Some(Ink::Transform(transform, shift)) => {
+                    let width = line.width(node);
+                    let mut inner = *c;
+                    inner.advance_writing(-shift);
+                    canvas.push_transform(transform.matrix(inner.x, inner.y));
+                    if let Transform::Scale { x, .. } = transform
+                        && *x < 0.0
+                    {
+                        inner.advance_writing(width / x);
+                    }
+                    draw_hlist(&hbox.nodes, &mut inner, line, canvas);
+                    canvas.pop_transform();
+                    c.advance_writing(width);
                 }
                 Some(Ink::Phantom) => c.advance_writing(line.width(node)),
                 Some(Ink::Destination(name)) => canvas.destination(name, c.x, c.y - line.height),

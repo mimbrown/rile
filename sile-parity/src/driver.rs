@@ -144,6 +144,9 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "svg",
     "raw",
     "cropmarks:setup",
+    "rotate",
+    "scalebox",
+    "table",
     "background",
     "url",
     "href",
@@ -379,6 +382,9 @@ fn check(
                     | "packages.svg"
                     | "packages.cropmarks"
                     | "packages.autodoc"
+                    | "packages.rotate"
+                    | "packages.scalebox"
+                    | "packages.simpletable"
                     | "packages.grid"
                     | "packages.features"
                     | "packages.dropcaps"
@@ -1674,6 +1680,44 @@ impl<'a> Driver<'a> {
                 }
                 self.sync()?;
                 self.scoped(|d| quote.typeset(d, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e))?;
+            }
+            "rotate" | "scalebox" => {
+                self.sync()?;
+                self.doc.start_hbox();
+                self.process(content)?;
+                self.sync()?;
+                let hbox = self.doc.make_hbox().map_err(err)?;
+                let number = |key: &str, default: f64| cmd.option(key).map_or(Ok(default), |v| v.trim().parse::<f64>().map_err(|e| format!("{key}: {e}")));
+                if cmd.name == "rotate" {
+                    let angle = opt("angle")?.trim().parse::<f64>().map_err(|e| format!("angle: {e}"))?;
+                    self.doc.add_rotated(hbox, angle);
+                } else {
+                    self.doc.add_scaled(hbox, number("xratio", 1.0)?, number("yratio", 1.0)?).map_err(err)?;
+                }
+            }
+            "table" => {
+                let mut rows = Vec::new();
+                self.sync()?;
+                let indent = self.doc.paragraph_indent();
+                self.doc.set_paragraph_indent(0.0);
+                for row in content.iter().filter_map(|c| match c {
+                    sil::Content::Command(c) if c.name == "tr" => Some(c),
+                    _ => None,
+                }) {
+                    let mut cells = Vec::new();
+                    for cell in row.content.iter().flatten().filter_map(|c| match c {
+                        sil::Content::Command(c) if c.name == "td" => Some(c),
+                        _ => None,
+                    }) {
+                        self.doc.start_hbox();
+                        self.process(cell.content.as_deref().unwrap_or(&[]))?;
+                        self.sync()?;
+                        cells.push(self.doc.make_hbox().map_err(err)?);
+                    }
+                    rows.push(cells);
+                }
+                self.doc.set_paragraph_indent(indent);
+                self.doc.add_simple_table(rows).map_err(err)?;
             }
             "rebox" => {
                 self.sync()?;
