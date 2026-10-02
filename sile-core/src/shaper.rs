@@ -97,6 +97,10 @@ impl SpaceSettings {
 pub trait Shaper {
     fn shape(&self, text: &str, face: &FontFace, spec: &FontSpec) -> Vec<GlyphItem>;
 
+    /// Limit shaping to these HarfBuzz shapers, such as `ot` to skip
+    /// Graphite (SILE's `harfbuzz.subshapers`); all of them when empty.
+    fn set_subshapers(&mut self, _shapers: &[&str]) {}
+
     fn measure_char(&self, c: char, face: &FontFace, spec: &FontSpec) -> (CharMetrics, bool) {
         let items = self.shape(&c.to_string(), face, spec);
         let mut width = 0.0_f64;
@@ -250,7 +254,7 @@ fn parse_features(features_str: &str) -> Vec<rustybuzz::Feature> {
         return vec![];
     }
     features_str
-        .split(',')
+        .split([',', ';'])
         .filter_map(|s| s.trim().parse::<rustybuzz::Feature>().ok())
         .collect()
 }

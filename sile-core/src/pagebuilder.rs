@@ -90,8 +90,8 @@ pub struct Page {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Underlay {
-    /// Rules (x, y, width, height) in a colour.
-    Rules(Color, Vec<[f64; 4]>),
+    /// Rules (x, y, width, height), in a colour if given.
+    Rules(Option<Color>, Vec<[f64; 4]>),
     /// An image over (x, y, width, height).
     Image(std::sync::Arc<crate::image::Image>, [f64; 4]),
 }
@@ -232,6 +232,35 @@ pub fn find_break(
 
 /// Take the material up to and including the break off the queue, without
 /// the discardables it ends with.
+/// SILE's grid page builder: fill the frame line by line and break before
+/// the first node that overflows it or is a penalty.
+pub fn find_grid_break(queue: &mut Vec<Node>, target_height: f64, on_insertion: &mut InsertionHook) -> Option<PageBreakResult> {
+    let mut target = target_height;
+    let mut i = queue.iter().position(|n| !n.is_vglue()).unwrap_or(queue.len());
+    let mut height = 0.0;
+    let mut best = None;
+    while i < queue.len() {
+        match &queue[i] {
+            node @ Node::VBox(_) => height += pt(node.height()) + pt(node.depth()),
+            node if node.is_vglue() => height += pt(node.height()),
+            Node::Insertion(_) => target = on_insertion(queue, i, height, target),
+            _ => {}
+        }
+        let left = target - height;
+        let mut badness = if left < 0.0 { 1_000_000.0 } else { 0.0 };
+        if let Node::Penalty(p) = &queue[i] {
+            badness = if p.penalty < -3000 { 100_000.0 } else { -left * left - p.penalty as f64 };
+        }
+        if badness > 0.0 {
+            let break_index = best.unwrap_or(0);
+            return Some(PageBreakResult { break_index, badness: 0, penalty: 0, cost: 0, trigger_penalty: 1000 });
+        }
+        best = Some(i);
+        i += 1;
+    }
+    None
+}
+
 pub fn split_page(queue: &mut Vec<Node>, br: &PageBreakResult) -> Vec<Node> {
     let mut content: Vec<Node> = queue.drain(..=br.break_index).collect();
     while content.len() > 1 && content.last().is_some_and(Node::is_discardable) {

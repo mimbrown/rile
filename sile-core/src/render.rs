@@ -32,11 +32,15 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
         for underlay in &page.underlay {
             match underlay {
                 Underlay::Rules(color, rules) => {
-                    canvas.push_color(*color);
+                    if let Some(color) = color {
+                        canvas.push_color(*color);
+                    }
                     for [x, y, width, height] in rules {
                         canvas.rule(*x, *y, *width, *height);
                     }
-                    canvas.pop_color();
+                    if color.is_some() {
+                        canvas.pop_color();
+                    }
                 }
                 Underlay::Image(image, [x, y, width, height]) => canvas.image(image, *x, *y, *width, *height),
             }

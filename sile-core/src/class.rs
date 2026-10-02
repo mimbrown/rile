@@ -8,7 +8,6 @@ use crate::font::{FontSpec, FontStyle, FontWeight};
 use crate::framespec::{FrameDirection, FrameSpec};
 use crate::length::Length;
 use crate::measurement::Measurement;
-use crate::messages;
 
 /// The frames of a page and the one content starts in.
 #[derive(Debug, Clone, PartialEq)]
@@ -406,7 +405,7 @@ fn sectioning(doc: &mut DocumentBuilder, heading: Heading, level: usize, msg: Op
     }
     let Some(number) = number else { return };
     let text = msg
-        .and_then(|id| messages::message(doc.language(), id, &[("number", &number)]))
+        .and_then(|id| doc.message(id, &[("number", &number)]))
         .unwrap_or(number);
     doc.add_text(text);
 }

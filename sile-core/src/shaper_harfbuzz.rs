@@ -4,11 +4,13 @@ use crate::font::{Direction, FontFace, FontSpec};
 use crate::harfbuzz_ffi::{self, HbBlob, HbBuffer, HbFace, HbFont};
 use crate::shaper::{extract_glyph_texts_from_clusters, GlyphItem, Shaper};
 
-pub struct HarfBuzzShaper;
+pub struct HarfBuzzShaper {
+    subshapers: Vec<std::ffi::CString>,
+}
 
 impl HarfBuzzShaper {
     pub fn new() -> Self {
-        Self
+        Self { subshapers: Vec::new() }
     }
 }
 
@@ -19,6 +21,10 @@ impl Default for HarfBuzzShaper {
 }
 
 impl Shaper for HarfBuzzShaper {
+    fn set_subshapers(&mut self, shapers: &[&str]) {
+        self.subshapers = shapers.iter().filter_map(|s| std::ffi::CString::new(*s).ok()).collect();
+    }
+
     fn shape(&self, text: &str, face: &FontFace, spec: &FontSpec) -> Vec<GlyphItem> {
         let (data, index) = face.raw_data();
         let blob = HbBlob::from_bytes(data);
@@ -48,12 +54,12 @@ impl Shaper for HarfBuzzShaper {
             vec![]
         } else {
             spec.features
-                .split(',')
+                .split([',', ';'])
                 .filter_map(|s| harfbuzz_ffi::parse_feature(s.trim()))
                 .collect()
         };
 
-        harfbuzz_ffi::shape(&font, &mut buffer, &features);
+        harfbuzz_ffi::shape(&font, &mut buffer, &features, &self.subshapers);
 
         let infos = buffer.glyph_infos();
         let positions = buffer.glyph_positions();

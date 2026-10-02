@@ -17,6 +17,7 @@ use sile_core::node::{Ink, LinkDest, Node, Stroke};
 use sile_core::toc::{DefaultTocStyle, TableOfContents};
 use sile_core::pullquote::Pullquote;
 use sile_core::dropcap::Dropcap;
+use sile_core::features::OtFeatures;
 use sile_core::image::{Background, BackgroundFill, Image};
 use sile_core::url::{url_pieces, UrlPenalties, UrlPiece};
 use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
@@ -128,6 +129,13 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "pdf:metadata",
     "pdf:destination",
     "rebox",
+    "grid",
+    "grid:debug",
+    "no-grid",
+    "fluent",
+    "ftl",
+    "add-font-feature",
+    "remove-font-feature",
     "dropcap",
     "pullquote",
     "img",
@@ -260,6 +268,7 @@ const SETTINGS: &[&str] = &[
     "typesetter.fixedSpacingAfterInitialEmdash",
     "typesetter.softHyphen",
     "typesetter.breakwidth",
+    "harfbuzz.subshapers",
     "dropcaps.bsratio",
     "linespacing.method",
     "linespacing.fixed.baselinedistance",
@@ -361,6 +370,8 @@ fn check(
                     | "packages.tableofcontents"
                     | "packages.rebox"
                     | "packages.url"
+                    | "packages.grid"
+                    | "packages.features"
                     | "packages.dropcaps"
                     | "packages.pullquote"
                     | "packages.image"
@@ -375,7 +386,12 @@ fn check(
             },
             "font" => {
                 for (k, v) in &cmd.options {
-                    if !FONT_OPTIONS.contains(&k.as_str()) {
+                    if k.starts_with(char::is_uppercase) {
+                        let mut features = OtFeatures::default();
+                        if features.load_option(k, v, false).is_err() {
+                            missing.insert(format!("font[{k}={v}]"));
+                        }
+                    } else if !FONT_OPTIONS.contains(&k.as_str()) {
                         missing.insert(format!("font[{k}]"));
                     } else if k == "family" && !corpus.fonts.has_family(v) {
                         missing.insert(format!("font family {v}"));
@@ -549,6 +565,8 @@ pub(crate) struct Driver<'a> {
     toplevel: Option<Settings>,
     /// SILE release targeted by `packages.retrograde` (latest if unset).
     target: (u32, u32, u32),
+    /// The grid package's spacing, once it is loaded.
+    grid_spacing: Option<f64>,
 }
 
 impl AsMut<DocumentBuilder> for Driver<'_> {
@@ -601,6 +619,7 @@ impl<'a> Driver<'a> {
             macro_content: Vec::new(),
             toplevel: None,
             target: (u32::MAX, 0, 0),
+            grid_spacing: None,
         })
     }
 
@@ -935,6 +954,9 @@ impl<'a> Driver<'a> {
                 }
                 Some("packages.linespacing") => {
                     self.settings.line_spacing.get_or_insert_with(Default::default);
+                }
+                Some("packages.grid") => {
+                    self.grid_spacing = Some(self.dimen(cmd.option("spacing").unwrap_or("1bs"))?);
                 }
                 _ => {}
             },
@@ -1440,6 +1462,59 @@ impl<'a> Driver<'a> {
                 };
                 self.doc.set_background(background).map_err(err)?;
             }
+            "add-font-feature" | "remove-font-feature" => {
+                let mut features = OtFeatures::parse(&self.doc.font_spec().map(|f| f.features.clone()).unwrap_or_default());
+                for (k, v) in &cmd.options {
+                    features.load_option(k, v, cmd.name == "remove-font-feature")?;
+                }
+                self.set_font_option("features", &features.to_string())?;
+            }
+            "grid" | "grid:debug" => {
+                if let Some(spacing) = cmd.option("spacing") {
+                    let spacing = self.dimen(spacing)?;
+                    if cmd.name == "grid" {
+                        self.grid_spacing = Some(spacing);
+                    }
+                }
+                let spacing = match (cmd.name.as_str(), cmd.option("spacing")) {
+                    ("grid:debug", Some(s)) => self.dimen(s)?,
+                    _ => self.grid_spacing.ok_or("grid package not loaded")?,
+                };
+                self.sync()?;
+                if cmd.name == "grid" {
+                    self.doc.start_grid(spacing).map_err(err)?;
+                } else {
+                    self.doc.show_grid(spacing).map_err(err)?;
+                }
+            }
+            "no-grid" => {
+                self.doc.end_grid();
+            }
+            "ftl" => {
+                let lang = cmd.option("locale").map_or_else(|| self.settings.language.clone(), String::from);
+                self.doc.add_messages(&lang, cmd.raw.as_deref().unwrap_or_default());
+            }
+            "fluent" => {
+                let id = sil::plain_text(content);
+                let args: Vec<(&str, &str)> = cmd.options.iter().filter(|(k, _)| k != "locale").map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                self.sync()?;
+                let saved = cmd.option("locale").map(|locale| {
+                    let saved = self.doc.language().to_string();
+                    self.doc.set_language(locale);
+                    saved
+                });
+                let message = self.doc.message(id.trim(), &args);
+                if let Some(saved) = saved {
+                    self.doc.set_language(saved);
+                }
+                let message = message.ok_or_else(|| format!("no message {id}"))?;
+                let tree = crate::xml::parse(&format!("<fluent>{message}</fluent>")).map_err(|e| e.0)?;
+                for c in &tree {
+                    if let Content::Command(root) = c {
+                        self.process(root.content.as_deref().unwrap_or_default())?;
+                    }
+                }
+            }
             "dropcap" => {
                 let mut dropcap = Dropcap { bs_ratio: self.settings.dropcap_bs_ratio, ..Default::default() };
                 let mut font = Vec::new();
@@ -1609,7 +1684,19 @@ impl<'a> Driver<'a> {
             "font" => {
                 let apply = |d: &mut Self| -> Result<(), String> {
                     let before = d.doc.font_spec().cloned();
-                    for (k, v) in &cmd.options {
+                    let (named, options): (Vec<_>, Vec<_>) = cmd.options.iter().partition(|(k, _)| k.starts_with(char::is_uppercase));
+                    if !named.is_empty() {
+                        let mut features = OtFeatures::parse(&before.as_ref().map(|f| f.features.clone()).unwrap_or_default());
+                        for (k, v) in &named {
+                            features.load_option(k, v, false)?;
+                        }
+                        let features = match cmd.option("features") {
+                            Some(explicit) => format!("{explicit};{features}"),
+                            None => features.to_string(),
+                        };
+                        d.set_font_option("features", &features)?;
+                    }
+                    for (k, v) in options.iter().filter(|(k, _)| named.is_empty() || k != "features") {
                         if k != "adjust" {
                             d.set_font_option(k, v)?;
                         }
@@ -1899,6 +1986,10 @@ impl<'a> Driver<'a> {
             }
             "typesetter.softHyphen" => {
                 self.doc.set_soft_hyphens(truthy(value));
+            }
+            "harfbuzz.subshapers" => {
+                let shapers: Vec<&str> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                self.doc.set_subshapers(&shapers);
             }
             "dropcaps.bsratio" => {
                 self.settings.dropcap_bs_ratio = (!value.is_empty()).then(|| value.parse()).transpose().map_err(|_| format!("bad bsratio {value}"))?;

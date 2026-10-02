@@ -5,7 +5,6 @@ use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
 use crate::class::{bigskip, medskip, smallskip, with_font};
 use crate::font::{FontSpec, FontWeight};
 use crate::length::Length;
-use crate::messages;
 use crate::node::LinkDest;
 use crate::references::TocEntry;
 
@@ -134,7 +133,7 @@ impl TableOfContents {
 }
 
 fn message(doc: &DocumentBuilder, id: &str) -> String {
-    messages::message(doc.language(), id, &[]).unwrap_or_else(|| id.to_string())
+    doc.message(id, &[]).unwrap_or_else(|| id.to_string())
 }
 
 #[cfg(test)]
