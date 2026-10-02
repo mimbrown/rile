@@ -5,7 +5,7 @@
 use sile_core::bible::Bible;
 use sile_core::builder::{BuilderError, DocumentBuilder};
 use sile_core::color::Color;
-use sile_core::class::{bigskip, smallskip, with_font};
+use sile_core::class::{bigskip, smallskip, with_font, Book};
 use sile_core::font::{FontStyle, FontWeight};
 use sile_core::framespec::{FrameDirection, FrameSpec};
 use sile_core::linebreak::ParShape;
@@ -58,6 +58,7 @@ pub fn port(test: &str) -> Option<Port> {
         "bug-255b" => (&[nothing], &[("donothing", |d, cmd| skipped(d, cmd, "20pt", Some("20pt")))]),
         "feat-unicode-softhyphen" => (&[nothing], &[]),
         "bug-liner-width" => (&[nothing], &[("advance-box-width", advance_box_width)]),
+        "bug-337" => (&[bug_337], &[("printPageInPoints", print_page_in_points)]),
         "negative-spaces-in-line" => (&[|d| d.add_text(&"کی خواہش ".repeat(8))], &[]),
         _ => return None,
     };
@@ -76,6 +77,21 @@ fn with_doc(d: &mut Driver, f: impl FnOnce(&mut DocumentBuilder) -> Result<(), B
 
 fn nothing(_: &mut Driver) -> Result<(), String> {
     Ok(())
+}
+
+/// `inc.bug-337`: book pages that are all content above a folio, and
+/// SILE's `cropmarks` package.
+fn bug_337(d: &mut Driver) -> Result<(), String> {
+    d.doc.set_class(Book::with_frames(vec![
+        FrameSpec::new("content").left("0").right("100%pw").top("0").bottom("top(folio)"),
+        FrameSpec::new("folio").left("left(content)").right("right(content)").height("10pt").bottom("100%ph"),
+    ]));
+    Ok(())
+}
+
+fn print_page_in_points(d: &mut Driver, _: &Command) -> Result<(), String> {
+    let paper = d.doc.paper();
+    d.add_text(&format!("{:.0}pt × {:.0}pt", paper.width, paper.height))
 }
 
 fn process(d: &mut Driver, cmd: &Command) -> Result<(), String> {

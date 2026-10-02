@@ -490,6 +490,8 @@ pub enum Ink {
     /// Latin text set on its side in vertical Japanese, shifted by this
     /// zenkaku width (SILE's `\\latin-in-tate`).
     LatinInTate(f64),
+    /// An SVG drawing standing on the baseline (SILE's `\\svg`).
+    Svg(crate::svg_image::SvgFigure),
 }
 
 impl HBox {

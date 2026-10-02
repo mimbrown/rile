@@ -86,19 +86,24 @@ pub struct Page {
     pub outlines: Vec<FrameGeometry>,
     /// What is drawn before any content.
     pub underlay: Vec<Underlay>,
+    /// What is drawn over the content.
+    pub overlay: Vec<Underlay>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Underlay {
     /// Rules (x, y, width, height), in a colour if given.
     Rules(Option<Color>, Vec<[f64; 4]>),
     /// An image over (x, y, width, height).
     Image(std::sync::Arc<crate::image::Image>, [f64; 4]),
+    /// A box's content from (x, baseline), its glue stretched as in a
+    /// full line.
+    Box(crate::node::HBox, [f64; 2]),
 }
 
 impl Page {
     pub fn new(number: usize, paper: PaperSize, frames: Vec<FrameGeometry>) -> Self {
-        Self { number, paper, frames, content: Vec::new(), outlines: Vec::new(), underlay: Vec::new() }
+        Self { number, paper, frames, content: Vec::new(), outlines: Vec::new(), underlay: Vec::new(), overlay: Vec::new() }
     }
 
     pub fn frame(&self, id: &str) -> Option<&FrameGeometry> {

@@ -318,6 +318,8 @@ struct Grid {
 }
 
 /// A laid out document, ready to output.
+pub type PageHook = Box<dyn FnMut(&mut DocumentBuilder) -> Result<(), BuilderError>>;
+
 pub struct Layout {
     pub pages: Vec<Page>,
     /// The table of contents and labels found on the way.
@@ -570,6 +572,7 @@ pub struct DocumentBuilder {
     grid_debug: Option<f64>,
     messages: crate::messages::Messages,
     background: Option<Background>,
+    end_page_hooks: Vec<PageHook>,
 
     /// What the previous pass found, if there was one.
     previous_references: Option<CrossReferences>,
@@ -626,6 +629,7 @@ impl DocumentBuilder {
             grid_debug: None,
             messages: Default::default(),
             background: None,
+            end_page_hooks: Vec::new(),
             previous_references: None,
             consulted_references: Default::default(),
             references: CrossReferences::default(),
@@ -633,6 +637,10 @@ impl DocumentBuilder {
     }
 
     // -- Page geometry -------------------------------------------------------
+
+    pub fn paper(&self) -> PaperSize {
+        self.paper
+    }
 
     pub fn set_page_size(&mut self, paper: PaperSize) -> &mut Self {
         self.paper = paper;
@@ -1853,6 +1861,22 @@ impl DocumentBuilder {
         Ok(self)
     }
 
+    /// Call `hook` as each page ends, after the class's own end of page,
+    /// with the page still current (SILE's `endpage` hooks).
+    pub fn add_end_page_hook(&mut self, hook: impl FnMut(&mut DocumentBuilder) -> Result<(), BuilderError> + 'static) -> &mut Self {
+        self.end_page_hooks.push(Box::new(hook));
+        self
+    }
+
+    /// Draw `decoration` over the current page's content.
+    pub fn add_overlay(&mut self, decoration: Underlay) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        if let Some(state) = self.page.as_mut() {
+            state.page.overlay.push(decoration);
+        }
+        Ok(self)
+    }
+
     fn paint_background(&mut self) {
         let Some(background) = &self.background else { return };
         let Some(state) = self.page.as_mut() else { return };
@@ -2201,6 +2225,11 @@ impl DocumentBuilder {
             self.class = Some(class);
             result?;
         }
+        let mut hooks = std::mem::take(&mut self.end_page_hooks);
+        let result = hooks.iter_mut().try_for_each(|hook| hook(self));
+        hooks.append(&mut self.end_page_hooks);
+        self.end_page_hooks = hooks;
+        result?;
         if let Some(state) = self.page.take() {
             self.pages.push(state.page);
         }
@@ -2599,6 +2628,13 @@ impl DocumentBuilder {
     }
 
     // -- PDF config ----------------------------------------------------------
+
+    /// Print pages centred on sheets of `sheet`, when given (SILE's
+    /// `sheetsize` class option).
+    pub fn set_sheet_size(&mut self, sheet: Option<PaperSize>) -> &mut Self {
+        self.pdf_config.sheet = sheet;
+        self
+    }
 
     pub fn set_title(&mut self, title: impl Into<String>) -> &mut Self {
         self.pdf_config.title = Some(title.into());

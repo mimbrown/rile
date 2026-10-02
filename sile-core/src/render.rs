@@ -3,6 +3,7 @@ use crate::color::Color;
 use crate::framespec::{Flow, FrameDirection, FrameGeometry};
 use crate::image::Image;
 use crate::pagebuilder::{Page, Underlay};
+use crate::svg_image::SvgFigure;
 
 /// A drawing surface for laid-out pages. Coordinates are in points, measured
 /// from the top-left corner of the page, with `y` growing downwards.
@@ -21,6 +22,9 @@ pub trait Canvas {
     fn destination(&mut self, _name: &str, _x: f64, _y: f64) {}
     /// `image` with its top-left corner at `(x, y)`.
     fn image(&mut self, _image: &Image, _x: f64, _y: f64, _width: f64, _height: f64) {}
+    /// `figure` with its top-left corner at `(x, y)`, `baseline` being where
+    /// its box stands.
+    fn svg(&mut self, _figure: &SvgFigure, _x: f64, _y: f64, _baseline: f64, _width: f64, _height: f64) {}
     /// A link over `[left, top, right, bottom]`.
     fn link(&mut self, _rect: [f64; 4], _dest: &LinkDest) {}
 }
@@ -30,26 +34,38 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
     for page in pages {
         canvas.begin_page(page.paper.width, page.paper.height);
         for underlay in &page.underlay {
-            match underlay {
-                Underlay::Rules(color, rules) => {
-                    if let Some(color) = color {
-                        canvas.push_color(*color);
-                    }
-                    for [x, y, width, height] in rules {
-                        canvas.rule(*x, *y, *width, *height);
-                    }
-                    if color.is_some() {
-                        canvas.pop_color();
-                    }
-                }
-                Underlay::Image(image, [x, y, width, height]) => canvas.image(image, *x, *y, *width, *height),
-            }
+            draw_decoration(underlay, canvas);
         }
         draw_page(page, canvas);
+        for overlay in &page.overlay {
+            draw_decoration(overlay, canvas);
+        }
         for frame in &page.outlines {
             canvas.frame_outline(frame);
         }
         canvas.end_page();
+    }
+}
+
+fn draw_decoration(decoration: &Underlay, canvas: &mut impl Canvas) {
+    match decoration {
+        Underlay::Rules(color, rules) => {
+            if let Some(color) = color {
+                canvas.push_color(*color);
+            }
+            for [x, y, width, height] in rules {
+                canvas.rule(*x, *y, *width, *height);
+            }
+            if color.is_some() {
+                canvas.pop_color();
+            }
+        }
+        Underlay::Image(image, [x, y, width, height]) => canvas.image(image, *x, *y, *width, *height),
+        Underlay::Box(hbox, [x, y]) => {
+            let mut c = Cursor { x: *x, y: *y, dir: FrameDirection::LTR };
+            let line = Line { ratio: 1.0, end_edge: f64::INFINITY, height: pt(&hbox.height.length) };
+            draw_hlist(&hbox.nodes, &mut c, &line, canvas);
+        }
     }
 }
 
@@ -220,6 +236,17 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                         c.advance_writing(width);
                     }
                     canvas.image(image, c.x, c.y - height, width, height);
+                    if !c.backwards() {
+                        c.advance_writing(width);
+                    }
+                }
+                Some(Ink::Svg(figure)) => {
+                    let width = line.width(node);
+                    let height = if figure.drop { 0.0 } else { pt(&hbox.height.length) };
+                    if c.backwards() {
+                        c.advance_writing(width);
+                    }
+                    canvas.svg(figure, c.x, c.y - height, c.y, width, height);
                     if !c.backwards() {
                         c.advance_writing(width);
                     }

@@ -109,6 +109,14 @@ struct Glyph {
 
 const RULE: u32 = u32::MAX;
 
+/// Figures compare equal when their drawings do, wherever they are.
+fn figure_id(ops: &str) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    ops.hash(&mut h);
+    (h.finish() as u32) | 0x8000_0000
+}
+
 /// Every glyph on the page with its pen position, then every rule. Runs
 /// without per-glyph advances spread their width evenly, which is exact for
 /// the first glyph and close enough for the rest at the tolerance used.
@@ -135,6 +143,12 @@ fn glyphs(page: &crate::trace::Page) -> Vec<Glyph> {
         x: r.x,
         y: r.y,
         size: (r.width, r.depth),
+    }));
+    out.extend(page.figures.iter().map(|f| Glyph {
+        gid: figure_id(&f.ops),
+        x: 0.0,
+        y: f.y,
+        size: (f.width, f.height),
     }));
     out
 }

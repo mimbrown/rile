@@ -13,10 +13,12 @@ use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
-use sile_core::node::{Ink, LinkDest, Node, Stroke};
+use sile_core::node::{HBox, Ink, LinkDest, Node, Stroke};
 use sile_core::toc::{DefaultTocStyle, TableOfContents};
 use sile_core::pullquote::Pullquote;
 use sile_core::dropcap::Dropcap;
+use sile_core::svg_image::SvgImage;
+use sile_core::cropmarks::Cropmarks;
 use sile_core::features::OtFeatures;
 use sile_core::image::{Background, BackgroundFill, Image};
 use sile_core::url::{url_pieces, UrlPenalties, UrlPiece};
@@ -139,6 +141,9 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "dropcap",
     "pullquote",
     "img",
+    "svg",
+    "raw",
+    "cropmarks:setup",
     "background",
     "url",
     "href",
@@ -338,6 +343,7 @@ fn check(
                 for (k, v) in &cmd.options {
                     match k.as_str() {
                         "class" | "papersize" | "landscape" => {}
+                        "sheetsize" if paper_size(v).is_some() => {}
                         "direction" if direction(v).is_some() => {}
                         "layout" if matches!(v.as_str(), "yoko" | "tate") => {}
                         _ => {
@@ -370,6 +376,9 @@ fn check(
                     | "packages.tableofcontents"
                     | "packages.rebox"
                     | "packages.url"
+                    | "packages.svg"
+                    | "packages.cropmarks"
+                    | "packages.autodoc"
                     | "packages.grid"
                     | "packages.features"
                     | "packages.dropcaps"
@@ -377,6 +386,7 @@ fn check(
                     | "packages.image"
                     | "packages.background",
                 ) => {}
+                Some(m) if m.starts_with("inc.") && port.is_some() => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
                 }
@@ -631,9 +641,64 @@ impl<'a> Driver<'a> {
     /// An image file named as SILE's tests name them: from the test's
     /// directory, or SILE's own.
     fn image(&self, src: &str) -> Result<Arc<Image>, String> {
+        Image::load(self.resolve(src)?, src).map(Arc::new).map_err(|e| e.to_string())
+    }
+
+    /// What SILE's `verbatim` environment sets, with `skips` at the sides.
+    fn verbatim_settings(&mut self, (left, right): (Length, Length)) -> Result<(), String> {
+        if self.defines.contains_key("verbatim:font") {
+            self.command(&Command { name: "verbatim:font".into(), options: Vec::new(), content: None, raw: None })?;
+        } else {
+            let before = self.doc.font_spec().cloned();
+            self.set_font_option("family", "Hack")?;
+            self.adjust_font_size("ex-height", before)?;
+        }
+        self.settings.language = "und".into();
+        self.settings.obey_lines = true;
+        self.settings.obey_spaces = true;
+        self.settings.skips.left = left;
+        self.settings.skips.right = right;
+        self.settings.parindent = "0pt".into();
+        self.settings.parskip = "0pt".into();
+        self.settings.space.skip = Some(self.length("1spc")?);
+        self.settings.space.variable_spaces = false;
+        Ok(())
+    }
+
+    /// SILE's `\autodoc:codeblock`: verbatim text between rules.
+    fn codeblock(&mut self, code: &str) -> Result<(), String> {
+        self.sync()?;
+        self.doc.leave_hmode(false).map_err(|e| e.to_string())?;
+        let parindent = self.dimen(&self.settings.parindent.clone())?;
+        let side = |l: &Length| Length::pt(l.length.to_pt().unwrap_or(0.0) + parindent);
+        let skips = (side(&self.settings.skips.left), side(&self.settings.skips.right));
+        let line = |raise: &str| format!("\\raise[height={raise}]{{\\hrule[thickness=0.5pt, width=100%lw]}}");
+        let before = sil::parse(&format!("{}\\novbreak{{}}", line("0.2ex"))).map_err(|e| e.0)?;
+        let after = sil::parse(&format!("\\novbreak{{}}{}", line("1ex"))).map_err(|e| e.0)?;
+        self.scoped(|d| {
+            d.verbatim_settings(skips)?;
+            d.process(&before)?;
+            d.text(code.trim())?;
+            d.process(&after)?;
+            d.sync()?;
+            d.doc.leave_hmode(false).map_err(|e| e.to_string())
+        })
+    }
+
+    fn resolve(&self, src: &str) -> Result<std::path::PathBuf, String> {
         let root = self.corpus.font_dir.with_file_name("sile");
-        let path = [root.join("tests").join(src), root.join(src)].into_iter().find(|p| p.exists()).ok_or_else(|| format!("no image {src}"))?;
-        Image::load(path, src).map(Arc::new).map_err(|e| e.to_string())
+        [root.join("tests").join(src), root.join(src)].into_iter().find(|p| p.exists()).ok_or_else(|| format!("no file {src}"))
+    }
+
+    /// SILE's `svg` package: `data` drawn at the size `cmd` asks for.
+    fn svg(&mut self, cmd: &Command, data: &str) -> Result<(), String> {
+        let size = |d: &mut Self, key| cmd.option(key).map(|v| d.dimen(v)).transpose();
+        let (width, height) = (size(self, "width")?, size(self, "height")?);
+        let density = cmd.option("density").map_or(Ok(72.0), |v| v.parse::<f64>().map_err(|e| e.to_string()))?;
+        let image = Arc::new(SvgImage::parse(data, density));
+        self.sync()?;
+        self.doc.add_svg(image, width, height, density, false).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     fn folio(&mut self) -> Option<&mut Folio> {
@@ -784,13 +849,26 @@ impl<'a> Driver<'a> {
         if matches!(text, "\n" | "\r\n") {
             return Ok(());
         }
-        let mut paragraphs = if self.settings.obey_lines {
-            text.split('\n').map(str::to_string).collect()
-        } else {
-            split_paragraphs(text)
+        if self.settings.obey_lines {
+            let mut seen = true;
+            let mut lines = text.split('\n').peekable();
+            while let Some(line) = lines.next() {
+                if !line.is_empty() {
+                    self.add_text(line)?;
+                    seen = true;
+                }
+                if lines.peek().is_some() {
+                    if !seen {
+                        self.sync()?;
+                        self.doc.add_box(HBox::new(Length::zero(), Length::zero(), Length::zero()));
+                    }
+                    seen = false;
+                    self.par()?;
+                }
+            }
+            return Ok(());
         }
-        .into_iter()
-        .peekable();
+        let mut paragraphs = split_paragraphs(text).into_iter().peekable();
         while let Some(chunk) = paragraphs.next() {
             if !chunk.is_empty() {
                 self.add_text(&chunk)?;
@@ -899,7 +977,8 @@ impl<'a> Driver<'a> {
 
     fn command(&mut self, cmd: &Command) -> Result<(), String> {
         if let Some(port) = &self.port {
-            if matches!(cmd.name.as_str(), "lua" | "script") {
+            let inc = cmd.name == "use" && cmd.option("module").is_some_and(|m| m.starts_with("inc."));
+            if inc || matches!(cmd.name.as_str(), "lua" | "script") {
                 let chunk = port.chunks.get(self.lua_chunks).ok_or("no Rust port for this Lua")?;
                 self.lua_chunks += 1;
                 return chunk(self);
@@ -923,6 +1002,9 @@ impl<'a> Driver<'a> {
                     self.paper = self.paper.landscape();
                 }
                 self.doc.set_page_size(self.paper);
+                if let Some(sheet) = cmd.option("sheetsize") {
+                    self.doc.set_sheet_size(Some(paper_size(sheet).ok_or("bad sheetsize")?));
+                }
                 match cmd.option("class") {
                     Some("book") => self.doc.set_class(Book::new()),
                     Some("bible") => self.doc.set_class(Bible::new()),
@@ -1339,23 +1421,9 @@ impl<'a> Driver<'a> {
                 self.doc.push_vglue(Length::pt(6.0));
                 self.doc.leave_hmode(false).map_err(err)?;
                 self.scoped(|d| {
-                    if d.defines.contains_key("verbatim:font") {
-                        d.command(&Command { name: "verbatim:font".into(), options: Vec::new(), content: None, raw: None })?;
-                    } else {
-                        let before = d.doc.font_spec().cloned();
-                        d.set_font_option("family", "Hack")?;
-                        d.adjust_font_size("ex-height", before)?;
-                    }
-                    d.settings.language = "und".into();
-                    d.settings.obey_lines = true;
-                    d.settings.obey_spaces = true;
                     let fixed = |l: Length| Length::new(l.length, Measurement::pt(0.0), Measurement::pt(0.0));
-                    d.settings.skips.left = fixed(d.settings.skips.left);
-                    d.settings.skips.right = fixed(d.settings.skips.right);
-                    d.settings.parindent = "0pt".into();
-                    d.settings.parskip = "0pt".into();
-                    d.settings.space.skip = Some(d.length("1spc")?);
-                    d.settings.space.variable_spaces = false;
+                    let skips = (fixed(d.settings.skips.left), fixed(d.settings.skips.right));
+                    d.verbatim_settings(skips)?;
                     d.process(content)?;
                     d.sync()?;
                     d.doc.leave_hmode(false).map_err(err)
@@ -1448,6 +1516,41 @@ impl<'a> Driver<'a> {
                 let (width, height) = (size(self, "width")?, size(self, "height")?);
                 self.sync()?;
                 self.doc.add_image(image, width, height);
+            }
+            "cropmarks:setup" => {
+                let mut cropmarks = Cropmarks::default();
+                if let Some(header) = self.defines.get("cropmarks:header") {
+                    if header.iter().any(|c| matches!(c, sil::Content::Command(_))) {
+                        return Err("cropmarks:header with commands".into());
+                    }
+                    let text = sil::plain_text(header);
+                    cropmarks.header = Arc::new(move |doc, _| {
+                        doc.add_text(text.clone());
+                        Ok(())
+                    });
+                } else {
+                    return Err("cropmarks:header with the file name and date".into());
+                }
+                self.sync()?;
+                cropmarks.install(&mut self.doc);
+            }
+            "svg" => {
+                let data = std::fs::read_to_string(self.resolve(opt("src")?)?).map_err(|e| e.to_string())?;
+                self.svg(cmd, &data)?;
+            }
+            "raw" => {
+                let raw = cmd.raw.clone().or_else(|| Some(sil::plain_text(content))).unwrap_or_default();
+                match opt("type")? {
+                    "svg" => self.svg(cmd, &raw)?,
+                    "autodoc:codeblock" => self.codeblock(&raw)?,
+                    "verbatim" => self.command(&Command { name: "verbatim".into(), options: Vec::new(), content: Some(vec![sil::Content::Text(raw)]), raw: None })?,
+                    "text" => self.scoped(|d| {
+                        d.settings.obey_lines = true;
+                        d.settings.obey_spaces = true;
+                        d.text(&raw)
+                    })?,
+                    other => return Err(format!("no inline handler for '{other}'")),
+                }
             }
             "background" => {
                 let background = if cmd.option("disable").is_some_and(truthy) {

@@ -11,6 +11,7 @@ pub struct Trace {
 pub struct Page {
     pub runs: Vec<Run>,
     pub rules: Vec<Rule>,
+    pub figures: Vec<Figure>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,16 @@ pub struct Rule {
     pub y: f64,
     pub width: f64,
     pub depth: f64,
+}
+
+/// An SVG drawing: SILE's debug output gives its baseline, size and PDF
+/// operators but not where it starts across the line.
+#[derive(Debug, Clone)]
+pub struct Figure {
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub ops: String,
 }
 
 pub fn parse(src: &str) -> Trace {
@@ -158,6 +169,14 @@ pub fn parse(src: &str) -> Trace {
                     });
                 }
             }
+            "Draw SVG" => {
+                trace.pages.last_mut().unwrap().figures.push(Figure {
+                    y: num(rest.first()),
+                    width: num(rest.get(1)),
+                    height: num(rest.get(2)),
+                    ops: rest.get(4).map_or("", |s| s.trim()).to_string(),
+                });
+            }
             _ => {}
         }
     }
@@ -165,7 +184,7 @@ pub fn parse(src: &str) -> Trace {
         && trace
             .pages
             .last()
-            .is_some_and(|p| p.runs.is_empty() && p.rules.is_empty())
+            .is_some_and(|p| p.runs.is_empty() && p.rules.is_empty() && p.figures.is_empty())
     {
         trace.pages.pop();
     }
