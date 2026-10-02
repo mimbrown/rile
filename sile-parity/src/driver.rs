@@ -114,6 +114,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "ruby",
     "latin-in-tate",
+    "breakframevertical",
     "sync",
     "save-book-title",
     "save-chapter-number",
@@ -239,6 +240,7 @@ const SETTINGS: &[&str] = &[
     "languages.am.justification",
     "typesetter.fixedSpacingAfterInitialEmdash",
     "typesetter.softHyphen",
+    "typesetter.breakwidth",
     "linespacing.method",
     "linespacing.fixed.baselinedistance",
     "linespacing.fit-glyph.extra-space",
@@ -1324,6 +1326,11 @@ impl<'a> Driver<'a> {
                 }
                 Bible::verse_number(&mut self.doc, &sil::plain_text(content)).map_err(err)?;
             }
+            "breakframevertical" => {
+                let offset = cmd.option("offset").map(|o| self.dimen(o)).transpose()?;
+                self.sync()?;
+                self.doc.break_frame_vertical(offset).map_err(err)?;
+            }
             "sync" => {
                 self.sync()?;
                 self.doc.sync_parallel().map_err(err)?;
@@ -1694,6 +1701,10 @@ impl<'a> Driver<'a> {
             }
             "typesetter.softHyphen" => {
                 self.doc.set_soft_hyphens(truthy(value));
+            }
+            "typesetter.breakwidth" => {
+                let width = if value.is_empty() { None } else { Some(self.dimen(value)?) };
+                self.doc.set_break_width(width);
             }
             "languages.am.justification" => match value {
                 "left" | "centered" => self.settings.ethiopic_centered = value == "centered",

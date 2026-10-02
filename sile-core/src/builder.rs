@@ -336,6 +336,7 @@ pub struct Settings {
     ethiopic_centered: bool,
     fixed_space_after_dash: bool,
     soft_hyphens: bool,
+    break_width: Option<f64>,
     fallbacks: Vec<FontFallback>,
     /// The fallbacks applied to the current font, as registered fonts.
     fallback_fonts: Vec<String>,
@@ -362,6 +363,7 @@ impl Default for Settings {
             ethiopic_centered: false,
             fixed_space_after_dash: true,
             soft_hyphens: true,
+            break_width: None,
             fallbacks: Vec::new(),
             fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
@@ -1011,6 +1013,17 @@ impl DocumentBuilder {
         self
     }
 
+    /// Break lines to this width instead of the frame's (SILE's
+    /// `typesetter.breakwidth`).
+    pub fn set_break_width(&mut self, width: Option<f64>) -> &mut Self {
+        self.settings.break_width = width;
+        self
+    }
+
+    fn break_width(&self) -> f64 {
+        self.settings.break_width.unwrap_or_else(|| self.current_frame().map_or(0.0, FrameGeometry::line_length))
+    }
+
     pub fn set_fixed_space_after_dash(&mut self, fixed: bool) -> &mut Self {
         self.settings.fixed_space_after_dash = fixed;
         self
@@ -1545,6 +1558,43 @@ impl DocumentBuilder {
         template
     }
 
+    /// Split the current frame where the material so far ends, or `offset`
+    /// below its top: the frame ends there and a new one, `<id>_`, takes
+    /// the rest, with what follows going into it unless `offset` is given
+    /// (SILE's `\breakframevertical`).
+    pub fn break_frame_vertical(&mut self, offset: Option<f64>) -> Result<&mut Self, BuilderError> {
+        self.ensure_page()?;
+        let height = match offset {
+            Some(offset) => offset,
+            None => {
+                self.leave_hmode(true)?;
+                let queue = std::mem::take(&mut self.vertical_queue);
+                let height = queue.iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
+                let id = self.page.as_ref().expect("page").frame.clone();
+                self.output(&id, queue);
+                height
+            }
+        };
+        let state = self.page.as_mut().expect("page");
+        let index = state.page.frames.iter().position(|f| f.id == state.frame).ok_or_else(|| BuilderError::Layout("no current frame".into()))?;
+        let mut rest = state.page.frames[index].clone();
+        rest.id = format!("{}_", rest.id);
+        rest.top += height;
+        rest.direction = None;
+        let frame = &mut state.page.frames[index];
+        frame.bottom = frame.top + height;
+        frame.next = Some(rest.id.clone());
+        let rest_id = rest.id.clone();
+        self.resolve_direction(&mut rest);
+        let state = self.page.as_mut().expect("page");
+        state.page.frames.push(rest);
+        if offset.is_none() {
+            state.frame = rest_id;
+            self.previous_depth = None;
+        }
+        Ok(self)
+    }
+
     /// Add frames to every page from this one on (SILE's
     /// `class:declareFrame`).
     pub fn declare_frames(&mut self, frames: &[FrameSpec]) -> Result<&mut Self, BuilderError> {
@@ -1882,7 +1932,7 @@ impl DocumentBuilder {
         if nodes.is_empty() {
             return Ok(());
         }
-        let hsize = self.current_frame().map_or(0.0, FrameGeometry::line_length);
+        let hsize = self.break_width();
         let (left, right) = margins.unwrap_or_default();
         let skips = LineSkips { left, right, ..self.settings.skips };
         let mut previous_depth = self.previous_depth;
@@ -2330,7 +2380,7 @@ impl DocumentBuilder {
 
     fn typeset_paragraph(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
         self.ensure_page()?;
-        let hsize = self.current_frame().map_or(0.0, FrameGeometry::line_length);
+        let hsize = self.break_width();
         let mut previous_depth = self.previous_depth;
         let nodes = self.typeset_inlines(inlines, hsize, self.writing_direction(), self.settings.skips, &mut previous_depth)?;
         self.previous_depth = previous_depth;
@@ -2510,7 +2560,7 @@ impl DocumentBuilder {
             .map(|name| self.fonts.get(name).map(|f| (name.as_str(), f)).ok_or_else(|| BuilderError::NoFont(name.clone())))
             .collect::<Result<Vec<_>, _>>()?;
         let tracking = run.tracking.unwrap_or(1.0);
-        let mut shaped = self.shape_with_fallbacks(&run.text, &fonts, run.color);
+        let mut shaped = self.shape_with_fallbacks(&run.text, &fonts, &run.language, run.color);
         for s in &mut shaped {
             s.glyph.width *= tracking;
         }
@@ -2584,7 +2634,7 @@ impl DocumentBuilder {
     /// Shape `text` in the first font, reshaping what it has no glyphs for
     /// in the next, in logical order (SILE's fallback shaper). Like SILE,
     /// the n-th stretch to be shaped falls back to the font after the n-th.
-    fn shape_with_fallbacks<'t>(&self, text: &'t str, fonts: &[(&str, &RegisteredFont)], color: Option<Color>) -> Vec<Shaped<'t>> {
+    fn shape_with_fallbacks<'t>(&self, text: &'t str, fonts: &[(&str, &RegisteredFont)], language: &str, color: Option<Color>) -> Vec<Shaped<'t>> {
         struct Pending {
             font: usize,
             offset: usize,
@@ -2597,7 +2647,12 @@ impl DocumentBuilder {
         while let Some(run) = runs.pop_front() {
             let (_, font) = fonts[run.font];
             let chunk = &text[run.start..run.stop];
-            let mut glyphs = self.shaper.shape(chunk, &font.face, &font.spec);
+            let mut glyphs = if font.spec.language.is_empty() {
+                let spec = FontSpec { language: language.to_string(), ..font.spec.clone() };
+                self.shaper.shape(chunk, &font.face, &spec)
+            } else {
+                self.shaper.shape(chunk, &font.face, &font.spec)
+            };
             if font.spec.direction == Direction::RTL {
                 glyphs.reverse();
             }
