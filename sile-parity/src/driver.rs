@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
+use sile_core::bible::Bible;
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
@@ -113,6 +114,9 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "ruby",
     "latin-in-tate",
+    "save-book-title",
+    "save-chapter-number",
+    "verse-number",
     "pdf:metadata",
     "show-hanmen",
     "bidi-off",
@@ -291,7 +295,7 @@ fn check(
                 }
             }
             "document" => {
-                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "jplain" | "jbook")) {
+                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook")) {
                     missing.insert(format!("class={class}"));
                 }
                 if let Some(p) = cmd.option("papersize")
@@ -376,6 +380,9 @@ fn check(
                 }
             },
             "lua" | "script" if port.is_some() => {}
+            "verse-number" if !port.is_some_and(|p| p.command("bible:verse-number").is_some()) => {
+                missing.insert("\\bible:verse-number".into());
+            }
             name if port.is_some_and(|p| p.command(name).is_some()) => {}
             name if SIMPLE_COMMANDS.contains(&name) || defined.contains(name) => {}
             name if cmd.raw.is_some() => {
@@ -573,6 +580,9 @@ impl<'a> Driver<'a> {
     fn folio(&mut self) -> Option<&mut Folio> {
         if self.doc.class_mut::<Book>().is_some() {
             return self.doc.class_mut::<Book>().map(|b| &mut b.folio);
+        }
+        if self.doc.class_mut::<Bible>().is_some() {
+            return self.doc.class_mut::<Bible>().map(|b| &mut b.book.folio);
         }
         self.doc.class_mut::<Plain>().map(|p| &mut p.folio)
     }
@@ -856,6 +866,7 @@ impl<'a> Driver<'a> {
                 self.doc.set_page_size(self.paper);
                 match cmd.option("class") {
                     Some("book") => self.doc.set_class(Book::new()),
+                    Some("bible") => self.doc.set_class(Bible::new()),
                     Some("jbook") => self.doc.set_class(Book::japanese(cmd.option("layout") == Some("tate"))),
                     Some("jplain") => self.doc.set_class(Plain::japanese(cmd.option("layout") == Some("tate"))),
                     _ => self.doc.set_class(Plain::new()),
@@ -1295,6 +1306,22 @@ impl<'a> Driver<'a> {
                 let reading = opt("reading")?.to_string();
                 self.sync()?;
                 DocumentBuilder::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+            }
+            "save-book-title" | "save-chapter-number" => {
+                let text = sil::plain_text(content);
+                let bible = self.doc.class_mut::<Bible>().ok_or("needs the bible class")?;
+                if cmd.name == "save-book-title" {
+                    bible.save_book_title(text);
+                } else {
+                    bible.save_chapter_number(text);
+                }
+            }
+            "verse-number" => {
+                self.sync()?;
+                if let Some(label) = self.port.as_ref().and_then(|p| p.command("bible:verse-number")) {
+                    label(self, cmd)?;
+                }
+                Bible::verse_number(&mut self.doc, &sil::plain_text(content)).map_err(err)?;
             }
             "pdf:metadata" => {
                 match self.doc.set_pdf_metadata(opt("key")?, opt("value")?) {

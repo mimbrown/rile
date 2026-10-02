@@ -769,6 +769,45 @@ impl DocumentBuilder {
 
     /// Indent for the next paragraph only (SILE's `current.parindent`);
     /// `Some(0.0)` is `\noindent`.
+    /// Mark this point in the text with `value`, which `page_info` returns
+    /// for the page it ends up on. Like SILE's `\info`, the marker doesn't
+    /// start a paragraph, so one added first leaves it unindented.
+    pub fn add_info<T: std::any::Any + Send + Sync>(&mut self, category: &str, value: T) -> &mut Self {
+        let info = node::Info { category: category.to_string(), value: std::sync::Arc::new(value) };
+        let marker = Inline::Node(Box::new(liner_mark(Ink::Info(info))));
+        match self.open_boxes.last_mut() {
+            Some((_, open)) => open.push(marker),
+            None => self.paragraph.push(marker),
+        }
+        self
+    }
+
+    /// The values of `category` markers on the page being finished, in the
+    /// order they were output (for use while it ends).
+    pub fn page_info<T: std::any::Any + Clone>(&self, category: &str) -> Vec<T> {
+        fn collect<T: std::any::Any + Clone>(nodes: &[Node], category: &str, out: &mut Vec<T>) {
+            for node in nodes {
+                match node {
+                    Node::VBox(b) => collect(&b.nodes, category, out),
+                    Node::HBox(b) => match &b.ink {
+                        Some(Ink::Info(info)) if info.category == category => {
+                            out.extend(info.value.downcast_ref::<T>().cloned());
+                        }
+                        _ => collect(&b.nodes, category, out),
+                    },
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(state) = &self.page {
+            for (_, nodes) in &state.page.content {
+                collect(nodes, category, &mut out);
+            }
+        }
+        out
+    }
+
     pub fn set_current_indent(&mut self, indent: Option<f64>) -> &mut Self {
         self.current_indent = indent;
         self

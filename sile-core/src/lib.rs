@@ -1,3 +1,4 @@
+pub mod bible;
 pub mod builder;
 pub mod class;
 pub mod color;

@@ -2,6 +2,7 @@
 //! Lua does, written against sile-core the way a Rust document would, so
 //! the test runs without a Lua interpreter.
 
+use sile_core::bible::Bible;
 use sile_core::builder::{BuilderError, DocumentBuilder};
 use sile_core::color::Color;
 use sile_core::class::{bigskip, smallskip, with_font};
@@ -50,6 +51,7 @@ pub fn port(test: &str) -> Option<Port> {
         "bug-1321" => (&[bug_1321], &[]),
         "sura-2" => (&[nothing], &[]),
         "bug-926" => (&[nothing], &[]),
+        "chapterverse" => (&[comma_references], &[("bible:verse-number", |_, _| Ok(()))]),
         "bug-1280" => (&[utf16_round_trips], &[]),
         "bug-255" => (&[nothing], &[("donothing", |d, cmd| skipped(d, cmd, "0pt", None))]),
         "bug-255b" => (&[nothing], &[("donothing", |d, cmd| skipped(d, cmd, "20pt", Some("20pt")))]),
@@ -322,5 +324,20 @@ fn utf16_round_trips(d: &mut Driver) -> Result<(), String> {
     for _ in 0..checks {
         d.add_text("✓")?;
     }
+    Ok(())
+}
+
+/// References as `Book chapter, verse` in Gentium Plus.
+fn comma_references(d: &mut Driver) -> Result<(), String> {
+    let bible = d.doc.class_mut::<Bible>().ok_or("needs the bible class")?;
+    bible.format_reference = std::sync::Arc::new(|doc, r| {
+        doc.update_font(|f| f.family = Some("Gentium Plus".into()))?;
+        let reference = format!("{}, {}", r.chapter.as_deref().unwrap_or(""), r.verse);
+        match &r.book {
+            Some(book) => doc.add_text(format!("{book} {reference}")),
+            None => doc.add_text(reference),
+        };
+        Ok(())
+    });
     Ok(())
 }
