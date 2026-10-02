@@ -40,6 +40,8 @@ pub struct PdfConfig {
     pub title: Option<String>,
     pub author: Option<String>,
     pub subject: Option<String>,
+    /// Other document info entries, such as `Keywords` or `CreationDate`.
+    pub info: Vec<(String, String)>,
     pub creator: String,
     pub compress: bool,
 }
@@ -50,6 +52,7 @@ impl Default for PdfConfig {
             title: None,
             author: None,
             subject: None,
+            info: Vec::new(),
             creator: "sile-rust".to_string(),
             compress: true,
         }
@@ -540,6 +543,7 @@ impl PdfOutputter {
         if self.config.title.is_some()
             || self.config.author.is_some()
             || self.config.subject.is_some()
+            || !self.config.info.is_empty()
         {
             let info_ref = alloc.bump();
             let mut info = pdf.document_info(info_ref);
@@ -551,6 +555,9 @@ impl PdfOutputter {
             }
             if let Some(ref subject) = self.config.subject {
                 info.subject(TextStr(subject));
+            }
+            for (key, value) in &self.config.info {
+                info.pair(Name(key.as_bytes()), TextStr(value));
             }
             info.creator(TextStr(&self.config.creator));
             info.finish();

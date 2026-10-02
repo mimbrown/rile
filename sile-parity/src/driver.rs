@@ -113,6 +113,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "par",
     "ruby",
     "latin-in-tate",
+    "pdf:metadata",
     "show-hanmen",
     "bidi-off",
     "bidi-on",
@@ -328,7 +329,8 @@ fn check(
                     | "packages.ruby"
                     | "packages.hanmenkyoshi"
                     | "packages.color-fonts"
-                    | "packages.bidi",
+                    | "packages.bidi"
+                    | "packages.pdf",
                 ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
@@ -1293,6 +1295,12 @@ impl<'a> Driver<'a> {
                 let reading = opt("reading")?.to_string();
                 self.sync()?;
                 DocumentBuilder::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+            }
+            "pdf:metadata" => {
+                match self.doc.set_pdf_metadata(opt("key")?, opt("value")?) {
+                    Ok(_) | Err(sile_core::builder::BuilderError::InvalidMetadata(_)) => {}
+                    Err(e) => return Err(err(e)),
+                }
             }
             "latin-in-tate" => {
                 self.sync()?;

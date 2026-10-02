@@ -50,6 +50,9 @@ pub fn port(test: &str) -> Option<Port> {
         "bug-1321" => (&[bug_1321], &[]),
         "sura-2" => (&[nothing], &[]),
         "bug-926" => (&[nothing], &[]),
+        "bug-1280" => (&[utf16_round_trips], &[]),
+        "bug-255" => (&[nothing], &[("donothing", |d, cmd| skipped(d, cmd, "0pt", None))]),
+        "bug-255b" => (&[nothing], &[("donothing", |d, cmd| skipped(d, cmd, "20pt", Some("20pt")))]),
         "feat-unicode-softhyphen" => (&[nothing], &[]),
         "bug-liner-width" => (&[nothing], &[("advance-box-width", advance_box_width)]),
         "negative-spaces-in-line" => (&[|d| d.add_text(&"کی خواہش ".repeat(8))], &[]),
@@ -260,5 +263,64 @@ fn advance_box_width(d: &mut Driver, cmd: &Command) -> Result<(), String> {
     d.doc.start_liner(LinerStyle::Custom(band));
     process(d, cmd)?;
     d.doc.end_hbox();
+    Ok(())
+}
+
+/// A paragraph with its own margins.
+fn skipped(d: &mut Driver, cmd: &Command, lskip: &str, rskip: Option<&str>) -> Result<(), String> {
+    d.scoped(|d| {
+        d.set("document.lskip", lskip)?;
+        if let Some(rskip) = rskip {
+            d.set("document.rskip", rskip)?;
+        }
+        process(d, cmd)?;
+        d.par()
+    })
+}
+
+/// Round-trips text through hex-encoded UTF-16 in both byte orders, with
+/// and without a byte order mark, ticking each that comes back intact.
+fn utf16_round_trips(d: &mut Driver) -> Result<(), String> {
+    fn hex(text: &str, be: bool) -> String {
+        let bom = if be { "feff" } else { "fffe" };
+        let units = text.encode_utf16().map(|u| if be { u.to_be_bytes() } else { u.to_le_bytes() });
+        bom.to_string() + &units.map(|[a, b]| format!("{a:02x}{b:02x}")).collect::<String>()
+    }
+    fn decode(hex: &str, be: bool) -> String {
+        let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
+        let units: Vec<u16> =
+            bytes.chunks_exact(2).map(|p| if be { u16::from_be_bytes([p[0], p[1]]) } else { u16::from_le_bytes([p[0], p[1]]) }).collect();
+        let text = String::from_utf16_lossy(&units);
+        text.strip_prefix('\u{FEFF}').map(str::to_string).unwrap_or(text)
+    }
+    let mut checks = 0;
+    let mut check = |d: &mut Driver, ok: bool| -> Result<(), String> {
+        if ok {
+            checks += 1;
+            d.add_text("✓")?;
+        }
+        Ok(())
+    };
+    for text in ["Schrödinger", "猫𠂤~"] {
+        d.par()?;
+        d.add_text(&format!("{text} ⇒"))?;
+        for (be, bom) in [(true, "feff"), (false, "fffe")] {
+            let encoded = hex(text, be);
+            d.par()?;
+            d.add_text(&format!("{encoded} → "))?;
+            check(d, encoded.starts_with(bom))?;
+            d.add_text(&decode(&encoded, be))?;
+            d.par()?;
+            let bare = &encoded[4..];
+            d.add_text(&format!("{bare} → "))?;
+            check(d, decode(bare, be) == text)?;
+            d.add_text(&decode(bare, be))?;
+        }
+    }
+    d.par()?;
+    d.add_text(if checks == 8 { "OK" } else { "NG" })?;
+    for _ in 0..checks {
+        d.add_text("✓")?;
+    }
     Ok(())
 }
