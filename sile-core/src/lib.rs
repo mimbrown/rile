@@ -4,6 +4,7 @@ pub mod class;
 pub mod color;
 pub mod counter;
 pub mod dropcap;
+pub mod features;
 pub mod font;
 pub mod frame;
 pub mod framespec;

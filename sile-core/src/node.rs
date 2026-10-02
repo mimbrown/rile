@@ -213,7 +213,7 @@ impl Node {
         match self {
             Node::Glue(g) | Node::HFillGlue(g) | Node::HssGlue(g) => !g.explicit,
             Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
-                !g.explicit
+                !g.explicit && !g.grid_leading
             }
             Node::Penalty(_) | Node::Insertion(_) => true,
             _ => false,
@@ -824,6 +824,8 @@ pub struct VGlue {
     pub height: Length,
     pub depth: Length,
     pub explicit: bool,
+    /// Space added to bring the next line onto the grid.
+    pub grid_leading: bool,
     pub adjustment: Measurement,
 }
 

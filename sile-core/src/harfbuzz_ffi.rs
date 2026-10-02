@@ -188,13 +188,19 @@ pub(crate) fn parse_feature(s: &str) -> Option<hb::hb_feature_t> {
     }
 }
 
-pub(crate) fn shape(font: &HbFont, buffer: &mut HbBuffer, features: &[hb::hb_feature_t]) {
+pub(crate) fn shape(font: &HbFont, buffer: &mut HbBuffer, features: &[hb::hb_feature_t], shapers: &[std::ffi::CString]) {
     unsafe {
         let features_ptr = if features.is_empty() {
             ptr::null()
         } else {
             features.as_ptr()
         };
-        hb::hb_shape(font.as_ptr(), buffer.as_ptr(), features_ptr, features.len() as u32);
+        if shapers.is_empty() {
+            hb::hb_shape(font.as_ptr(), buffer.as_ptr(), features_ptr, features.len() as u32);
+        } else {
+            let mut list: Vec<*const c_char> = shapers.iter().map(|s| s.as_ptr()).collect();
+            list.push(ptr::null());
+            hb::hb_shape_full(font.as_ptr(), buffer.as_ptr(), features_ptr, features.len() as u32, list.as_ptr());
+        }
     }
 }

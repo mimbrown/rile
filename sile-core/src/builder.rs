@@ -310,6 +310,13 @@ impl AsMut<DocumentBuilder> for DocumentBuilder {
     }
 }
 
+/// Lines on a grid: where the frame's material has got to, and the spacing.
+#[derive(Debug, Clone, Copy)]
+struct Grid {
+    spacing: f64,
+    cursor: f64,
+}
+
 /// A laid out document, ready to output.
 pub struct Layout {
     pub pages: Vec<Page>,
@@ -559,6 +566,9 @@ pub struct DocumentBuilder {
     pdf_config: PdfConfig,
     bookmarks: Vec<Bookmark>,
     destinations: usize,
+    grid: Option<Grid>,
+    grid_debug: Option<f64>,
+    messages: crate::messages::Messages,
     background: Option<Background>,
 
     /// What the previous pass found, if there was one.
@@ -612,6 +622,9 @@ impl DocumentBuilder {
             pdf_config: PdfConfig::default(),
             bookmarks: Vec::new(),
             destinations: 0,
+            grid: None,
+            grid_debug: None,
+            messages: Default::default(),
             background: None,
             previous_references: None,
             consulted_references: Default::default(),
@@ -1282,6 +1295,24 @@ impl DocumentBuilder {
         self.font_metrics(|f| (f.strikeout_position(), f.strikeout_size()))
     }
 
+    /// Add the messages in Fluent source `ftl` to `lang` (SILE's `\ftl`).
+    pub fn add_messages(&mut self, lang: &str, ftl: &str) -> &mut Self {
+        self.messages.add(lang, ftl);
+        self
+    }
+
+    /// Message `id` in the current language, with the document's own
+    /// messages over SILE's (SILE's `\fluent`).
+    pub fn message(&self, id: &str, args: &[(&str, &str)]) -> Option<String> {
+        self.messages.message(self.language(), id, args)
+    }
+
+    /// Limit shaping to these HarfBuzz shapers (SILE's `harfbuzz.subshapers`).
+    pub fn set_subshapers(&mut self, shapers: &[&str]) -> &mut Self {
+        self.shaper.set_subshapers(shapers);
+        self
+    }
+
     /// The current font's x-height in points (SILE's `ex`), half an em if
     /// the font doesn't say.
     pub fn x_height(&self) -> f64 {
@@ -1423,7 +1454,7 @@ impl DocumentBuilder {
         }
         let color = Color::Rgb { r: 1.0, g: 0.9, b: 0.9 };
         let page = &mut self.page.as_mut().expect("page").page;
-        page.underlay.push(Underlay::Rules(color, rules));
+        page.underlay.push(Underlay::Rules(Some(color), rules));
         Ok(self)
     }
 
@@ -1450,7 +1481,7 @@ impl DocumentBuilder {
         if !after_skip {
             self.current_indent = None;
             self.leave_hmode(false)?;
-            self.push_vertical(Node::vglue(self.settings.paragraph_skip));
+            self.push_vglue_node(Node::vglue(self.settings.paragraph_skip));
         }
         self.leave_hmode(false)?;
         self.hanging = None;
@@ -1499,8 +1530,85 @@ impl DocumentBuilder {
     /// Vertical glue added straight to the vertical list, ahead of the
     /// lines of any paragraph still in progress (SILE's `pushVglue`).
     pub fn push_vglue(&mut self, height: impl Into<Length>) -> &mut Self {
-        self.push_vertical(Node::vglue(height.into()));
+        self.push_vglue_node(Node::vglue(height.into()));
         self
+    }
+
+    /// Push vertical glue; on a grid it is fixed and followed by the space
+    /// to the next grid line (SILE's grid typesetter).
+    fn push_vglue_node(&mut self, mut glue: Node) {
+        if self.grid.is_none() {
+            return self.push_vertical(glue);
+        }
+        if let Node::VGlue(g) = &mut glue {
+            g.height = Length::from(g.height.length);
+            self.grid.as_mut().expect("grid").cursor += pt_of(&g.height);
+        }
+        self.push_vertical(glue);
+        let make_up = self.grid_make_up();
+        self.push_vertical(make_up);
+    }
+
+    fn grid_make_up(&mut self) -> Node {
+        let grid = self.grid.as_mut().expect("grid");
+        let add = (grid.spacing - grid.cursor).rem_euclid(grid.spacing);
+        grid.cursor += add;
+        Node::VGlue(node::VGlue { height: Length::pt(add), grid_leading: true, ..Default::default() })
+    }
+
+    /// Set lines on a grid `spacing` apart from the top of each frame, with
+    /// vertical space rounded up to fit (SILE's `\grid`).
+    pub fn start_grid(&mut self, spacing: f64) -> Result<&mut Self, BuilderError> {
+        self.grid = Some(Grid { spacing, cursor: 0.0 });
+        self.ensure_page()?;
+        self.grid_new_frame();
+        Ok(self)
+    }
+
+    /// Go back to ordinary line spacing (SILE's `\no-grid`).
+    pub fn end_grid(&mut self) -> &mut Self {
+        self.grid = None;
+        self
+    }
+
+    /// Rule the grid lines in this frame and every one after it (SILE's
+    /// `\grid:debug`).
+    pub fn show_grid(&mut self, spacing: f64) -> Result<&mut Self, BuilderError> {
+        self.grid_debug = Some(spacing);
+        self.ensure_page()?;
+        self.paint_grid();
+        Ok(self)
+    }
+
+    fn paint_grid(&mut self) {
+        let (Some(spacing), Some(frame)) = (self.grid_debug, self.current_frame()) else { return };
+        let mut rules = Vec::new();
+        let mut y = spacing;
+        while y < frame.height() {
+            rules.push([frame.left, frame.top + y, frame.width(), 0.1]);
+            y += spacing;
+        }
+        self.page.as_mut().expect("page").page.underlay.push(Underlay::Rules(None, rules));
+    }
+
+    /// Start the grid afresh at the top of a frame (SILE's
+    /// `startGridInFrame`).
+    fn grid_new_frame(&mut self) {
+        let Some(grid) = self.grid.as_mut() else { return };
+        grid.cursor = 0.0;
+        if self.vertical_queue.is_empty() {
+            self.vertical_queue.push(Node::VBox(VBox::default()));
+            self.previous_depth = Some(0.0);
+            return;
+        }
+        let keep = self.vertical_queue.iter().position(|n| !n.is_discardable() && !matches!(n, Node::VGlue(g) if g.grid_leading));
+        self.vertical_queue.drain(..keep.unwrap_or(self.vertical_queue.len()));
+        if let Some(first) = self.vertical_queue.first() {
+            let height = pt_of(&first.height());
+            self.grid.as_mut().expect("grid").cursor += height;
+            let make_up = self.grid_make_up();
+            self.vertical_queue.splice(0..0, [Node::VBox(VBox::default()), make_up]);
+        }
     }
 
     /// Length of the vertical list material is going to.
@@ -1557,7 +1665,7 @@ impl DocumentBuilder {
         if let Node::VGlue(g) = &mut glue {
             g.explicit = true;
         }
-        self.push_vertical(glue);
+        self.push_vglue_node(glue);
         Ok(self)
     }
 
@@ -1750,7 +1858,7 @@ impl DocumentBuilder {
         let Some(state) = self.page.as_mut() else { return };
         let page = [0.0, 0.0, self.paper.width, self.paper.height];
         state.page.underlay.push(match &background.fill {
-            BackgroundFill::Color(color) => Underlay::Rules(*color, vec![page]),
+            BackgroundFill::Color(color) => Underlay::Rules(Some(*color), vec![page]),
             BackgroundFill::Image(image) => Underlay::Image(image.clone(), page),
         });
         if !background.all_pages {
@@ -1902,7 +2010,12 @@ impl DocumentBuilder {
         let mut on_insertion = |queue: &mut Vec<Node>, i, height, target| {
             insertions.process(classes, &id, queue, i, height, target)
         };
-        let Some(br) = pagebuilder::find_break(&mut self.vertical_queue, target, false, &mut on_insertion) else {
+        let br = if self.grid.is_some() {
+            pagebuilder::find_grid_break(&mut self.vertical_queue, target, &mut on_insertion)
+        } else {
+            pagebuilder::find_break(&mut self.vertical_queue, target, false, &mut on_insertion)
+        };
+        let Some(br) = br else {
             return Ok(false);
         };
         self.last_penalty = br.trigger_penalty;
@@ -2013,6 +2126,8 @@ impl DocumentBuilder {
                 self.vertical_queue.insert(0, lead);
             }
         }
+        self.grid_new_frame();
+        self.paint_grid();
         Ok(())
     }
 
@@ -3149,7 +3264,16 @@ impl DocumentBuilder {
         let tate = self.in_tate_frame().then(|| self.zenkaku_width());
         for (index, (mut vbox, broken, migrating)) in lines.into_iter().enumerate() {
             let (height, depth) = (pt_of(&vbox.height), pt_of(&vbox.depth));
-            if let (Some(zw), Some(bls)) = (tate, self.settings.baseline_skip) {
+            if self.grid.is_some() {
+                match *previous_depth {
+                    Some(previous) => {
+                        self.grid.as_mut().expect("grid").cursor += height + previous;
+                        v_nodes.push(self.grid_make_up());
+                    }
+                    None => v_nodes.push(Node::vglue(Length::zero())),
+                }
+                *previous_depth = Some(depth);
+            } else if let (Some(zw), Some(bls)) = (tate, self.settings.baseline_skip) {
                 vbox.height = Length::pt(zw);
                 v_nodes.push(Node::vglue(Length::new(Measurement::pt(pt_of(&bls.skip) - zw), bls.skip.stretch, bls.skip.shrink)));
             } else if let Some(spacing) = self.settings.line_spacing {

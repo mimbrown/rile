@@ -1,17 +1,43 @@
 //! Localized strings from SILE's Fluent files. Only plain messages with
 //! `{ $variable }` placeables are understood.
 
+use std::collections::BTreeMap;
+
 use crate::language_data;
 
 /// Message `id` in `lang` with its variables filled from `args`. Falls back
 /// to the primary language subtag, then to English.
 pub fn message(lang: &str, id: &str, args: &[(&str, &str)]) -> Option<String> {
-    let normalized = lang.to_lowercase().replace('_', "-");
-    let primary = normalized.split('-').next().unwrap_or_default();
-    [normalized.as_str(), primary, "en"]
-        .into_iter()
-        .find_map(|l| language_data::messages(l).and_then(|ftl| lookup(ftl, id)))
-        .map(|value| fill(&value, args))
+    Messages::default().message(lang, id, args)
+}
+
+/// SILE's messages, with a document's own added over them (SILE's `\ftl`).
+#[derive(Debug, Clone, Default)]
+pub struct Messages {
+    added: BTreeMap<String, Vec<String>>,
+}
+
+impl Messages {
+    /// Add the messages in Fluent source `ftl` to `lang`, over any it has.
+    pub fn add(&mut self, lang: &str, ftl: &str) {
+        self.added.entry(normalize(lang)).or_default().push(ftl.to_string());
+    }
+
+    pub fn message(&self, lang: &str, id: &str, args: &[(&str, &str)]) -> Option<String> {
+        let normalized = normalize(lang);
+        let primary = normalized.split('-').next().unwrap_or_default();
+        [normalized.as_str(), primary, "en"]
+            .into_iter()
+            .find_map(|l| {
+                let added = self.added.get(l).into_iter().flatten().rev().find_map(|ftl| lookup(ftl, id));
+                added.or_else(|| language_data::messages(l).and_then(|ftl| lookup(ftl, id)))
+            })
+            .map(|value| fill(&value, args))
+    }
+}
+
+fn normalize(lang: &str) -> String {
+    lang.to_lowercase().replace('_', "-")
 }
 
 fn lookup(ftl: &str, id: &str) -> Option<String> {
@@ -54,6 +80,14 @@ mod tests {
         assert_eq!(title("ja").as_deref(), Some("第3章"));
         assert_eq!(title("en-GB").as_deref(), Some("Chapter 3"));
         assert_eq!(title("xx").as_deref(), Some("Chapter 3"));
+    }
+
+    #[test]
+    fn added_messages_win() {
+        let mut messages = Messages::default();
+        messages.add("tr", "hello = { $name }’ya Selam!");
+        assert_eq!(messages.message("tr", "hello", &[("name", "Dünya")]).as_deref(), Some("Dünya’ya Selam!"));
+        assert_eq!(messages.message("en", "hello", &[("name", "World")]).as_deref(), Some("Hello <em>World</em>!"));
     }
 
     #[test]
