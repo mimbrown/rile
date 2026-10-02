@@ -40,6 +40,11 @@ pub trait DocumentClass: AsAny {
     fn end_page(&mut self, _doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
         Ok(())
     }
+
+    /// The current page's number as the class shows it, if it numbers pages.
+    fn folio(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +165,10 @@ impl DocumentClass for Plain {
 
     fn end_page(&mut self, doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
         self.folio.output(doc)
+    }
+
+    fn folio(&self) -> Option<String> {
+        Some(self.folio.value.to_string())
     }
 }
 
@@ -331,15 +340,17 @@ impl Book {
     }
 }
 
-/// How a heading is set (SILE's `numbering` option).
+/// How a heading is set (SILE's `numbering` and `toc` options).
 #[derive(Debug, Clone, Copy)]
 pub struct Heading {
     pub numbering: bool,
+    /// Enter the heading in the table of contents.
+    pub toc: bool,
 }
 
 impl Default for Heading {
     fn default() -> Self {
-        Self { numbering: true }
+        Self { numbering: true, toc: true }
     }
 }
 
@@ -384,17 +395,31 @@ fn bold(size: f64) -> impl FnOnce(&mut FontSpec) {
 
 /// Number a heading at `level` and set the number, through the localized
 /// message `msg` when given (SILE's `book:sectioning`).
-fn sectioning(doc: &mut DocumentBuilder, heading: Heading, level: usize, msg: Option<&str>) {
-    if !heading.numbering {
-        return;
+fn sectioning(doc: &mut DocumentBuilder, heading: Heading, level: usize, msg: Option<&str>, label: String) {
+    let number = heading.numbering.then(|| {
+        let counter = doc.multilevel_counter_mut("sectioning");
+        counter.increment(Some(level), true);
+        counter.format(None)
+    });
+    if heading.toc {
+        doc.add_toc_entry(level, number.clone(), label);
     }
-    let counter = doc.multilevel_counter_mut("sectioning");
-    counter.increment(Some(level), true);
-    let number = counter.format(None);
+    let Some(number) = number else { return };
     let text = msg
         .and_then(|id| messages::message(doc.language(), id, &[("number", &number)]))
         .unwrap_or(number);
     doc.add_text(text);
+}
+
+/// What `title` sets, as text for the table of contents.
+fn title_text<C, E>(ctx: &mut C, title: &mut impl FnMut(&mut C) -> Result<(), E>) -> Result<String, E>
+where
+    C: AsMut<DocumentBuilder>,
+{
+    ctx.as_mut().begin_capture();
+    let result = title(ctx);
+    let text = ctx.as_mut().end_capture().text();
+    result.map(|_| text)
 }
 
 fn book(doc: &mut DocumentBuilder) -> &mut Book {
@@ -417,8 +442,9 @@ impl Book {
         doc.set_current_indent(Some(0.0));
         book(doc).right_head = None;
         *doc.counter_mut("footnote") = 1;
+        let label = title_text(ctx, &mut title)?;
         with_font(ctx, bold(22.0), |ctx| {
-            sectioning(ctx.as_mut(), heading, 1, Some("book-chapter-title"));
+            sectioning(ctx.as_mut(), heading, 1, Some("book-chapter-title"), label);
             Ok(())
         })?;
         let doc = ctx.as_mut();
@@ -449,8 +475,9 @@ impl Book {
         E: From<BuilderError>,
     {
         Self::heading_start(ctx.as_mut(), bigskip())?;
+        let label = title_text(ctx, &mut title)?;
         with_font(ctx, bold(15.0), |ctx| {
-            sectioning(ctx.as_mut(), heading, 2, None);
+            sectioning(ctx.as_mut(), heading, 2, None, label);
             ctx.as_mut().add_text(" ");
             title(ctx)
         })?;
@@ -491,8 +518,9 @@ impl Book {
         E: From<BuilderError>,
     {
         Self::heading_start(ctx.as_mut(), medskip())?;
+        let label = title_text(ctx, &mut title)?;
         with_font(ctx, bold(12.0), |ctx| {
-            sectioning(ctx.as_mut(), heading, 3, None);
+            sectioning(ctx.as_mut(), heading, 3, None, label);
             ctx.as_mut().add_text(" ");
             title(ctx)
         })?;
@@ -550,6 +578,10 @@ impl DocumentClass for Book {
         }
         self.skip_head_this_page = false;
         self.folio.output(doc)
+    }
+
+    fn folio(&self) -> Option<String> {
+        Some(self.folio.value.to_string())
     }
 }
 
@@ -745,7 +777,7 @@ mod heading_tests {
         Book::section(&mut d, Heading::default(), title("A")).unwrap();
         Book::section(&mut d, Heading::default(), title("B")).unwrap();
         Book::subsection(&mut d, Heading::default(), title("b")).unwrap();
-        Book::chapter(&mut d, Heading { numbering: false }, title("Two")).unwrap();
+        Book::chapter(&mut d, Heading { numbering: false, ..Default::default() }, title("Two")).unwrap();
         Book::chapter(&mut d, Heading::default(), title("Three")).unwrap();
         Book::section(&mut d, Heading::default(), title("C")).unwrap();
         d.add_text("End.");

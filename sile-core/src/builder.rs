@@ -13,10 +13,11 @@ use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
-use crate::node::{self, GlyphData, Ink, Leader, LinerStyle, NNode, Node, Stroke, VBox};
+use crate::node::{self, GlyphData, Ink, Leader, LinerStyle, LinkDest, NNode, Node, Stroke, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
 use crate::pagebuilder::{self, Page, PageBreakSettings};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
+use crate::references::{self, CrossReferences, Label, TocEntry};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
 // ---------------------------------------------------------------------------
@@ -308,11 +309,41 @@ impl AsMut<DocumentBuilder> for DocumentBuilder {
     }
 }
 
-struct LaidOut {
-    pages: Vec<Page>,
+/// A laid out document, ready to output.
+pub struct Layout {
+    pub pages: Vec<Page>,
+    /// The table of contents and labels found on the way.
+    pub references: CrossReferences,
+    pub(crate) consulted_references: bool,
+    paper: PaperSize,
     fonts: BTreeMap<String, RegisteredFont>,
     bookmarks: Vec<Bookmark>,
     pdf_config: PdfConfig,
+}
+
+impl Layout {
+    pub fn render(self) -> Result<Vec<u8>, BuilderError> {
+        let mut pdf = PdfOutputter::new(self.pdf_config);
+        for (name, entry) in &self.fonts {
+            pdf.register_font(name, Arc::clone(&entry.face));
+        }
+        for bm in self.bookmarks {
+            pdf.add_bookmark(bm);
+        }
+        pdf.render_pages(&self.pages);
+        Ok(pdf.finish()?)
+    }
+
+    /// Describe the layout in SILE's debug outputter format, for comparing
+    /// against SILE's regression test expectations.
+    pub fn render_debug(&self) -> String {
+        let mut trace = crate::trace::TraceCanvas::new(self.paper);
+        for (name, entry) in &self.fonts {
+            trace.register_font(name, &entry.spec);
+        }
+        crate::render::draw_pages(&self.pages, &mut trace);
+        trace.finish()
+    }
 }
 
 /// The settings that shape text and paragraphs, which can be saved and
@@ -377,6 +408,30 @@ impl Default for Settings {
 #[derive(Clone, Default)]
 pub struct Material {
     items: Vec<Captured>,
+}
+
+impl Material {
+    /// The material's text, without its formatting.
+    pub fn text(&self) -> String {
+        fn collect(inlines: &[Inline], out: &mut String) {
+            for inline in inlines {
+                match inline {
+                    Inline::Text(run) => out.push_str(&run.text),
+                    Inline::Box(_, inner) => collect(inner, out),
+                    Inline::Discretionary(d) => out.extend(d[2].as_ref().map(|r| r.text.as_str())),
+                    Inline::Node(_) => {}
+                }
+            }
+        }
+        let mut out = String::new();
+        for item in &self.items {
+            match item {
+                Captured::Paragraph { inlines, .. } | Captured::Inlines(inlines) => collect(inlines, &mut out),
+                Captured::Vertical(_) => {}
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone)]
@@ -502,6 +557,12 @@ pub struct DocumentBuilder {
     // PDF config
     pdf_config: PdfConfig,
     bookmarks: Vec<Bookmark>,
+    destinations: usize,
+
+    /// What the previous pass found, if there was one.
+    previous_references: Option<CrossReferences>,
+    consulted_references: std::cell::Cell<bool>,
+    references: CrossReferences,
 }
 
 impl DocumentBuilder {
@@ -548,6 +609,10 @@ impl DocumentBuilder {
             footer: None,
             pdf_config: PdfConfig::default(),
             bookmarks: Vec::new(),
+            destinations: 0,
+            previous_references: None,
+            consulted_references: Default::default(),
+            references: CrossReferences::default(),
         }
     }
 
@@ -805,12 +870,16 @@ impl DocumentBuilder {
     /// start a paragraph, so one added first leaves it unindented.
     pub fn add_info<T: std::any::Any + Send + Sync>(&mut self, category: &str, value: T) -> &mut Self {
         let info = node::Info { category: category.to_string(), value: std::sync::Arc::new(value) };
-        let marker = Inline::Node(Box::new(liner_mark(Ink::Info(info))));
+        self.push_marker(liner_mark(Ink::Info(info)));
+        self
+    }
+
+    fn push_marker(&mut self, marker: Node) {
+        let marker = Inline::Node(Box::new(marker));
         match self.open_boxes.last_mut() {
             Some((_, open)) => open.push(marker),
             None => self.paragraph.push(marker),
         }
-        self
     }
 
     /// The values of `category` markers on the page being finished, in the
@@ -1160,6 +1229,13 @@ impl DocumentBuilder {
     pub fn add_box(&mut self, hbox: node::HBox) -> &mut Self {
         self.push_inline(Inline::Node(Box::new(Node::HBox(hbox))));
         self
+    }
+
+    /// Dots spaced a quarter em apart filling the rest of the line (SILE's
+    /// `\dotfill`).
+    pub fn add_dotfill(&mut self) -> &mut Self {
+        let kern = Length::pt(0.25 * self.font_spec().map_or(10.0, |f| f.size));
+        self.start_leaders(None).add_kern(kern).add_text(".").add_kern(kern).end_hbox()
     }
 
     /// Fill glue of `width` (as much as possible when `None`) with copies of
@@ -1946,6 +2022,7 @@ impl DocumentBuilder {
     fn end_page(&mut self) -> Result<(), BuilderError> {
         self.ensure_page()?;
         self.output_insertions();
+        self.collect_references();
         if let Some(mut class) = self.class.take() {
             let result = class.end_page(self);
             self.class = Some(class);
@@ -2269,16 +2346,83 @@ impl DocumentBuilder {
         self.multilevel_counters.entry(id.to_string()).or_default()
     }
 
-    // -- Bookmarks and links ------------------------------------------------
+    // -- Destinations, links and bookmarks ----------------------------------
 
-    pub fn add_bookmark(&mut self, title: impl Into<String>, level: u32) -> &mut Self {
-        self.bookmarks.push(Bookmark {
-            title: title.into(),
-            page_index: self.pages.len(),
-            level,
-            y_position: self.margins[0],
-        });
+    /// Name this point for links and bookmarks to go to.
+    pub fn add_destination(&mut self, name: impl Into<String>) -> &mut Self {
+        self.push_marker(liner_mark(Ink::Destination(name.into())));
         self
+    }
+
+    /// Link what follows, until `end_hbox`, to `dest` (SILE's `\pdf:link`).
+    pub fn start_link(&mut self, dest: LinkDest) -> &mut Self {
+        self.start_liner(LinerStyle::Link(dest))
+    }
+
+    /// Bookmark this point in the document outline.
+    pub fn add_bookmark(&mut self, title: impl Into<String>, level: u32) -> &mut Self {
+        let dest = self.new_destination();
+        self.add_bookmark_at(title, level, dest)
+    }
+
+    /// Bookmark the destination `dest` in the document outline.
+    pub fn add_bookmark_at(&mut self, title: impl Into<String>, level: u32, dest: impl Into<String>) -> &mut Self {
+        self.bookmarks.push(Bookmark { title: title.into(), level, dest: dest.into() });
+        self
+    }
+
+    fn new_destination(&mut self) -> String {
+        self.destinations += 1;
+        let name = format!("dest{}", self.destinations);
+        self.add_destination(name.clone());
+        name
+    }
+
+    // -- Tables of contents and cross references ----------------------------
+
+    /// Give this pass what the previous one found, for `references`.
+    pub fn set_references(&mut self, previous: Option<CrossReferences>) -> &mut Self {
+        self.previous_references = previous;
+        self
+    }
+
+    /// What the previous pass found, or `None` on the first pass.
+    pub fn references(&self) -> Option<&CrossReferences> {
+        self.consulted_references.set(true);
+        self.previous_references.as_ref()
+    }
+
+    /// Enter a heading in the table of contents and the document outline,
+    /// as on the page this point ends up on (SILE's `\tocentry`).
+    pub fn add_toc_entry(&mut self, level: usize, number: Option<String>, label: impl Into<String>) -> &mut Self {
+        let label = label.into();
+        let dest = self.new_destination();
+        self.add_bookmark_at(label.clone(), level as u32, dest.clone());
+        let entry = TocEntry { label, level, number, page: String::new(), dest: Some(dest) };
+        self.add_info(references::TOC, entry)
+    }
+
+    /// Label this point so a later pass can refer to its page, and to
+    /// `value` (a section or figure number, say).
+    pub fn add_label(&mut self, name: impl Into<String>, value: Option<String>) -> &mut Self {
+        let name = name.into();
+        let dest = format!("label:{name}");
+        self.add_destination(dest.clone());
+        self.add_info(references::LABELS, (name, Label { page: String::new(), value, dest }))
+    }
+
+    /// Note the references on the page being finished, numbered as the
+    /// class numbers it.
+    fn collect_references(&mut self) {
+        let page = self.class.as_ref().and_then(|c| c.folio()).unwrap_or_else(|| (self.pages.len() + 1).to_string());
+        for mut entry in self.page_info::<TocEntry>(references::TOC) {
+            entry.page = page.clone();
+            self.references.toc.push(entry);
+        }
+        for (name, mut label) in self.page_info::<(String, Label)>(references::LABELS) {
+            label.page = page.clone();
+            self.references.labels.entry(name).or_insert(label);
+        }
     }
 
     // -- PDF config ----------------------------------------------------------
@@ -2321,29 +2465,13 @@ impl DocumentBuilder {
     // -- Render --------------------------------------------------------------
 
     pub fn render(self) -> Result<Vec<u8>, BuilderError> {
-        let laid = self.lay_out()?;
-        let mut pdf = PdfOutputter::new(laid.pdf_config);
-        for (name, entry) in &laid.fonts {
-            pdf.register_font(name, Arc::clone(&entry.face));
-        }
-        for bm in laid.bookmarks {
-            pdf.add_bookmark(bm);
-        }
-        pdf.render_pages(&laid.pages);
-        Ok(pdf.finish()?)
+        self.lay_out()?.render()
     }
 
     /// Lay the document out and describe it in SILE's debug outputter format,
     /// for comparing layout against SILE's regression test expectations.
     pub fn render_debug(self) -> Result<String, BuilderError> {
-        let paper = self.paper;
-        let laid = self.lay_out()?;
-        let mut trace = crate::trace::TraceCanvas::new(paper);
-        for (name, entry) in &laid.fonts {
-            trace.register_font(name, &entry.spec);
-        }
-        crate::render::draw_pages(&laid.pages, &mut trace);
-        Ok(trace.finish())
+        Ok(self.lay_out()?.render_debug())
     }
 
     /// Lay the document out and hand back its pages.
@@ -2351,7 +2479,8 @@ impl DocumentBuilder {
         Ok(self.lay_out()?.pages)
     }
 
-    fn lay_out(mut self) -> Result<LaidOut, BuilderError> {
+    /// Finish the document and lay out its last pages.
+    pub fn lay_out(mut self) -> Result<Layout, BuilderError> {
         self.finish()?;
         let mut pages = std::mem::take(&mut self.pages);
 
@@ -2368,8 +2497,11 @@ impl DocumentBuilder {
             }
         }
 
-        Ok(LaidOut {
+        Ok(Layout {
             pages,
+            references: self.references,
+            consulted_references: self.consulted_references.get(),
+            paper: self.paper,
             fonts: self.fonts,
             bookmarks: self.bookmarks,
             pdf_config: self.pdf_config,

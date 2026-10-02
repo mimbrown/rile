@@ -12,7 +12,8 @@ use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, PageTemplate, Plain};
 use sile_core::insertion::InsertionClass;
-use sile_core::node::{Node, Stroke};
+use sile_core::node::{LinkDest, Node, Stroke};
+use sile_core::toc::{DefaultTocStyle, TableOfContents};
 use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::framespec::{FrameDirection, FrameSpec};
@@ -120,6 +121,11 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "save-chapter-number",
     "verse-number",
     "pdf:metadata",
+    "pdf:destination",
+    "pdf:bookmark",
+    "pdf:link",
+    "tocentry",
+    "tableofcontents",
     "show-hanmen",
     "bidi-off",
     "bidi-on",
@@ -337,7 +343,8 @@ fn check(
                     | "packages.hanmenkyoshi"
                     | "packages.color-fonts"
                     | "packages.bidi"
-                    | "packages.pdf",
+                    | "packages.pdf"
+                    | "packages.tableofcontents",
                 ) => {}
                 Some(m) => {
                     missing.insert(format!("use {m}"));
@@ -1221,11 +1228,8 @@ impl<'a> Driver<'a> {
                 self.doc.end_hbox();
             }
             "dotfill" => {
-                let kern = self.length("0.25em")?;
                 self.sync()?;
-                self.doc.start_leaders(None).add_kern(kern);
-                self.add_text(".")?;
-                self.doc.add_kern(kern).end_hbox();
+                self.doc.add_dotfill();
             }
             "center" => self.aligned(TextAlign::Center, content)?,
             "raggedright" => self.aligned(TextAlign::Left, content)?,
@@ -1340,6 +1344,33 @@ impl<'a> Driver<'a> {
                     Ok(_) | Err(sile_core::builder::BuilderError::InvalidMetadata(_)) => {}
                     Err(e) => return Err(err(e)),
                 }
+            }
+            "pdf:destination" => {
+                self.sync()?;
+                self.doc.add_destination(opt("name")?);
+            }
+            "pdf:bookmark" => {
+                let level = cmd.option("level").map_or(Ok(1), str::parse).map_err(|e: std::num::ParseIntError| e.to_string())?;
+                self.doc.add_bookmark_at(opt("title")?, level, opt("dest")?);
+            }
+            "pdf:link" => {
+                let dest = opt("dest")?.to_string();
+                let dest = if cmd.option("external").is_some_and(truthy) { LinkDest::Uri(dest) } else { LinkDest::Internal(dest) };
+                self.sync()?;
+                self.doc.start_link(dest);
+                self.process(content)?;
+                self.doc.end_hbox();
+            }
+            "tocentry" => {
+                let level = cmd.option("level").map_or(Ok(1), str::parse).map_err(|e: std::num::ParseIntError| e.to_string())?;
+                self.sync()?;
+                self.doc.add_toc_entry(level, cmd.option("number").map(String::from), sil::plain_text(content));
+            }
+            "tableofcontents" => {
+                let depth = cmd.option("depth").map_or(Ok(3), str::parse).map_err(|e: std::num::ParseIntError| e.to_string())?;
+                let toc = TableOfContents { depth, linking: cmd.option("linking").is_none_or(truthy) };
+                self.sync()?;
+                toc.typeset(&mut self.doc, &DefaultTocStyle).map_err(err)?;
             }
             "latin-in-tate" => {
                 self.sync()?;
@@ -1486,7 +1517,7 @@ impl<'a> Driver<'a> {
             "chapter" | "section" | "subsection" => {
                 self.book()?;
                 self.sync()?;
-                let heading = Heading { numbering: cmd.option("numbering").is_none_or(truthy) };
+                let heading = Heading { numbering: cmd.option("numbering").is_none_or(truthy), toc: cmd.option("toc").is_none_or(truthy) };
                 let title = |d: &mut Self| d.scoped(|d| d.process(content)).map_err(Failed);
                 match cmd.name.as_str() {
                     "chapter" => Book::chapter(self, heading, title),
