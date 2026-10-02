@@ -1,7 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::shaper::GlyphItem;
+
+pub(crate) type WordCache = HashMap<String, Arc<Vec<GlyphItem>>>;
+type StickyCache = Vec<(String, bool, Option<Arc<BTreeSet<char>>>)>;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -109,7 +114,7 @@ impl fmt::Display for Direction {
 // FontSpec
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FontSpec {
     pub family: Option<String>,
     pub size: f64,
@@ -180,6 +185,11 @@ pub struct FontFace {
     shaping: OnceLock<Option<ShapingFace>>,
     plans: Mutex<HashMap<String, Arc<rustybuzz::ShapePlan>>>,
     bboxes: Mutex<HashMap<u16, Option<GlyphBBox>>>,
+    /// Per feature string and Graphite use, the characters text can't be
+    /// split beside, or `None` where it can't be shaped a word at a time.
+    sticky: Mutex<StickyCache>,
+    /// Shaped words by spec and script, then by text.
+    pub(crate) words: Mutex<Vec<(FontSpec, String, WordCache)>>,
     #[cfg(feature = "harfbuzz")]
     harfbuzz: Mutex<HashMap<String, Arc<crate::harfbuzz_ffi::HbShapingFont>>>,
     units_per_em: u16,
@@ -238,6 +248,8 @@ impl FontFace {
             shaping: OnceLock::new(),
             plans: Mutex::default(),
             bboxes: Mutex::default(),
+            sticky: Mutex::default(),
+            words: Mutex::default(),
             #[cfg(feature = "harfbuzz")]
             harfbuzz: Mutex::default(),
         })
@@ -360,6 +372,38 @@ impl FontFace {
         let key = format!("{variations:?}");
         let mut fonts = self.harfbuzz.lock().expect("harfbuzz cache");
         Arc::clone(fonts.entry(key).or_insert_with(|| Arc::new(crate::harfbuzz_ffi::HbShapingFont::new(Arc::clone(&self.data), self.index, variations))))
+    }
+
+    /// The characters text mustn't be split beside to be shaped a word at
+    /// a time with `features`, or `None` when it can't be.
+    pub(crate) fn sticky_chars(&self, features: &str, graphite: bool) -> Option<Arc<BTreeSet<char>>> {
+        let mut cache = self.sticky.lock().expect("sticky cache");
+        if let Some((_, _, sticky)) = cache.iter().find(|(f, g, _)| f == features && *g == graphite) {
+            return sticky.clone();
+        }
+        let sticky = self.with_face(|face| crate::word_shaping::sticky_chars(face, features, graphite)).map(Arc::new);
+        cache.push((features.to_string(), graphite, sticky.clone()));
+        sticky
+    }
+
+    /// `use_words` given the words shaped with `spec` in `script`.
+    pub(crate) fn with_words<R>(&self, spec: &FontSpec, script: &str, use_words: impl FnOnce(&mut WordCache) -> R) -> R {
+        let mut cache = self.words.lock().expect("word cache");
+        let at = match cache.iter().position(|(s, sc, _)| s == spec && sc == script) {
+            Some(at) => at,
+            None => {
+                if cache.len() >= 64 {
+                    cache.clear();
+                }
+                cache.push((spec.clone(), script.to_string(), WordCache::default()));
+                cache.len() - 1
+            }
+        };
+        let words = &mut cache[at].2;
+        if words.len() >= 1 << 16 {
+            words.clear();
+        }
+        use_words(words)
     }
 
     /// The shaping plan for `key`, made by `make` the first time.

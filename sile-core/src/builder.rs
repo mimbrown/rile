@@ -3212,7 +3212,7 @@ impl DocumentBuilder {
             let (font_name, entry) = fonts[font];
             let (face, spec) = (&entry.face, &entry.spec);
             let mut zenkaku = None;
-            let space = || self.shaper.shape(" ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
+            let space = || crate::word_shaping::shape(&*self.shaper, " ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
             for token in nodemaker::tokenize(&items[lo..hi], run.tokens) {
                 match token {
                     Token::Word(range) => {
@@ -3228,7 +3228,7 @@ impl DocumentBuilder {
                     Token::NonBreakingSpace => nodes.push(Node::kern(self.settings.space_settings.measured(space))),
                     Token::Penalty(p) => nodes.push(Node::penalty(p)),
                     Token::RepeatedHyphen => {
-                        let hyphen = self.shaper.shape("-", face, spec);
+                        let hyphen = crate::word_shaping::shape(&*self.shaper, "-", face, spec);
                         let mut nnode = self.build_nnode("-", &hyphen, font_name, spec, color);
                         nnode.language = run.language.clone();
                         nnode.bidi_level = run.bidi_level;
@@ -3285,9 +3285,9 @@ impl DocumentBuilder {
             let chunk = &text[run.start..run.stop];
             let mut glyphs = if font.spec.language.is_empty() {
                 let spec = FontSpec { language: language.to_string(), ..font.spec.clone() };
-                self.shaper.shape(chunk, &font.face, &spec)
+                crate::word_shaping::shape(&*self.shaper, chunk, &font.face, &spec)
             } else {
-                self.shaper.shape(chunk, &font.face, &font.spec)
+                crate::word_shaping::shape(&*self.shaper, chunk, &font.face, &font.spec)
             };
             if font.spec.direction == Direction::RTL {
                 glyphs.reverse();
