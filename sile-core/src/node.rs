@@ -432,6 +432,26 @@ impl PartialEq for LinerPainter {
     }
 }
 
+/// Something a class wants to know ended up on a page, such as a verse
+/// reference for a running head (SILE's info nodes).
+#[derive(Clone)]
+pub struct Info {
+    pub category: String,
+    pub value: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for Info {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Info({})", self.category)
+    }
+}
+
+impl PartialEq for Info {
+    fn eq(&self, other: &Self) -> bool {
+        self.category == other.category && std::sync::Arc::ptr_eq(&self.value, &other.value)
+    }
+}
+
 /// What an hbox draws besides its content.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ink {
@@ -448,6 +468,8 @@ pub enum Ink {
     /// width on from where it stands, and the pen goes back to where it was
     /// (SILE's `ruby` package).
     Ruby(f64),
+    /// Nothing: a marker read back from the page (see `Info`).
+    Info(Info),
     /// Latin text set on its side in vertical Japanese, shifted by this
     /// zenkaku width (SILE's `\\latin-in-tate`).
     LatinInTate(f64),

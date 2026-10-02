@@ -554,7 +554,7 @@ impl DocumentClass for Book {
 }
 
 #[cfg(test)]
-mod tests_support {
+pub(crate) mod tests_support {
     use super::*;
     use crate::font::FontSpec;
     use crate::frame::PaperSize;
