@@ -51,6 +51,7 @@ pub fn port(test: &str) -> Option<Port> {
         "bug-1321" => (&[bug_1321], &[]),
         "sura-2" => (&[nothing], &[]),
         "bug-926" => (&[nothing], &[]),
+        "parallel" => (&[left_and_right], &[("left", |d, _| select(d, "left")), ("right", |d, _| select(d, "right"))]),
         "chapterverse" => (&[comma_references], &[("bible:verse-number", |_, _| Ok(()))]),
         "bug-1280" => (&[utf16_round_trips], &[]),
         "bug-255" => (&[nothing], &[("donothing", |d, cmd| skipped(d, cmd, "0pt", None))]),
@@ -340,4 +341,18 @@ fn comma_references(d: &mut Driver) -> Result<(), String> {
         Ok(())
     });
     Ok(())
+}
+
+fn left_and_right(d: &mut Driver) -> Result<(), String> {
+    with_doc(d, |doc| {
+        doc.declare_frames(&[
+            FrameSpec::new("left").top("top(content)").left("left(content)").right("52%pw"),
+            FrameSpec::new("right").top("top(content)").left("50%pw").right("right(content)"),
+        ])?;
+        doc.begin_parallel(&[("left", "left"), ("right", "right")]).map(|_| ())
+    })
+}
+
+fn select(d: &mut Driver, flow: &str) -> Result<(), String> {
+    with_doc(d, |doc| doc.select_parallel(flow).map(|_| ()))
 }

@@ -403,6 +403,30 @@ struct SavedTypesetter {
     frame: String,
 }
 
+/// What a typesetter is working on, apart from settings, which all share.
+#[derive(Default)]
+struct FlowState {
+    paragraph: Vec<Inline>,
+    open_boxes: Vec<(Group, Vec<Inline>)>,
+    current_indent: Option<f64>,
+    previous_depth: Option<f64>,
+    queue: Vec<Node>,
+}
+
+/// A typesetter per frame, kept level with each other (SILE's `parallel`
+/// package), keyed by name in the order frames are output.
+struct Parallel {
+    flows: BTreeMap<String, ParallelFlow>,
+    active: Option<String>,
+}
+
+struct ParallelFlow {
+    frame: String,
+    flow: FlowState,
+    /// How much of the queue is level with the other flows.
+    mark: usize,
+}
+
 /// The page being filled: its frames and the frame content flows into.
 struct PageState {
     page: Page,
@@ -465,6 +489,9 @@ pub struct DocumentBuilder {
     multilevel_counters: BTreeMap<String, MultilevelCounter>,
     /// Typesetting states set aside by `push_typesetter`.
     typesetters: Vec<SavedTypesetter>,
+    parallel: Option<Parallel>,
+    /// Frames added to every page's template (SILE's `class:declareFrame`).
+    extra_frames: Vec<FrameSpec>,
 
     // Running header/footer (need header_height / footer_height > 0)
     header: Option<RunningText>,
@@ -513,6 +540,8 @@ impl DocumentBuilder {
             counters: BTreeMap::new(),
             multilevel_counters: BTreeMap::new(),
             typesetters: Vec::new(),
+            parallel: None,
+            extra_frames: Vec::new(),
             header: None,
             footer: None,
             pdf_config: PdfConfig::default(),
@@ -1506,11 +1535,22 @@ impl DocumentBuilder {
     }
 
     fn page_template(&self) -> PageTemplate {
-        match (&self.master, &self.class) {
+        let mut template = match (&self.master, &self.class) {
             (Some(master), _) => master.clone(),
             (None, Some(class)) => class.page_template(),
             (None, None) => self.default_template(),
-        }
+        };
+        template.frames.retain(|f| !self.extra_frames.iter().any(|e| e.id == f.id));
+        template.frames.extend(self.extra_frames.iter().cloned());
+        template
+    }
+
+    /// Add frames to every page from this one on (SILE's
+    /// `class:declareFrame`).
+    pub fn declare_frames(&mut self, frames: &[FrameSpec]) -> Result<&mut Self, BuilderError> {
+        self.extra_frames.retain(|e| !frames.iter().any(|f| f.id == e.id));
+        self.extra_frames.extend(frames.iter().cloned());
+        self.declare_page_frames(frames)
     }
 
     fn start_page(&mut self) -> Result<(), BuilderError> {
@@ -1879,6 +1919,12 @@ impl DocumentBuilder {
     /// Fill the last page and end it (SILE's `class:finish`).
     fn finish(&mut self) -> Result<(), BuilderError> {
         self.ensure_page()?;
+        if let Some(mut parallel) = self.parallel.take() {
+            self.deactivate(&mut parallel);
+            self.parallel_page_break(&mut parallel)?;
+            self.pop_typesetter()?;
+            self.vertical_queue.clear();
+        }
         self.new_paragraph()?;
         self.add_vfill()?;
         while !self.is_queue_empty() {
@@ -1890,6 +1936,136 @@ impl DocumentBuilder {
             }
         }
         self.end_page()
+    }
+
+    /// Typeset into several frames side by side, each named flow going to
+    /// its frame (`(name, frame)`), selected with `select_parallel` and
+    /// kept level with `sync_parallel` (SILE's `parallel` package). As in
+    /// SILE, what is added before a flow is selected goes nowhere, and so
+    /// does material not yet on a page when this is called.
+    pub fn begin_parallel(&mut self, flows: &[(&str, &str)]) -> Result<&mut Self, BuilderError> {
+        self.push_typesetter(None)?;
+        let flows = flows
+            .iter()
+            .map(|(name, frame)| (name.to_string(), ParallelFlow { frame: frame.to_string(), flow: FlowState::default(), mark: 0 }))
+            .collect();
+        self.parallel = Some(Parallel { flows, active: None });
+        Ok(self)
+    }
+
+    pub fn select_parallel(&mut self, name: &str) -> Result<&mut Self, BuilderError> {
+        let mut parallel = self.parallel.take().ok_or_else(|| BuilderError::Layout("no parallel flows".into()))?;
+        if !parallel.flows.contains_key(name) {
+            self.parallel = Some(parallel);
+            return Err(BuilderError::Layout(format!("no parallel flow {name}")));
+        }
+        self.deactivate(&mut parallel);
+        parallel.active = Some(name.to_string());
+        self.activate(&mut parallel);
+        self.parallel = Some(parallel);
+        Ok(self)
+    }
+
+    /// Pad the flows with space so that what comes next in each starts at
+    /// the same height, or end the page if any has filled it (SILE's
+    /// `\sync`).
+    pub fn sync_parallel(&mut self) -> Result<&mut Self, BuilderError> {
+        let mut parallel = self.parallel.take().ok_or_else(|| BuilderError::Layout("no parallel flows".into()))?;
+        self.deactivate(&mut parallel);
+        let result = self.sync_flows(&mut parallel);
+        self.activate(&mut parallel);
+        self.parallel = Some(parallel);
+        result.map(|_| self)
+    }
+
+    fn sync_flows(&mut self, parallel: &mut Parallel) -> Result<(), BuilderError> {
+        let mut any_break = false;
+        for p in parallel.flows.values_mut() {
+            self.enter_flow(p);
+            let result = self.leave_hmode(true);
+            if result.is_ok() {
+                let target = self.current_frame().map_or(0.0, FrameGeometry::target_length);
+                let mut lines = self.vertical_queue.clone();
+                any_break |= pagebuilder::find_break(&mut lines, target, false, &mut pagebuilder::no_insertions).is_some();
+            }
+            p.flow = self.take_flow();
+            result?;
+        }
+        if any_break {
+            return self.parallel_page_break(parallel);
+        }
+        let new_material = |p: &ParallelFlow| p.flow.queue[p.mark..].iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum::<f64>();
+        let tallest = parallel.flows.values().map(new_material).fold(0.0, f64::max);
+        for p in parallel.flows.values_mut() {
+            let glue = tallest - new_material(p);
+            if glue > 0.0 {
+                p.flow.queue.push(Node::vglue(Length::pt(glue)));
+            }
+            p.mark = p.flow.queue.len();
+        }
+        Ok(())
+    }
+
+    /// Output each flow's levelled material and start a new page, levelling
+    /// what is left (SILE's `parallelPagebreak`).
+    fn parallel_page_break(&mut self, parallel: &mut Parallel) -> Result<(), BuilderError> {
+        for p in parallel.flows.values_mut() {
+            self.enter_flow(p);
+            let result = if !self.vertical_queue.is_empty() && p.mark == 0 {
+                self.build_page().map(|_| ())
+            } else {
+                let lines = self.vertical_queue.drain(..p.mark.min(self.vertical_queue.len())).collect();
+                self.output(&p.frame, lines);
+                Ok(())
+            };
+            p.flow = self.take_flow();
+            result?;
+        }
+        self.end_page()?;
+        for p in parallel.flows.values_mut() {
+            p.mark = 0;
+        }
+        self.new_page()?;
+        self.sync_flows(parallel)
+    }
+
+    fn enter_flow(&mut self, p: &mut ParallelFlow) {
+        let flow = std::mem::take(&mut p.flow);
+        self.put_flow(flow);
+        if let Some(state) = self.page.as_mut() {
+            state.frame = p.frame.clone();
+        }
+    }
+
+    fn activate(&mut self, parallel: &mut Parallel) {
+        if let Some(p) = parallel.active.as_ref().and_then(|a| parallel.flows.get_mut(a)) {
+            self.enter_flow(p);
+        }
+    }
+
+    fn deactivate(&mut self, parallel: &mut Parallel) {
+        let flow = self.take_flow();
+        if let Some(p) = parallel.active.as_ref().and_then(|a| parallel.flows.get_mut(a)) {
+            p.flow = flow;
+        }
+    }
+
+    fn take_flow(&mut self) -> FlowState {
+        FlowState {
+            paragraph: std::mem::take(&mut self.paragraph),
+            open_boxes: std::mem::take(&mut self.open_boxes),
+            current_indent: self.current_indent.take(),
+            previous_depth: self.previous_depth.take(),
+            queue: std::mem::take(&mut self.vertical_queue),
+        }
+    }
+
+    fn put_flow(&mut self, flow: FlowState) {
+        self.paragraph = flow.paragraph;
+        self.open_boxes = flow.open_boxes;
+        self.current_indent = flow.current_indent;
+        self.previous_depth = flow.previous_depth;
+        self.vertical_queue = flow.queue;
     }
 
     /// Set the current paragraph and vertical list aside and start afresh,
@@ -3744,5 +3920,49 @@ mod tests {
     fn split_words_trailing_space() {
         let words = split_words("Hello ");
         assert_eq!(words[0], "Hello");
+    }
+}
+
+#[cfg(test)]
+mod parallel_tests {
+    use super::*;
+    use crate::class::tests_support::*;
+    use crate::class::Plain;
+
+    /// How far down its frame the line holding `text` starts.
+    fn offset_of(page: &Page, frame: &str, text: &str) -> Option<f64> {
+        let (_, nodes) = page.content.iter().find(|(id, _)| id == frame)?;
+        let mut y = 0.0;
+        for node in nodes {
+            if let Node::VBox(b) = node
+                && b.nodes.iter().any(|n| matches!(n, Node::NNode(n) if n.text == text))
+            {
+                return Some(y);
+            }
+            y += pt_of(&node.height()) + pt_of(&node.depth());
+        }
+        None
+    }
+
+    #[test]
+    fn sync_lines_up_what_comes_next_in_each_flow() {
+        let mut d = doc(Plain::new());
+        d.declare_frames(&[
+            FrameSpec::new("left").top("top(content)").bottom("bottom(content)").left("left(content)").right("48%pw"),
+            FrameSpec::new("right").top("top(content)").bottom("bottom(content)").left("52%pw").right("right(content)"),
+        ])
+        .unwrap();
+        d.begin_parallel(&[("left", "left"), ("right", "right")]).unwrap();
+        d.select_parallel("left").unwrap().add_text("One");
+        d.new_paragraph().unwrap().add_text("Two");
+        d.select_parallel("right").unwrap().add_text("Un");
+        d.sync_parallel().unwrap();
+        d.select_parallel("left").unwrap().add_text("Three");
+        d.select_parallel("right").unwrap().add_text("Trois");
+        d.sync_parallel().unwrap();
+        let pages = d.into_pages().unwrap();
+        let left = offset_of(&pages[0], "left", "Three").unwrap();
+        assert!(left > 0.0);
+        assert!((left - offset_of(&pages[0], "right", "Trois").unwrap()).abs() < 1e-6);
     }
 }
