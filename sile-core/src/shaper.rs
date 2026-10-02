@@ -160,19 +160,21 @@ impl Default for RustyBuzzShaper {
 
 impl Shaper for RustyBuzzShaper {
     fn shape(&self, text: &str, face: &FontFace, spec: &FontSpec) -> Vec<GlyphItem> {
-        let (data, index) = face.raw_data();
-        let mut rb_face = match rustybuzz::Face::from_slice(data, index) {
-            Some(f) => f,
-            None => return vec![],
-        };
+        let Some(cached) = face.rustybuzz_face() else { return vec![] };
         let variations: Vec<rustybuzz::Variation> = face
             .variations(spec)
             .into_iter()
             .map(|(tag, value)| rustybuzz::Variation { tag: rustybuzz::ttf_parser::Tag::from_bytes(&tag), value })
             .collect();
-        if !variations.is_empty() {
-            rb_face.set_variations(&variations);
-        }
+        let varied;
+        let rb_face = if variations.is_empty() {
+            cached
+        } else {
+            let mut f = cached.clone();
+            f.set_variations(&variations);
+            varied = f;
+            &varied
+        };
 
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
@@ -193,8 +195,17 @@ impl Shaper for RustyBuzzShaper {
                 buffer.set_language(lang);
             }
 
+        buffer.guess_segment_properties();
         let features = parse_features(&spec.features);
-        let glyph_buffer = rustybuzz::shape(&rb_face, &features, buffer);
+        let (direction, script, language) = (buffer.direction(), buffer.script(), buffer.language());
+        let plan = || rustybuzz::ShapePlan::new(rb_face, direction, Some(script), language.as_ref(), &features);
+        let plan = if variations.is_empty() {
+            let key = format!("{direction:?} {} {} {}", script.tag(), language.as_ref().map_or("", |l| l.as_str()), spec.features);
+            face.shape_plan(key, plan)
+        } else {
+            std::sync::Arc::new(plan())
+        };
+        let glyph_buffer = rustybuzz::shape_with_plan(rb_face, &plan, buffer);
 
         let infos = glyph_buffer.glyph_infos();
         let positions = glyph_buffer.glyph_positions();

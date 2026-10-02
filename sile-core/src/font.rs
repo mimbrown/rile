@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -163,9 +163,25 @@ impl FontSpec {
 // FontFace
 // ---------------------------------------------------------------------------
 
+self_cell::self_cell!(
+    struct ShapingFace {
+        owner: Arc<Vec<u8>>,
+        #[covariant]
+        dependent: RbFace,
+    }
+);
+
+type RbFace<'a> = rustybuzz::Face<'a>;
+
 pub struct FontFace {
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     index: u32,
+    /// Parsed once for shaping, with the shaping plans made for it.
+    shaping: OnceLock<Option<ShapingFace>>,
+    plans: Mutex<HashMap<String, Arc<rustybuzz::ShapePlan>>>,
+    bboxes: Mutex<HashMap<u16, Option<GlyphBBox>>>,
+    #[cfg(feature = "harfbuzz")]
+    harfbuzz: Mutex<HashMap<String, Arc<crate::harfbuzz_ffi::HbShapingFont>>>,
     units_per_em: u16,
     ascender: i16,
     descender: i16,
@@ -217,8 +233,13 @@ impl FontFace {
                 .raw_face()
                 .table(ttf_parser::Tag::from_bytes(b"MATH"))
                 .is_some(),
-            data,
+            data: Arc::new(data),
             index,
+            shaping: OnceLock::new(),
+            plans: Mutex::default(),
+            bboxes: Mutex::default(),
+            #[cfg(feature = "harfbuzz")]
+            harfbuzz: Mutex::default(),
         })
     }
 
@@ -309,7 +330,10 @@ impl FontFace {
     }
 
     pub fn glyph_bounding_box(&self, glyph_id: u16) -> Option<GlyphBBox> {
-        self.with_face(|f| {
+        if let Some(bbox) = self.bboxes.lock().expect("bbox cache").get(&glyph_id) {
+            return *bbox;
+        }
+        let bbox = self.with_face(|f| {
             f.glyph_bounding_box(ttf_parser::GlyphId(glyph_id))
                 .map(|r| GlyphBBox {
                     x_min: r.x_min,
@@ -317,7 +341,31 @@ impl FontFace {
                     x_max: r.x_max,
                     y_max: r.y_max,
                 })
-        })
+        });
+        self.bboxes.lock().expect("bbox cache").insert(glyph_id, bbox);
+        bbox
+    }
+
+    /// The face as rustybuzz shapes with it.
+    pub(crate) fn rustybuzz_face(&self) -> Option<&rustybuzz::Face<'_>> {
+        let shaping = self.shaping.get_or_init(|| {
+            ShapingFace::try_new(Arc::clone(&self.data), |data| rustybuzz::Face::from_slice(data, self.index).ok_or(())).ok()
+        });
+        shaping.as_ref().map(|s| s.borrow_dependent())
+    }
+
+    /// The face as HarfBuzz shapes with it at `variations`.
+    #[cfg(feature = "harfbuzz")]
+    pub(crate) fn harfbuzz_font(&self, variations: &[([u8; 4], f32)]) -> Arc<crate::harfbuzz_ffi::HbShapingFont> {
+        let key = format!("{variations:?}");
+        let mut fonts = self.harfbuzz.lock().expect("harfbuzz cache");
+        Arc::clone(fonts.entry(key).or_insert_with(|| Arc::new(crate::harfbuzz_ffi::HbShapingFont::new(Arc::clone(&self.data), self.index, variations))))
+    }
+
+    /// The shaping plan for `key`, made by `make` the first time.
+    pub(crate) fn shape_plan(&self, key: String, make: impl FnOnce() -> rustybuzz::ShapePlan) -> Arc<rustybuzz::ShapePlan> {
+        let mut plans = self.plans.lock().expect("plan cache");
+        Arc::clone(plans.entry(key).or_insert_with(|| Arc::new(make())))
     }
 
     /// Axis positions for `spec` on a variable font, set as SILE does:
@@ -417,6 +465,9 @@ impl FontFace {
     // -- Internal ------------------------------------------------------------
 
     fn with_face<T>(&self, f: impl FnOnce(&ttf_parser::Face<'_>) -> T) -> T {
+        if let Some(face) = self.rustybuzz_face() {
+            return f(face);
+        }
         let face =
             ttf_parser::Face::parse(&self.data, self.index).expect("font data already validated");
         f(&face)

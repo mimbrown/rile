@@ -555,6 +555,27 @@ impl PdfOutputter {
             .filter(|&gid| gid != 0)
             .map(|gid| self.track_glyph(&nnode.font_key, gid, " "));
 
+        // Where the font's own advances are those of the embedded font,
+        // glyphs follow each other in one TJ array, adjusted where the
+        // shaper moved them; otherwise each is placed on its own.
+        let entry = &self.fonts[&nnode.font_key];
+        let advance = |gid: u16| entry.face.advance_width(gid).unwrap_or(0) as f64 * nnode.font_size / entry.face.units_per_em() as f64;
+        let chained = !nnode.vertical && !entry.face.is_variable();
+        let mut placed: Vec<(f64, f64, u16, Option<f64>)> = Vec::with_capacity(cids.len() + 1);
+        let (mut cur_x, mut cur_y) = (x, baseline_y);
+        for (glyph, cid) in nnode.glyphs.iter().zip(&cids) {
+            let follows = (chained && glyph.y_offset == 0.0).then(|| advance(glyph.gid));
+            placed.push((cur_x + glyph.x_offset, cur_y - glyph.y_offset, *cid, follows));
+            if nnode.vertical {
+                cur_y += glyph.width;
+            } else {
+                cur_x += glyph.width;
+            }
+        }
+        if let Some(cid) = space {
+            placed.push((cur_x, cur_y, cid, None));
+        }
+
         self.mark();
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
@@ -567,23 +588,39 @@ impl PdfOutputter {
 
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
-
-        let (mut cur_x, mut cur_y) = (x, baseline_y);
-        for (glyph, cid) in nnode.glyphs.iter().zip(cids) {
-            let px = cur_x + glyph.x_offset;
-            let py = page_height - (cur_y - glyph.y_offset);
-            page.content
-                .set_text_matrix([1.0, 0.0, 0.0, 1.0, px as f32, py as f32]);
-            page.content.show(Str(&cid.to_be_bytes()));
-            if nnode.vertical {
-                cur_y += glyph.width;
-            } else {
-                cur_x += glyph.width;
+        let mut i = 0;
+        while i < placed.len() {
+            let (x, y, _, _) = placed[i];
+            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, x as f32, (page_height - y) as f32]);
+            let mut run: Vec<(f32, Vec<u8>)> = vec![(0.0, Vec::new())];
+            let mut pen = x;
+            loop {
+                let (gx, _, cid, follows) = placed[i];
+                let adjust = ((pen - gx) * 1000.0 / nnode.font_size * 100.0).round() as f32 / 100.0;
+                if adjust != 0.0 {
+                    run.push((adjust, Vec::new()));
+                }
+                run.last_mut().expect("run").1.extend(cid.to_be_bytes());
+                i += 1;
+                match follows {
+                    Some(width) if placed.get(i).is_some_and(|next| next.1 == y) => pen = gx + width,
+                    _ => break,
+                }
             }
-        }
-        if let Some(cid) = space {
-            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, cur_x as f32, (page_height - cur_y) as f32]);
-            page.content.show(Str(&cid.to_be_bytes()));
+            if run.len() == 1 {
+                page.content.show(Str(&run[0].1));
+            } else {
+                let mut shown = page.content.show_positioned();
+                let mut items = shown.items();
+                for (adjust, glyphs) in &run {
+                    if *adjust != 0.0 {
+                        items.adjust(*adjust);
+                    }
+                    if !glyphs.is_empty() {
+                        items.show(Str(glyphs));
+                    }
+                }
+            }
         }
 
         page.content.end_text();
