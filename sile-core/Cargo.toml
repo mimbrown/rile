@@ -11,6 +11,7 @@ harfbuzz = ["dep:harfbuzz-sys"]
 ttf-parser = "0.25"
 fontdb = "0.22"
 rustybuzz = "0.20"
+self_cell = "1"
 unicode-bidi = "0.3"
 cassowary = "0.3"
 pdf-writer = "0.12"

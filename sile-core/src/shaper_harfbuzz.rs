@@ -1,7 +1,7 @@
 use harfbuzz_sys as hb;
 
 use crate::font::{Direction, FontFace, FontSpec};
-use crate::harfbuzz_ffi::{self, HbBlob, HbBuffer, HbFace, HbFont};
+use crate::harfbuzz_ffi::{self, HbBuffer};
 use crate::shaper::{extract_glyph_texts_from_clusters, GlyphItem, Shaper};
 
 pub struct HarfBuzzShaper {
@@ -26,11 +26,8 @@ impl Shaper for HarfBuzzShaper {
     }
 
     fn shape(&self, text: &str, face: &FontFace, spec: &FontSpec) -> Vec<GlyphItem> {
-        let (data, index) = face.raw_data();
-        let blob = HbBlob::from_bytes(data);
-        let hb_face = HbFace::new(&blob, index);
-        let mut font = HbFont::new(&hb_face);
-        font.set_variations(&face.variations(spec));
+        let shaping = face.harfbuzz_font(&face.variations(spec));
+        let font = shaping.font();
 
         let mut buffer = HbBuffer::new();
         buffer.add_str(text);
@@ -59,7 +56,7 @@ impl Shaper for HarfBuzzShaper {
                 .collect()
         };
 
-        harfbuzz_ffi::shape(&font, &mut buffer, &features, &self.subshapers);
+        harfbuzz_ffi::shape(font, &mut buffer, &features, &self.subshapers);
 
         let infos = buffer.glyph_infos();
         let positions = buffer.glyph_positions();

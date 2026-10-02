@@ -1,5 +1,6 @@
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
 use std::ptr;
+use std::sync::Arc;
 
 use harfbuzz_sys as hb;
 
@@ -10,16 +11,14 @@ use harfbuzz_sys as hb;
 pub(crate) struct HbBlob(*mut hb::hb_blob_t);
 
 impl HbBlob {
-    pub fn from_bytes(data: &[u8]) -> Self {
+    /// A blob keeping `data` alive for as long as HarfBuzz uses it.
+    pub fn from_arc(data: Arc<Vec<u8>>) -> Self {
+        unsafe extern "C" fn release(user_data: *mut c_void) {
+            unsafe { drop(Arc::from_raw(user_data as *const Vec<u8>)) }
+        }
+        let (ptr, len) = (data.as_ptr(), data.len());
         unsafe {
-            let blob = hb::hb_blob_create(
-                data.as_ptr() as *const c_char,
-                data.len() as u32,
-                hb::HB_MEMORY_MODE_READONLY,
-                ptr::null_mut(),
-                None,
-            );
-            Self(blob)
+            Self(hb::hb_blob_create(ptr as *const c_char, len as u32, hb::HB_MEMORY_MODE_READONLY, Arc::into_raw(data) as *mut c_void, Some(release)))
         }
     }
 }
@@ -77,6 +76,32 @@ impl HbFont {
 
     pub fn as_ptr(&self) -> *mut hb::hb_font_t {
         self.0
+    }
+}
+
+/// A font ready to shape with, at fixed variations.
+pub(crate) struct HbShapingFont {
+    font: HbFont,
+}
+
+// SAFETY: the face and font are made immutable before the font is handed
+// out, and HarfBuzz allows immutable objects to be used from any thread.
+unsafe impl Send for HbShapingFont {}
+unsafe impl Sync for HbShapingFont {}
+
+impl HbShapingFont {
+    pub fn new(data: Arc<Vec<u8>>, index: u32, variations: &[([u8; 4], f32)]) -> Self {
+        let blob = HbBlob::from_arc(data);
+        let face = HbFace::new(&blob, index);
+        unsafe { hb::hb_face_make_immutable(face.0) };
+        let mut font = HbFont::new(&face);
+        font.set_variations(variations);
+        unsafe { hb::hb_font_make_immutable(font.0) };
+        Self { font }
+    }
+
+    pub fn font(&self) -> &HbFont {
+        &self.font
     }
 }
 
