@@ -1,6 +1,7 @@
 //! CommonMark set through the builder API: headings become the class's
 //! sectioning, and everything else maps onto paragraphs, fonts, lists,
-//! links, images and verbatim blocks.
+//! links, images, verbatim blocks and `$`/`$$` math in the TeX-like
+//! syntax.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::image::Image;
 use sile_core::length::Length;
 use sile_core::lists::{ListKind, ListOptions};
+use sile_core::math::{MathMode, TexMath};
 use sile_core::node::{LinkDest, Stroke};
 
 pub struct Markdown<'a> {
@@ -20,6 +22,7 @@ pub struct Markdown<'a> {
     base: PathBuf,
     mono: &'a str,
     fonts: Vec<Option<FontSpec>>,
+    tex: TexMath,
     pub warnings: Vec<String>,
 }
 
@@ -33,7 +36,7 @@ impl<'a> Markdown<'a> {
     /// Set Markdown into `doc`, finding images relative to `base` and
     /// setting code in the `mono` font family.
     pub fn new(doc: DocumentBuilder, base: &Path, mono: &'a str) -> Self {
-        Self { doc, base: base.to_path_buf(), mono, fonts: Vec::new(), warnings: Vec::new() }
+        Self { doc, base: base.to_path_buf(), mono, fonts: Vec::new(), tex: TexMath::new(), warnings: Vec::new() }
     }
 
     pub fn finish(self) -> DocumentBuilder {
@@ -41,7 +44,7 @@ impl<'a> Markdown<'a> {
     }
 
     pub fn typeset(&mut self, src: &str) -> Result<(), BuilderError> {
-        let events: Vec<Event> = Parser::new_ext(src, Options::ENABLE_SMART_PUNCTUATION).collect();
+        let events: Vec<Event> = Parser::new_ext(src, Options::ENABLE_SMART_PUNCTUATION | Options::ENABLE_MATH).collect();
         self.events(&events)?;
         self.doc.new_paragraph()?;
         Ok(())
@@ -82,6 +85,8 @@ impl<'a> Markdown<'a> {
                 self.doc.add_text(code.to_string());
                 self.pop_font()?;
             }
+            Event::InlineMath(src) => self.math(src, MathMode::Text)?,
+            Event::DisplayMath(src) => self.math(src, MathMode::Display { number: None })?,
             Event::SoftBreak => {
                 doc.add_text(" ");
             }
@@ -152,6 +157,20 @@ impl<'a> Markdown<'a> {
             Event::Html(html) | Event::InlineHtml(html) => self.warnings.push(format!("HTML is not supported: {}", html.trim())),
             Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => {}
             other => self.warnings.push(format!("not supported: {other:?}")),
+        }
+        Ok(())
+    }
+
+    /// A formula, or its source as code with a warning when it can't be
+    /// set.
+    fn math(&mut self, src: &str, mode: MathMode) -> Result<(), BuilderError> {
+        let set = match self.tex.parse(src) {
+            Ok(formula) => self.doc.add_math(&formula, mode).map(|_| ()).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = set {
+            self.warnings.push(format!("math {src:?}: {e}"));
+            self.event(&Event::Code(src.to_string().into()))?;
         }
         Ok(())
     }
@@ -281,5 +300,13 @@ mod tests {
         };
         assert!(x_of("x") > x_of("fn") + 5.0);
         assert!((x_of("}") - x_of("fn")).abs() < 1e-3);
+    }
+
+    #[test]
+    fn math_without_a_math_font_is_set_as_code() {
+        let (trace, warnings) = trace(Plain::new(), "Euler: $e^{i\\pi} = -1$.\n");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("math \"e^{i\\\\pi} = -1\""), "{warnings:?}");
+        assert!(words(&trace).contains(&"Euler"), "{trace}");
     }
 }

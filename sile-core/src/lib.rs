@@ -19,6 +19,7 @@ pub mod insertion;
 pub mod length;
 pub mod linebreak;
 pub mod lists;
+pub mod math;
 pub mod ruby;
 pub mod measurement;
 pub mod node;

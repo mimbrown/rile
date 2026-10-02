@@ -47,6 +47,11 @@ struct Args {
     /// The document's language, for hyphenation and line breaking.
     #[arg(long, default_value = "en")]
     language: String,
+    /// The font family for $math$; the first of Libertinus Math, STIX Two
+    /// Math and a few other OpenType math fonts that is installed by
+    /// default.
+    #[arg(long = "math-font")]
+    math_font: Option<String>,
     /// More directories to look for fonts in.
     #[arg(long = "fonts-dir")]
     fonts_dirs: Vec<PathBuf>,
@@ -68,6 +73,7 @@ enum Class {
 }
 
 const SERIF: &[&str] = &["Gentium Plus", "Gentium Book Plus", "Gentium Book", "Libertinus Serif", "Noto Serif", "DejaVu Serif", "Liberation Serif", "Times New Roman", "Georgia"];
+const MATH: &[&str] = &["Libertinus Math", "STIX Two Math", "Latin Modern Math", "TeX Gyre Termes Math", "TeX Gyre Pagella Math", "Cambria Math"];
 const MONO: &[&str] = &["Hack", "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Menlo", "Consolas", "Courier New"];
 
 fn main() -> ExitCode {
@@ -94,6 +100,7 @@ fn run(args: &Args) -> Result<PathBuf, String> {
     }
     let font = pick_family(&fonts, args.font.as_deref(), SERIF).ok_or("no serif font found; name one with --font")?;
     let mono = pick_family(&fonts, args.mono.as_deref(), MONO).unwrap_or_else(|| font.clone());
+    let math = pick_family(&fonts, args.math_font.as_deref(), MATH);
 
     let mut warnings = Vec::new();
     let layout = lay_out_until_settled(5, |references| -> Result<DocumentBuilder, BuilderError> {
@@ -119,6 +126,9 @@ fn run(args: &Args) -> Result<PathBuf, String> {
             doc.add_font_fallback(FontFallback { family: Some(family.clone()), ..Default::default() })?;
         }
         let skip = Length::new(Measurement::pt(1.2 * args.size), Measurement::pt(1.0), Measurement::pt(0.0));
+        if let Some(math) = &math {
+            doc.math_settings_mut().family = math.clone();
+        }
         doc.set_baseline_skip(Some(BaselineSkip { skip, lineskip: 1.0 }));
         doc.set_paragraph_indent(1.2 * args.size);
         doc.set_paragraph_skip(Length::new(Measurement::pt(0.0), Measurement::pt(1.0), Measurement::pt(0.0)));

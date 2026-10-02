@@ -82,6 +82,73 @@ struct RegisteredFont {
     face: Arc<FontFace>,
 }
 
+/// SILE's italic correction: space added where text changes between
+/// italic and upright, as a glue if either side has a break opportunity,
+/// else as a kern.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItalicCorrection {
+    /// Take the correction out of a punctuation space at the change, as
+    /// French puts before `!` (SILE's
+    /// `typesetter.italicCorrection.punctuation`).
+    pub punctuation: bool,
+}
+
+impl Default for ItalicCorrection {
+    fn default() -> Self {
+        Self { punctuation: true }
+    }
+}
+
+/// A glyph's advance and ink extents in points.
+#[derive(Debug, Clone, Copy)]
+struct GlyphShape {
+    width: f64,
+    ink_width: f64,
+    x_bearing: f64,
+    height: f64,
+    depth: f64,
+}
+
+/// The ends of a shaped run: each end's glyph, whether glue comes between
+/// it and the run's edge, and the width of a punctuation space there.
+struct RunEdges {
+    italic: bool,
+    first: (Option<GlyphShape>, bool, Option<f64>),
+    last: (Option<GlyphShape>, bool, Option<f64>),
+}
+
+impl ItalicCorrection {
+    fn between(&self, prev: &RunEdges, cur: &RunEdges) -> Option<Node> {
+        let ((Some(p), p_glue, p_punct), (Some(c), c_glue, c_punct)) = (prev.last, cur.first) else { return None };
+        let offset = if prev.italic && !cur.italic {
+            if p.height <= 0.0 {
+                return None;
+            }
+            let d = p.ink_width + p.x_bearing;
+            let delta = if d > p.width { d - p.width } else { 0.0 };
+            let offset = if p.height <= c.height { delta } else { delta * c.height / p.height };
+            match c_punct.filter(|_| self.punctuation) {
+                Some(w) => (offset - w).max(0.0),
+                None => offset,
+            }
+        } else if !prev.italic && cur.italic {
+            if p.depth <= 0.0 {
+                return None;
+            }
+            let delta = (-c.x_bearing).max(0.0);
+            let offset = if p.depth >= c.depth { delta } else { delta * p.depth / c.depth };
+            match p_punct.filter(|_| self.punctuation) {
+                Some(w) if w - offset <= 0.0 => 0.0,
+                _ => offset,
+            }
+        } else {
+            return None;
+        };
+        let width = Length::pt(offset);
+        (offset != 0.0).then(|| if p_glue || c_glue { Node::glue(width) } else { Node::kern(width) })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TextRun (internal)
 // ---------------------------------------------------------------------------
@@ -175,19 +242,26 @@ impl RunningText {
 /// `document.lineskip` in SILE).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BaselineSkip {
+    /// `em` resolves against the font in force when lines are spaced.
     pub skip: Length,
     /// Minimum gap between one line's depth and the next line's height.
     pub lineskip: f64,
 }
 
 impl BaselineSkip {
-    fn leading_for(&self, height: f64, previous_depth: Option<f64>) -> Node {
+    /// The skip with `em` taken as `em` points.
+    pub fn skip_at(&self, em: f64) -> Length {
+        resolve_em(self.skip, em)
+    }
+
+    fn leading_for(&self, height: f64, previous_depth: Option<f64>, em: f64) -> Node {
         let Some(previous_depth) = previous_depth else {
             return Node::vglue(Length::zero());
         };
-        let gap = self.skip.length.to_pt().unwrap_or(0.0) - height - previous_depth;
+        let skip = resolve_em(self.skip, em);
+        let gap = skip.length.to_pt().unwrap_or(0.0) - height - previous_depth;
         if gap > self.lineskip {
-            Node::vglue(Length::new(Measurement::pt(gap), self.skip.stretch, self.skip.shrink))
+            Node::vglue(Length::new(Measurement::pt(gap), skip.stretch, skip.shrink))
         } else {
             Node::vglue(Length::pt(self.lineskip))
         }
@@ -377,12 +451,14 @@ pub struct Settings {
     ethiopic_centered: bool,
     fixed_space_after_dash: bool,
     soft_hyphens: bool,
+    italic_correction: Option<ItalicCorrection>,
     replace_apostrophe_at_hyphenation: bool,
     break_width: Option<f64>,
     fallbacks: Vec<FontFallback>,
     /// The fallbacks applied to the current font, as registered fonts.
     fallback_fonts: Vec<String>,
     linebreak_settings: LinebreakSettings,
+    math: crate::math::MathSettings,
 }
 
 impl Default for Settings {
@@ -405,11 +481,13 @@ impl Default for Settings {
             ethiopic_centered: false,
             fixed_space_after_dash: true,
             soft_hyphens: true,
+            italic_correction: None,
             replace_apostrophe_at_hyphenation: false,
             break_width: None,
             fallbacks: Vec::new(),
             fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
+            math: Default::default(),
         }
     }
 }
@@ -580,6 +658,7 @@ pub struct DocumentBuilder {
     previous_references: Option<CrossReferences>,
     consulted_references: std::cell::Cell<bool>,
     references: CrossReferences,
+    pub(crate) math_tables: BTreeMap<String, Arc<crate::math::MathTable>>,
 }
 
 impl DocumentBuilder {
@@ -635,6 +714,7 @@ impl DocumentBuilder {
             previous_references: None,
             consulted_references: Default::default(),
             references: CrossReferences::default(),
+            math_tables: BTreeMap::new(),
         }
     }
 
@@ -778,7 +858,7 @@ impl DocumentBuilder {
         Ok(())
     }
 
-    fn register_font_spec(&mut self, spec: FontSpec) -> Result<String, BuilderError> {
+    pub(crate) fn register_font_spec(&mut self, spec: FontSpec) -> Result<String, BuilderError> {
         let key = spec.cache_key();
         if !self.fonts.contains_key(&key) {
             let same_face = |f: &&RegisteredFont| {
@@ -794,6 +874,27 @@ impl DocumentBuilder {
             self.fonts.insert(key.clone(), RegisteredFont { spec, face });
         }
         Ok(key)
+    }
+
+    pub(crate) fn registered_face(&self, key: &str) -> Option<(&FontSpec, &Arc<FontFace>)> {
+        self.fonts.get(key).map(|f| (&f.spec, &f.face))
+    }
+
+    pub(crate) fn shaper(&self) -> &dyn Shaper {
+        self.shaper.as_ref()
+    }
+
+    /// The math font and display settings (SILE's `math.*`).
+    pub fn math_settings(&self) -> &crate::math::MathSettings {
+        &self.settings.math
+    }
+
+    pub fn math_settings_mut(&mut self) -> &mut crate::math::MathSettings {
+        &mut self.settings.math
+    }
+
+    pub fn space_settings(&self) -> &SpaceSettings {
+        &self.settings.space_settings
     }
 
     /// Change some aspects of the current font.
@@ -1119,6 +1220,15 @@ impl DocumentBuilder {
     /// default).
     pub fn set_soft_hyphens(&mut self, on: bool) -> &mut Self {
         self.settings.soft_hyphens = on;
+        self
+    }
+
+    /// Whether to space text set in italics from upright text next to it
+    /// by how far the glyphs at the change lean over (SILE's
+    /// `typesetter.italicCorrection`, off by default). Read when the
+    /// paragraph is set.
+    pub fn set_italic_correction(&mut self, correction: Option<ItalicCorrection>) -> &mut Self {
+        self.settings.italic_correction = correction;
         self
     }
 
@@ -2840,7 +2950,68 @@ impl DocumentBuilder {
 
     fn shape_inlines(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
         let mut h_nodes = Vec::new();
+        let mut previous: Option<RunEdges> = None;
         for item in inlines {
+            let Inline::Text(run) = item else {
+                previous = None;
+                self.shape_inline(item, &mut h_nodes)?;
+                continue;
+            };
+            let mut punct = Vec::new();
+            let nodes = self.shape_run_marking(run, &mut punct)?;
+            if let Some(correction) = self.settings.italic_correction {
+                let edges = self.run_edges(&run.font_name, &nodes, &punct);
+                if let Some(previous) = &previous
+                    && let Some(node) = correction.between(previous, &edges)
+                {
+                    h_nodes.push(node);
+                }
+                previous = Some(edges);
+            }
+            h_nodes.extend(nodes);
+        }
+        Ok(h_nodes)
+    }
+
+    /// What the italic correction looks at in a shaped run: whether its
+    /// font leans, its first and last glyphs, and whether glue or a
+    /// punctuation space comes before the first or after the last.
+    fn run_edges(&self, font_name: &str, nodes: &[Node], punct: &[usize]) -> RunEdges {
+        let italic = self.fonts.get(font_name).is_some_and(|f| f.face.italic_angle() != 0.0);
+        let edge = |indices: &mut dyn Iterator<Item = usize>, last: bool| {
+            let (mut glue, mut punct_width) = (false, None);
+            for i in indices {
+                match &nodes[i] {
+                    Node::NNode(n) => {
+                        let glyph = if last { n.glyphs.last() } else { n.glyphs.first() };
+                        let shape = glyph.and_then(|g| self.glyph_shape(&n.font_key, n.font_size, g));
+                        return (shape, glue, punct_width);
+                    }
+                    Node::Kern(k) if punct.contains(&i) => punct_width = k.width.length.to_pt(),
+                    Node::Glue(_) => glue = true,
+                    _ => {}
+                }
+            }
+            (None, glue, punct_width)
+        };
+        RunEdges { italic, first: edge(&mut (0..nodes.len()), false), last: edge(&mut (0..nodes.len()).rev(), true) }
+    }
+
+    fn glyph_shape(&self, font_key: &str, size: f64, glyph: &GlyphData) -> Option<GlyphShape> {
+        let face = &self.fonts.get(font_key)?.face;
+        let s = size / face.units_per_em() as f64;
+        let b = face.glyph_bounding_box(glyph.gid).unwrap_or_default();
+        Some(GlyphShape {
+            width: glyph.width,
+            ink_width: (b.x_max as f64 - b.x_min as f64) * s,
+            x_bearing: b.x_min as f64 * s,
+            height: b.y_max as f64 * s,
+            depth: -(b.y_min as f64) * s,
+        })
+    }
+
+    fn shape_inline(&mut self, item: &Inline, h_nodes: &mut Vec<Node>) -> Result<(), BuilderError> {
+        {
             match item {
                 Inline::Text(run) => h_nodes.extend(self.shape_run(run)?),
                 Inline::Node(node) => h_nodes.push((**node).clone()),
@@ -2879,7 +3050,7 @@ impl DocumentBuilder {
                 }
             }
         }
-        Ok(h_nodes)
+        Ok(())
     }
 
     /// Cut the paragraph's text where its bidi embedding level changes and
@@ -2937,6 +3108,11 @@ impl DocumentBuilder {
     /// Shape one run and cut it into words, spaces and break penalties
     /// (SILE's unicode node maker).
     fn shape_run(&self, run: &TextRun) -> Result<Vec<Node>, BuilderError> {
+        self.shape_run_marking(run, &mut Vec::new())
+    }
+
+    /// `shape_run`, noting where punctuation spaces went in `punct`.
+    fn shape_run_marking(&self, run: &TextRun, punct: &mut Vec<usize>) -> Result<Vec<Node>, BuilderError> {
         let fonts = std::iter::once(&run.font_name)
             .chain(&run.fallbacks)
             .map(|name| self.fonts.get(name).map(|f| (name.as_str(), f)).ok_or_else(|| BuilderError::NoFont(name.clone())))
@@ -2995,6 +3171,7 @@ impl DocumentBuilder {
                             PunctSpace::Colon => (s.enlargement_factor, s.stretch_factor, s.shrink_factor),
                             PunctSpace::Guillemet => (0.8 * s.enlargement_factor, 0.3 * s.stretch_factor, 0.8 * s.shrink_factor),
                         };
+                        punct.push(nodes.len());
                         nodes.push(Node::kern(Length::new(
                             Measurement::pt(w * spc),
                             Measurement::pt(stretch * spc),
@@ -3180,7 +3357,7 @@ impl DocumentBuilder {
             return (first > 0.0).then(|| Node::vkern(Length::pt(first - height)));
         };
         Some(match spacing.method {
-            LineSpacingMethod::Tex => self.settings.baseline_skip?.leading_for(height, Some(previous_depth)),
+            LineSpacingMethod::Tex => self.settings.baseline_skip?.leading_for(height, Some(previous_depth), em),
             LineSpacingMethod::FitGlyph(extra) => Node::vglue(resolve_em(extra, em)),
             LineSpacingMethod::Fixed(distance) => {
                 let d = resolve_em(distance, em);
@@ -3351,13 +3528,14 @@ impl DocumentBuilder {
                 *previous_depth = Some(depth);
             } else if let (Some(zw), Some(bls)) = (tate, self.settings.baseline_skip) {
                 vbox.height = Length::pt(zw);
-                v_nodes.push(Node::vglue(Length::new(Measurement::pt(pt_of(&bls.skip) - zw), bls.skip.stretch, bls.skip.shrink)));
+                let skip = resolve_em(bls.skip, self.font_spec().map_or(10.0, |f| f.size));
+                v_nodes.push(Node::vglue(Length::new(Measurement::pt(pt_of(&skip) - zw), skip.stretch, skip.shrink)));
             } else if let Some(spacing) = self.settings.line_spacing {
                 let leading = self.line_spacing_leading(spacing, &vbox, *previous_depth, &mut v_nodes);
                 v_nodes.extend(leading);
                 *previous_depth = Some(depth);
             } else if let Some(bls) = self.settings.baseline_skip {
-                v_nodes.push(bls.leading_for(height, *previous_depth));
+                v_nodes.push(bls.leading_for(height, *previous_depth, self.font_spec().map_or(10.0, |f| f.size)));
                 *previous_depth = Some(depth);
             } else if index > 0 && self.settings.leading > 0.0 {
                 v_nodes.push(Node::vglue(Length::new(

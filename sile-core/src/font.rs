@@ -244,6 +244,12 @@ impl FontFace {
         ttf_parser::Face::parse(&self.data, self.index).ok()?.x_height().filter(|h| *h > 0)
     }
 
+    /// The `post` table's italic angle, non-zero for italic, oblique and
+    /// slanted faces.
+    pub fn italic_angle(&self) -> f32 {
+        self.with_face(|f| f.italic_angle())
+    }
+
     pub fn underline_position(&self) -> i16 {
         self.underline_position
     }
@@ -434,7 +440,7 @@ impl fmt::Debug for FontFace {
 // GlyphBBox
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct GlyphBBox {
     pub x_min: i16,
     pub y_min: i16,

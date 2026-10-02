@@ -787,11 +787,28 @@ impl crate::render::Canvas for PdfOutputter {
                 SvgOp::Move(x, y) => {
                     c.move_to(x, y);
                 }
+                SvgOp::Line(x, y) => {
+                    c.line_to(x, y);
+                }
                 SvgOp::Curve(p) => {
                     c.cubic_to(p[0], p[1], p[2], p[3], p[4], p[5]);
                 }
                 SvgOp::LineWidth(w) => {
                     c.set_line_width(w);
+                }
+                SvgOp::LineJoin(j) => {
+                    c.set_line_join(match j {
+                        0 => pdf_writer::types::LineJoinStyle::MiterJoin,
+                        1 => pdf_writer::types::LineJoinStyle::RoundJoin,
+                        _ => pdf_writer::types::LineJoinStyle::BevelJoin,
+                    });
+                }
+                SvgOp::LineCap(j) => {
+                    c.set_line_cap(match j {
+                        0 => pdf_writer::types::LineCapStyle::ButtCap,
+                        1 => pdf_writer::types::LineCapStyle::RoundCap,
+                        _ => pdf_writer::types::LineCapStyle::ProjectingSquareCap,
+                    });
                 }
                 SvgOp::StrokeRgb(r, g, b) => {
                     c.set_stroke_rgb(r as f32, g as f32, b as f32);

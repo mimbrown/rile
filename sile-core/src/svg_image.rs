@@ -17,8 +17,11 @@ const KAPPA90: f32 = 0.552_284_749_3;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SvgOp {
     Move(f32, f32),
+    Line(f32, f32),
     Curve([f32; 6]),
     LineWidth(f32),
+    LineJoin(u8),
+    LineCap(u8),
     StrokeRgb(f64, f64, f64),
     FillRgb(f64, f64, f64),
     Close,
@@ -42,8 +45,11 @@ impl fmt::Display for SvgImage {
         for op in &self.ops {
             match op {
                 SvgOp::Move(x, y) => write!(f, "{:.6} {:.6} m ", x, y)?,
+                SvgOp::Line(x, y) => write!(f, "{:.6} {:.6} l ", x, y)?,
                 SvgOp::Curve(c) => write!(f, "{:.6} {:.6} {:.6} {:.6} {:.6} {:.6} c ", c[0], c[1], c[2], c[3], c[4], c[5])?,
                 SvgOp::LineWidth(w) => write!(f, "{:.6} w ", w)?,
+                SvgOp::LineJoin(j) => write!(f, "{j} j ")?,
+                SvgOp::LineCap(c) => write!(f, "{c} J ")?,
                 SvgOp::StrokeRgb(r, g, b) => write!(f, "{r:.6} {g:.6} {b:.6} RG ")?,
                 SvgOp::FillRgb(r, g, b) => write!(f, "{r:.6} {g:.6} {b:.6} rg ")?,
                 SvgOp::Close => f.write_str("h ")?,
