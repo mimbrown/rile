@@ -1,4 +1,4 @@
-use crate::node::{HBox, Ink, Leader, NNode, Node};
+use crate::node::{HBox, Ink, Leader, LinerStyle, NNode, Node};
 use crate::color::Color;
 use crate::framespec::{Flow, FrameDirection, FrameGeometry};
 use crate::pagebuilder::Page;
@@ -37,7 +37,7 @@ pub fn draw_pages(pages: &[Page], canvas: &mut impl Canvas) {
     }
 }
 
-fn draw_page(page: &Page, canvas: &mut impl Canvas) {
+fn draw_page(page: &Page, canvas: &mut dyn Canvas) {
     for (frame_id, nodes) in &page.content {
         let Some(frame) = page.frame(frame_id) else { continue };
         let mut c = Cursor::start(frame);
@@ -127,7 +127,10 @@ impl Line {
 
     /// SILE's `rationWidth`.
     fn width(&self, node: &Node) -> f64 {
-        let width = node.width();
+        self.width_of(&node.width())
+    }
+
+    fn width_of(&self, width: &crate::length::Length) -> f64 {
         let (stretch, shrink) = (pt(&width.stretch), pt(&width.shrink));
         let mut w = pt(&width.length);
         if self.ratio > 0.0 && stretch > 0.0 {
@@ -140,7 +143,7 @@ impl Line {
 }
 
 /// Draw a line's nodes from the cursor, scaling glue by the line's ratio.
-fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut impl Canvas) {
+fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canvas) {
     for node in nodes {
         match node {
             Node::NNode(nnode) => {
@@ -173,7 +176,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut impl Can
             }
             Node::Kern(_) => c.advance_writing(line.width(node)),
             Node::Discretionary(d) => draw_hlist(&d.replacement, c, line, canvas),
-            Node::HBox(hbox) => match hbox.ink {
+            Node::HBox(hbox) => match &hbox.ink {
                 Some(Ink::Rule) => {
                     let (height, depth) = (pt(&hbox.height.length), pt(&hbox.depth.length));
                     c.advance_page(-height);
@@ -183,10 +186,13 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut impl Can
                     canvas.rule(ox, oy, c.x - ox, c.y - oy);
                     c.advance_page(-depth);
                 }
-                Some(Ink::Liner(s)) => {
+                Some(Ink::Liner(LinerStyle::Stroke(s))) => {
                     let (ox, oy) = (c.x, c.y);
                     draw_hlist(&hbox.nodes, c, line, canvas);
                     canvas.rule(ox, oy - s.raise, c.x - ox, s.thickness);
+                }
+                Some(Ink::Liner(LinerStyle::Custom(painter))) => {
+                    (painter.0)(&mut Pen { cursor: c, canvas, line, hbox });
                 }
                 Some(Ink::LatinInTate(zw)) => {
                     c.advance_writing(-0.5 * zw);
@@ -228,7 +234,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut impl Can
 /// As many copies of `pattern` as fit between `x` and `x + width`, placed
 /// so that copies on different lines line up from the frame's end edge
 /// (SILE's `leader:outputYourself`).
-fn draw_leaders(pattern: &HBox, x: f64, width: f64, c: &Cursor, line: &Line, canvas: &mut impl Canvas) {
+fn draw_leaders(pattern: &HBox, x: f64, width: f64, c: &Cursor, line: &Line, canvas: &mut dyn Canvas) {
     let step = pt(&pattern.width.length);
     if step <= 0.0 || !line.end_edge.is_finite() {
         return;
@@ -242,6 +248,51 @@ fn draw_leaders(pattern: &HBox, x: f64, width: f64, c: &Cursor, line: &Line, can
         let start = copy;
         draw_hlist(&pattern.nodes, &mut copy, &Line::NATURAL, canvas);
         copy = Cursor { x: start.x + step, ..start };
+    }
+}
+
+/// What a custom liner draws with: the pen where its box starts on the
+/// line, and the canvas.
+pub struct Pen<'a> {
+    cursor: &'a mut Cursor,
+    canvas: &'a mut dyn Canvas,
+    line: &'a Line,
+    hbox: &'a HBox,
+}
+
+impl Pen<'_> {
+    pub fn x(&self) -> f64 {
+        self.cursor.x
+    }
+
+    pub fn y(&self) -> f64 {
+        self.cursor.y
+    }
+
+    /// The box's width at the line's glue ratio.
+    pub fn width(&self) -> f64 {
+        self.line.width_of(&self.hbox.width)
+    }
+
+    pub fn height(&self) -> f64 {
+        pt(&self.hbox.height.length)
+    }
+
+    pub fn depth(&self) -> f64 {
+        pt(&self.hbox.depth.length)
+    }
+
+    pub fn canvas(&mut self) -> &mut dyn Canvas {
+        self.canvas
+    }
+
+    pub fn advance_writing(&mut self, amount: f64) {
+        self.cursor.advance_writing(amount);
+    }
+
+    /// Draw the wrapped content from the pen, moving it past the content.
+    pub fn draw_content(&mut self) {
+        draw_hlist(&self.hbox.nodes, self.cursor, self.line, self.canvas);
     }
 }
 

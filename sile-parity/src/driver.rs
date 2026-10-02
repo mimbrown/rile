@@ -232,6 +232,7 @@ const SETTINGS: &[&str] = &[
     "shaper.variablespaces",
     "languages.am.justification",
     "typesetter.fixedSpacingAfterInitialEmdash",
+    "typesetter.softHyphen",
     "linespacing.method",
     "linespacing.fixed.baselinedistance",
     "linespacing.fit-glyph.extra-space",
@@ -1650,6 +1651,9 @@ impl<'a> Driver<'a> {
             }
             "typesetter.fixedSpacingAfterInitialEmdash" => {
                 self.doc.set_fixed_space_after_dash(truthy(value));
+            }
+            "typesetter.softHyphen" => {
+                self.doc.set_soft_hyphens(truthy(value));
             }
             "languages.am.justification" => match value {
                 "left" | "centered" => self.settings.ethiopic_centered = value == "centered",

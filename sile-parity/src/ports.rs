@@ -3,10 +3,12 @@
 //! the test runs without a Lua interpreter.
 
 use sile_core::builder::{BuilderError, DocumentBuilder};
+use sile_core::color::Color;
 use sile_core::class::{bigskip, smallskip, with_font};
 use sile_core::font::{FontStyle, FontWeight};
 use sile_core::framespec::{FrameDirection, FrameSpec};
 use sile_core::linebreak::ParShape;
+use sile_core::node::{LinerPainter, LinerStyle};
 use sile_core::textcase;
 
 use crate::driver::Driver;
@@ -48,6 +50,9 @@ pub fn port(test: &str) -> Option<Port> {
         "bug-1321" => (&[bug_1321], &[]),
         "sura-2" => (&[nothing], &[]),
         "bug-926" => (&[nothing], &[]),
+        "feat-unicode-softhyphen" => (&[nothing], &[]),
+        "bug-liner-width" => (&[nothing], &[("advance-box-width", advance_box_width)]),
+        "negative-spaces-in-line" => (&[|d| d.add_text(&"کی خواہش ".repeat(8))], &[]),
         _ => return None,
     };
     Some(Port { chunks, commands })
@@ -232,4 +237,28 @@ fn bug_1321(d: &mut Driver) -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+/// A liner that only shades a band the height of the line around its
+/// content, then moves on by its width.
+fn advance_box_width(d: &mut Driver, cmd: &Command) -> Result<(), String> {
+    let bs = d.dimen("0.9bs")?;
+    let ratio = 0.3;
+    let gray = Color::parse("gray")?;
+    let band = LinerPainter::new(move |pen| {
+        let width = pen.width();
+        let height = pen.height().max((1.0 - ratio) * bs);
+        let depth = pen.depth().max(ratio * bs);
+        let (x, y) = (pen.x(), pen.y());
+        let canvas = pen.canvas();
+        canvas.push_color(gray);
+        canvas.rule(x, y - height, width, height + depth);
+        canvas.pop_color();
+        pen.advance_writing(width);
+    });
+    d.sync()?;
+    d.doc.start_liner(LinerStyle::Custom(band));
+    process(d, cmd)?;
+    d.doc.end_hbox();
+    Ok(())
 }

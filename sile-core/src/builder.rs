@@ -13,7 +13,7 @@ use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
-use crate::node::{self, GlyphData, Ink, Leader, NNode, Node, Stroke, VBox};
+use crate::node::{self, GlyphData, Ink, Leader, LinerStyle, NNode, Node, Stroke, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
 use crate::pagebuilder::{self, Page, PageBreakSettings};
 use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
@@ -116,7 +116,7 @@ enum Group {
     HBox,
     /// Glue of this width (infinite when `None`) filled with copies of the box.
     Leaders(Option<Length>),
-    Liner(Stroke),
+    Liner(LinerStyle),
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +333,7 @@ pub struct Settings {
     tracking: Option<f64>,
     ethiopic_centered: bool,
     fixed_space_after_dash: bool,
+    soft_hyphens: bool,
     fallbacks: Vec<FontFallback>,
     /// The fallbacks applied to the current font, as registered fonts.
     fallback_fonts: Vec<String>,
@@ -358,6 +359,7 @@ impl Default for Settings {
             tracking: None,
             ethiopic_centered: false,
             fixed_space_after_dash: true,
+            soft_hyphens: true,
             fallbacks: Vec::new(),
             fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
@@ -893,6 +895,20 @@ impl DocumentBuilder {
     /// whitespace at the start of a paragraph or box is dropped.
     pub fn add_text(&mut self, text: impl Into<String>) -> &mut Self {
         let mut text = text.into().replace("\r\n", " ").replace(['\n', '\t'], " ");
+        if text.contains('\u{AD}') {
+            if !self.settings.soft_hyphens {
+                return self.add_text(text.replace('\u{AD}', ""));
+            }
+            for (i, part) in text.split('\u{AD}').enumerate() {
+                if i > 0 {
+                    self.add_discretionary(Some("-"), None, None);
+                }
+                if !part.is_empty() {
+                    self.add_text(part);
+                }
+            }
+            return self;
+        }
         let mut speaker_change = false;
         if self.current_list().is_empty() && !self.settings.obey_spaces {
             text = text.trim_start().to_string();
@@ -917,6 +933,14 @@ impl DocumentBuilder {
     /// Whether a paragraph opening with an em dash and a space, marking a
     /// change of speaker, keeps that space fixed (SILE's
     /// `typesetter.fixedSpacingAfterInitialEmdash`, on by default).
+    /// Whether soft hyphens (U+00AD) in text are places it may break with
+    /// a hyphen, or are dropped (SILE's `typesetter.softHyphen`, on by
+    /// default).
+    pub fn set_soft_hyphens(&mut self, on: bool) -> &mut Self {
+        self.settings.soft_hyphens = on;
+        self
+    }
+
     pub fn set_fixed_space_after_dash(&mut self, fixed: bool) -> &mut Self {
         self.settings.fixed_space_after_dash = fixed;
         self
@@ -1065,8 +1089,8 @@ impl DocumentBuilder {
 
     /// Draw `stroke` along the material added until `end_hbox`, across line
     /// breaks (SILE's liners).
-    pub fn start_liner(&mut self, stroke: Stroke) -> &mut Self {
-        self.open_boxes.push((Group::Liner(stroke), Vec::new()));
+    pub fn start_liner(&mut self, style: impl Into<LinerStyle>) -> &mut Self {
+        self.open_boxes.push((Group::Liner(style.into()), Vec::new()));
         self
     }
 
@@ -2168,7 +2192,7 @@ impl DocumentBuilder {
                     h_nodes.push(Node::discretionary(prebreak, postbreak, replacement));
                 }
                 Inline::Box(Group::Liner(stroke), content) => {
-                    h_nodes.push(liner_mark(Ink::LinerStart(*stroke)));
+                    h_nodes.push(liner_mark(Ink::LinerStart(stroke.clone())));
                     h_nodes.extend(self.shape_inlines(content)?);
                     h_nodes.push(liner_mark(Ink::LinerEnd));
                 }
@@ -2574,7 +2598,7 @@ impl DocumentBuilder {
         let mut lines: Vec<(VBox, bool, Vec<Node>)> = Vec::new();
         let mut start = 0;
         let mut postbreak: Vec<Node> = Vec::new();
-        let mut open_liners: Vec<Stroke> = Vec::new();
+        let mut open_liners: Vec<LinerStyle> = Vec::new();
 
         for br in breaks {
             if br.position == 0 || h_nodes.is_empty() {
@@ -2824,9 +2848,9 @@ fn rejoin_unbroken_words(line: Vec<Node>) -> Vec<Node> {
     out
 }
 
-fn ink(node: &Node) -> Option<Ink> {
+fn ink(node: &Node) -> Option<&Ink> {
     match node {
-        Node::HBox(b) => b.ink,
+        Node::HBox(b) => b.ink.as_ref(),
         _ => None,
     }
 }
@@ -2834,7 +2858,7 @@ fn ink(node: &Node) -> Option<Ink> {
 /// Reopen at the line's first content the liners still open from earlier
 /// lines, and close the ones still open after its last content (SILE's
 /// `_repeatEnterLiners` and `_repeatLeaveLiners`).
-fn reopen_liners(line: Vec<Node>, open: &mut Vec<Stroke>) -> Vec<Node> {
+fn reopen_liners(line: Vec<Node>, open: &mut Vec<LinerStyle>) -> Vec<Node> {
     let is_content = |n: &Node| !n.is_discardable() && !(n.is_glue() && !n.is_explicit()) && !n.is_zero();
     let mut out = Vec::with_capacity(line.len());
     let mut seen_liner = false;
@@ -2845,14 +2869,14 @@ fn reopen_liners(line: Vec<Node>, open: &mut Vec<Stroke>) -> Vec<Node> {
         }
         if !seen_liner && last_content.is_some() {
             if !open.is_empty() {
-                out.extend(open.iter().map(|&s| liner_mark(Ink::LinerStart(s))));
+                out.extend(open.iter().map(|s| liner_mark(Ink::LinerStart(s.clone()))));
                 seen_liner = true;
             }
             last_content = Some(out.len());
         }
         match ink(&node) {
-            Some(Ink::LinerStart(stroke)) => {
-                open.push(stroke);
+            Some(Ink::LinerStart(style)) => {
+                open.push(style.clone());
                 seen_liner = true;
             }
             Some(Ink::LinerEnd) => {
@@ -2873,21 +2897,21 @@ fn reopen_liners(line: Vec<Node>, open: &mut Vec<Stroke>) -> Vec<Node> {
 /// Wrap the content between liner markers in boxes that draw their stroke
 /// (SILE's `_reboxLiners`).
 fn rebox_liners(line: Vec<Node>) -> Vec<Node> {
-    if !line.iter().any(|n| ink(n).is_some_and(|i| i == Ink::LinerEnd)) {
+    if !line.iter().any(|n| matches!(ink(n), Some(Ink::LinerEnd))) {
         return line;
     }
     let mut out = Vec::with_capacity(line.len());
     let mut stack: Vec<node::HBox> = Vec::new();
     let append = |b: &mut node::HBox, n: Node| {
-        b.width = Length::pt(pt_of(&b.width) + pt_of(&natural_width(&n)));
+        b.width = b.width + natural_width(&n);
         b.height = Length::pt(pt_of(&b.height).max(pt_of(&n.height())));
         b.depth = Length::pt(pt_of(&b.depth).max(pt_of(&n.depth())));
         b.nodes.push(n);
     };
     for node in line {
         match ink(&node) {
-            Some(Ink::LinerStart(stroke)) => {
-                stack.push(node::HBox { ink: Some(Ink::Liner(stroke)), ..Default::default() });
+            Some(Ink::LinerStart(style)) => {
+                stack.push(node::HBox { ink: Some(Ink::Liner(style.clone())), ..Default::default() });
             }
             Some(Ink::LinerEnd) => {
                 let Some(b) = stack.pop() else { continue };
