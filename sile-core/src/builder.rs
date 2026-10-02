@@ -1008,9 +1008,19 @@ impl DocumentBuilder {
         frame.direction = self.frame_directions.get(&frame.id).copied().or(frame.direction).or(Some(self.direction));
     }
 
-    /// The direction of the frame being filled.
+    /// The direction of the frame being filled, or before the first page,
+    /// of the frame it will start in.
     pub fn frame_direction(&self) -> FrameDirection {
-        self.frame_override.or_else(|| self.current_frame().and_then(|f| f.direction)).unwrap_or(self.direction)
+        if let Some(direction) = self.frame_override {
+            return direction;
+        }
+        if self.page.is_some() {
+            return self.current_frame().and_then(|f| f.direction).unwrap_or(self.direction);
+        }
+        let template = self.page_template();
+        let first = template.frames.iter().find(|f| f.id == template.first_content_frame);
+        let id = first.map(|f| f.id.as_str()).unwrap_or_default();
+        self.frame_directions.get(id).copied().or(first.and_then(|f| f.direction)).unwrap_or(self.direction)
     }
 
     /// Lines in vertical Japanese frames are broken first-fit and set one
@@ -2758,13 +2768,14 @@ impl DocumentBuilder {
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
-        let h_nodes = if self.bidi {
+        let bidi = self.bidi && direction != Direction::TTB;
+        let h_nodes = if bidi {
             let inlines = self.split_bidi_runs(inlines, direction)?;
             self.shape_inlines(&inlines)?
         } else {
             self.shape_inlines(inlines)?
         };
-        Ok(self.break_nodes(h_nodes, hsize, direction, self.bidi, skips, previous_depth))
+        Ok(self.break_nodes(h_nodes, hsize, direction, bidi, skips, previous_depth))
     }
 
     /// Break shaped paragraph material into lines (the rest of SILE's
@@ -3144,6 +3155,7 @@ impl DocumentBuilder {
 
         let mut nnode = NNode::with_glyphs(text, glyph_data, font_name, spec.size, width, height, depth);
         nnode.misfit = misfit;
+        nnode.vertical = spec.direction == Direction::TTB;
         nnode.color = color;
         nnode.language = self.settings.language.clone();
         nnode
@@ -3779,6 +3791,26 @@ mod tests {
         doc.load_font_data("body", data, spec).ok()?;
         doc.set_font("body");
         Some(doc)
+    }
+
+    #[test]
+    fn vertical_frames_shape_downwards_and_turn_latin_on_its_side() {
+        let mut doc = crate::class::tests_support::doc(crate::class::Plain::japanese(true));
+        doc.update_font(|f| f.direction = Direction::Frame).unwrap();
+        doc.add_text("tate");
+        DocumentBuilder::add_latin_in_tate(&mut doc, |d: &mut DocumentBuilder| -> Result<(), BuilderError> {
+            d.add_text("yoko");
+            Ok(())
+        })
+        .unwrap();
+        doc.new_paragraph().unwrap();
+        doc.set_compress(false);
+        let layout = doc.lay_out().unwrap();
+        let trace = layout.render_debug();
+        assert!(trace.contains(";TTB;\n"), "{trace}");
+        assert!(trace.contains(";LTR;\n"), "{trace}");
+        let pdf = String::from_utf8_lossy(&layout.render().unwrap()).into_owned();
+        assert_eq!(pdf.matches("0 -1 1 0 ").count(), 1);
     }
 
     // -- Robustness ----------------------------------------------------------
