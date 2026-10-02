@@ -126,7 +126,7 @@ impl DocumentClass for Bible {
         self.book.folio.output(doc)
     }
 
-    fn folio(&self) -> Option<String> {
+    fn folio(&self) -> Option<crate::counter::PageNumber> {
         self.book.folio()
     }
 }

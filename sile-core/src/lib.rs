@@ -11,6 +11,7 @@ pub mod frame;
 pub mod framespec;
 pub mod hyphenation;
 pub mod image;
+pub mod index;
 mod language_data;
 pub mod messages;
 pub mod insertion;

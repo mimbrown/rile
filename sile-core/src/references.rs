@@ -4,14 +4,18 @@
 use std::collections::BTreeMap;
 
 use crate::builder::{BuilderError, DocumentBuilder, Layout};
+use crate::counter::PageNumber;
 
 pub(crate) const TOC: &str = "toc";
 pub(crate) const LABELS: &str = "labels";
+pub(crate) const INDEX: &str = "index";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CrossReferences {
     pub toc: Vec<TocEntry>,
     pub labels: BTreeMap<String, Label>,
+    /// Each index by name: the pages each term is on, in page order.
+    pub index: BTreeMap<String, BTreeMap<String, Vec<IndexPage>>>,
 }
 
 impl CrossReferences {
@@ -29,6 +33,20 @@ pub struct TocEntry {
     pub page: String,
     /// Where the heading is, for links to it.
     pub dest: Option<String>,
+}
+
+/// A page an index term is on, and where on it for links.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexPage {
+    pub page: PageNumber,
+    pub link: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IndexMark {
+    pub index: String,
+    pub label: String,
+    pub link: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

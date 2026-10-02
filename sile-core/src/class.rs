@@ -4,6 +4,7 @@
 use std::any::Any;
 
 use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
+use crate::counter::PageNumber;
 use crate::font::{FontSpec, FontStyle, FontWeight};
 use crate::framespec::{FrameDirection, FrameSpec};
 use crate::length::Length;
@@ -40,8 +41,8 @@ pub trait DocumentClass: AsAny {
         Ok(())
     }
 
-    /// The current page's number as the class shows it, if it numbers pages.
-    fn folio(&self) -> Option<String> {
+    /// The current page's number, if the class numbers pages.
+    fn folio(&self) -> Option<PageNumber> {
         None
     }
 }
@@ -59,23 +60,29 @@ pub enum FolioState {
 #[derive(Debug, Clone)]
 pub struct Folio {
     pub value: usize,
+    /// The numbering system, such as `arabic` or `roman`.
+    pub display: String,
     pub state: FolioState,
     pub frame: String,
 }
 
 impl Default for Folio {
     fn default() -> Self {
-        Self { value: 1, state: FolioState::On, frame: "folio".to_string() }
+        Self { value: 1, display: "arabic".to_string(), state: FolioState::On, frame: "folio".to_string() }
     }
 }
 
 impl Folio {
+    pub fn number(&self) -> PageNumber {
+        PageNumber { value: self.value as i64, display: self.display.clone() }
+    }
+
     pub fn output(&mut self, doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
         match self.state {
             FolioState::OffThisPage => self.state = FolioState::On,
             FolioState::Off => {}
             FolioState::On => {
-                let text = self.value.to_string();
+                let text = self.number().to_string();
                 doc.typeset_into(&self.frame, |d| {
                     d.use_toplevel();
                     centered(d, |d| {
@@ -166,8 +173,8 @@ impl DocumentClass for Plain {
         self.folio.output(doc)
     }
 
-    fn folio(&self) -> Option<String> {
-        Some(self.folio.value.to_string())
+    fn folio(&self) -> Option<PageNumber> {
+        Some(self.folio.number())
     }
 }
 
@@ -579,8 +586,8 @@ impl DocumentClass for Book {
         self.folio.output(doc)
     }
 
-    fn folio(&self) -> Option<String> {
-        Some(self.folio.value.to_string())
+    fn folio(&self) -> Option<PageNumber> {
+        Some(self.folio.number())
     }
 }
 
