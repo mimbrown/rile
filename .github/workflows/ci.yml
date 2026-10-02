@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.shaper }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shaper: [rustybuzz, harfbuzz]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.shaper }}
+      - if: matrix.shaper == 'harfbuzz'
+        run: sudo apt-get update && sudo apt-get install -y libharfbuzz-dev
+      - name: Tests
+        run: cargo test --workspace ${{ matrix.shaper == 'harfbuzz' && '--features sile-core/harfbuzz' || '' }}
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets ${{ matrix.shaper == 'harfbuzz' && '--features sile-core/harfbuzz' || '' }}
+
+  # SILE parity is a score, not a gate: the summary is posted on the run
+  # and the HTML report kept as an artifact.
+  parity:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: parity
+      - run: sudo apt-get update && sudo apt-get install -y libharfbuzz-dev zstd
+      - uses: actions/cache@v4
+        with:
+          path: .parity/downloads
+          key: parity-downloads-${{ hashFiles('scripts/fetch-parity-corpus.sh') }}
+      - run: scripts/fetch-parity-corpus.sh
+      - name: Parity
+        run: |
+          cargo run --release -p sile-parity --features sile-core/harfbuzz | tee parity.txt
+          { echo '### SILE parity (HarfBuzz)'; echo '```'; cat parity.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parity-report
+          path: target/parity
