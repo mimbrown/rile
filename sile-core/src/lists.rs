@@ -5,7 +5,12 @@ use crate::counter::format_number;
 use crate::length::Length;
 use crate::structure::Role;
 use crate::measurement::{Measurement, Unit};
-use crate::node::Node;
+use crate::node::{HBox, Ink, Node};
+use crate::svg_image::{SvgFigure, SvgImage};
+use std::sync::Arc;
+
+const UNCHECKED: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1" fill="none" stroke="black" stroke-width="0.8"/></svg>"#;
+const CHECKED: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1" fill="none" stroke="black" stroke-width="0.8"/><path d="M2.3 5.3 L4.3 7.3 L7.8 2.9" fill="none" stroke="black" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListKind {
@@ -143,6 +148,16 @@ impl DocumentBuilder {
     /// Start an item of the innermost list with its label hung in the
     /// margin; `bullet` overrides the list's bullet for this item.
     pub fn begin_item(&mut self, bullet: Option<&str>) -> Result<&mut Self, BuilderError> {
+        self.begin_marked_item(bullet, None)
+    }
+
+    /// Start an item marked with a checkbox, ticked when `done`, in place of
+    /// the list's label.
+    pub fn begin_task_item(&mut self, done: bool) -> Result<&mut Self, BuilderError> {
+        self.begin_marked_item(None, Some(done))
+    }
+
+    fn begin_marked_item(&mut self, bullet: Option<&str>, task: Option<bool>) -> Result<&mut Self, BuilderError> {
         let Some(level) = self.lists.levels.last_mut() else {
             return Ok(self);
         };
@@ -156,7 +171,19 @@ impl DocumentBuilder {
             }
             ListLabel::Bullet(b) => bullet.unwrap_or(b).to_string(),
         };
-        self.start_hbox().add_text(text);
+        self.start_hbox();
+        match task {
+            Some(done) => {
+                let size = 0.65 * self.font_spec().map_or(10.0, |f| f.size);
+                let image = SvgImage::parse(if done { CHECKED } else { UNCHECKED }, 72.0);
+                let figure = SvgFigure { scale: size / image.height, image: Arc::new(image), drop: false };
+                self.add_box(HBox { ink: Some(Ink::Svg(figure)), ..HBox::new(Length::pt(size), Length::pt(size), Length::zero()) });
+                self.set_actual_text(if done { "\u{2611}" } else { "\u{2610}" });
+            }
+            None => {
+                self.add_text(text);
+            }
+        }
         let mut mark = self.make_hbox()?;
         let stepback = match label {
             ListLabel::Number { .. } => indent - self.resolve(self.lists.settings.enumerate_label_indent),

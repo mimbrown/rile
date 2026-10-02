@@ -1,12 +1,13 @@
 //! CommonMark set through the builder API: headings become the class's
 //! sectioning, and everything else maps onto paragraphs, fonts, lists,
-//! links, images, verbatim blocks and `$`/`$$` math in the TeX-like
-//! syntax.
+//! links, images, verbatim blocks, footnotes, tables, task lists and
+//! `$`/`$$` math in the TeX-like syntax.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use sile_core::builder::{BuilderError, DocumentBuilder, LineSkips};
 use sile_core::class::{bigskip, medskip, smallskip, with_font, Book, Heading};
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
@@ -16,6 +17,7 @@ use sile_core::lists::{ListKind, ListOptions};
 use sile_core::math::{MathMode, TexMath};
 use sile_core::node::{LinkDest, Stroke};
 use sile_core::structure::Role;
+use sile_core::table::CellAlign;
 
 pub struct Markdown<'a> {
     doc: DocumentBuilder,
@@ -24,6 +26,7 @@ pub struct Markdown<'a> {
     mono: &'a str,
     fonts: Vec<Option<FontSpec>>,
     tex: TexMath,
+    footnotes: HashMap<String, Vec<Event<'static>>>,
     pub warnings: Vec<String>,
 }
 
@@ -37,7 +40,7 @@ impl<'a> Markdown<'a> {
     /// Set Markdown into `doc`, finding images relative to `base` and
     /// setting code in the `mono` font family.
     pub fn new(doc: DocumentBuilder, base: &Path, mono: &'a str) -> Self {
-        Self { doc, base: base.to_path_buf(), mono, fonts: Vec::new(), tex: TexMath::new(), warnings: Vec::new() }
+        Self { doc, base: base.to_path_buf(), mono, fonts: Vec::new(), tex: TexMath::new(), footnotes: HashMap::new(), warnings: Vec::new() }
     }
 
     pub fn finish(self) -> DocumentBuilder {
@@ -45,7 +48,31 @@ impl<'a> Markdown<'a> {
     }
 
     pub fn typeset(&mut self, src: &str) -> Result<(), BuilderError> {
-        let events: Vec<Event> = Parser::new_ext(src, Options::ENABLE_SMART_PUNCTUATION | Options::ENABLE_MATH).collect();
+        let options = Options::ENABLE_SMART_PUNCTUATION
+            | Options::ENABLE_MATH
+            | Options::ENABLE_FOOTNOTES
+            | Options::ENABLE_TABLES
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_TASKLISTS;
+        let mut events = Vec::new();
+        let mut note: Option<(String, Vec<Event<'static>>)> = None;
+        for event in Parser::new_ext(src, options) {
+            match event {
+                Event::Start(Tag::FootnoteDefinition(label)) => note = Some((label.to_string(), Vec::new())),
+                Event::End(TagEnd::FootnoteDefinition) => {
+                    if let Some((label, mut body)) = note.take() {
+                        if matches!(body.last(), Some(Event::End(TagEnd::Paragraph))) {
+                            body.pop();
+                        }
+                        self.footnotes.insert(label, body);
+                    }
+                }
+                event => match &mut note {
+                    Some((_, body)) => body.push(event.into_static()),
+                    None => events.push(event),
+                },
+            }
+        }
         self.events(&events)?;
         self.doc.new_paragraph()?;
         Ok(())
@@ -66,6 +93,13 @@ impl<'a> Markdown<'a> {
                     let indented = matches!(kind, CodeBlockKind::Indented);
                     self.code_block(code.strip_suffix('\n').unwrap_or(&code), indented)?;
                     i = end;
+                }
+                Event::Start(Tag::Item) => {
+                    let task = events[i + 1..].iter().take(2).find_map(|e| if let Event::TaskListMarker(done) = e { Some(*done) } else { None });
+                    match task {
+                        Some(done) => self.doc.begin_task_item(done)?,
+                        None => self.doc.begin_item(None)?,
+                    };
                 }
                 event => self.event(event)?,
             }
@@ -151,12 +185,58 @@ impl<'a> Markdown<'a> {
             Event::End(TagEnd::List(_)) => {
                 doc.end_list()?;
             }
-            Event::Start(Tag::Item) => {
-                doc.begin_item(None)?;
-            }
+            Event::TaskListMarker(_) => {}
             Event::End(TagEnd::Item) => {
                 doc.new_paragraph()?;
                 doc.end_item()?;
+            }
+            Event::Start(Tag::Strikethrough) => {
+                doc.start_strikethrough();
+            }
+            Event::End(TagEnd::Strikethrough) => {
+                doc.end_hbox();
+            }
+            Event::FootnoteReference(label) => match self.footnotes.get(label.as_ref()).cloned() {
+                Some(note) => DocumentBuilder::footnote(self, |md: &mut Self| md.events(&note))?,
+                None => {
+                    self.warnings.push(format!("no footnote [^{label}]"));
+                    doc.add_text(format!("[^{label}]"));
+                }
+            },
+            Event::Start(Tag::Table(alignments)) => {
+                let columns: Vec<CellAlign> = alignments
+                    .iter()
+                    .map(|a| match a {
+                        Alignment::Center => CellAlign::Center,
+                        Alignment::Right => CellAlign::Right,
+                        Alignment::Left | Alignment::None => CellAlign::Left,
+                    })
+                    .collect();
+                doc.begin_table(&columns)?;
+            }
+            Event::End(TagEnd::Table) => {
+                doc.end_table()?;
+                doc.set_current_indent(Some(0.0));
+            }
+            Event::Start(Tag::TableHead) => {
+                doc.begin_table_row(true);
+                self.push_font(|f| f.weight = FontWeight::BOLD)?;
+            }
+            Event::End(TagEnd::TableHead) => {
+                self.pop_font()?;
+                self.doc.end_table_row();
+            }
+            Event::Start(Tag::TableRow) => {
+                doc.begin_table_row(false);
+            }
+            Event::End(TagEnd::TableRow) => {
+                doc.end_table_row();
+            }
+            Event::Start(Tag::TableCell) => {
+                doc.begin_table_cell();
+            }
+            Event::End(TagEnd::TableCell) => {
+                doc.end_table_cell();
             }
             Event::Html(html) | Event::InlineHtml(html) => self.warnings.push(format!("HTML is not supported: {}", html.trim())),
             Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => {}
@@ -317,5 +397,17 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].starts_with("math \"e^{i\\\\pi} = -1\""), "{warnings:?}");
         assert!(words(&trace).contains(&"Euler"), "{trace}");
+    }
+
+    #[test]
+    fn footnotes_tables_task_lists_and_strikethrough_are_set() {
+        let src = "Text.[^n] ~~Gone~~\n\n| A | B |\n|---|--:|\n| x | 1 |\n\n- [x] done\n- [ ] todo\n\n[^n]: The note.\n";
+        let (trace, warnings) = trace(Plain::new(), src);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let words = words(&trace);
+        for expected in ["Text", "1", "Gone", "A", "B", "x", "done", "todo", "The", "note"] {
+            assert!(words.contains(&expected), "{expected} missing from {words:?}");
+        }
+        assert!(!words.contains(&"[x]") && !words.contains(&"[^n]"), "{words:?}");
     }
 }
