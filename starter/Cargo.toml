@@ -1,0 +1,11 @@
+[package]
+name = "rile-starter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rile = { path = "../rile" }
+rile-pages = { path = "../rile-pages" }
+rile-pdf = { path = "../rile-pdf" }
+rile-svg = { path = "../rile-svg" }

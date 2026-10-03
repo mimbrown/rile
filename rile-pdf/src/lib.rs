@@ -1,3 +1,15 @@
+//! Writes a rile `Layout` as PDF: fonts subset and embedded, images,
+//! links, the outline, metadata and, when the document was tagged, the
+//! structure tree that makes it accessible (PDF/UA).
+//!
+//! ```no_run
+//! # fn layout() -> rile::builder::Layout { unimplemented!() }
+//! let layout = layout();
+//! let pdf = rile_pdf::render(&layout, rile_pdf::PdfOptions::default())?;
+//! std::fs::write("out.pdf", pdf)?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 

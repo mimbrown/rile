@@ -12,6 +12,7 @@ The public API is described in its own terms. Where code ports SILE, a `// SILE:
 * `rile-svg`: writes a `Layout` as SVG, one document per page (`rile_svg::render`); the CLI uses it for `.svg` outputs
 * `rile-markdown`: sets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) into any arranger. `MarkdownTarget` lets an arranger set headings and footnotes itself: `DocumentBuilder` (feature `pages`) uses page footnotes and book sectioning; elsewhere headings are plain and notes are endnotes
 * `rile-cli`: the `rile` command, which typesets Markdown to tagged, accessible PDF or SVG, on pages or (`--width`) in a galley
+* `starter`: a small book typeset from Rust, the example for new projects; CI builds it
 * `sile-parity`: test-only tool that runs SILE's regression tests through `rile` and compares layouts with SILE's expected output
 
 ## Typesetter, arrangers and galleys
