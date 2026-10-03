@@ -597,7 +597,12 @@ struct ParallelFlow {
 struct PageState {
     page: Page,
     frame: String,
+    /// What the page's frames were solved from.
+    specs: Vec<FrameSpec>,
 }
+
+/// SILE's `balanced-frames` penalty: balance the columns up to here.
+const BALANCE_PENALTY: i32 = -17_777;
 
 // ---------------------------------------------------------------------------
 // DocumentBuilder
@@ -2045,6 +2050,7 @@ impl DocumentBuilder {
         self.page = Some(PageState {
             page: Page::new(self.page_number(), self.paper, frames),
             frame: template.first_content_frame,
+            specs: template.frames,
         });
         self.paint_background();
         Ok(())
@@ -2105,7 +2111,10 @@ impl DocumentBuilder {
         for frame in &mut solved {
             self.resolve_direction(frame);
         }
-        let page = &mut self.page.as_mut().expect("page").page;
+        let state = self.page.as_mut().expect("page");
+        state.specs.retain(|s| !frames.iter().any(|f| f.id == s.id));
+        state.specs.extend(frames.iter().cloned());
+        let page = &mut state.page;
         for frame in solved {
             match page.frames.iter_mut().find(|g| g.id == frame.id) {
                 Some(existing) => *existing = frame,
@@ -2164,6 +2173,8 @@ impl DocumentBuilder {
         state.page.frames.retain(|f| state.page.content.iter().any(|(id, _)| *id == f.id));
         state.page.frames.retain(|f| !frames.iter().any(|g| g.id == f.id));
         state.page.frames.extend(frames);
+        state.specs.retain(|s| !template.frames.iter().any(|f| f.id == s.id));
+        state.specs.extend(template.frames.iter().cloned());
         self.set_content_frame(&template.first_content_frame)
     }
 
@@ -2228,6 +2239,13 @@ impl DocumentBuilder {
             return Ok(false);
         }
         self.ensure_page()?;
+        if let Some(built) = self.build_balanced_page()? {
+            return Ok(built);
+        }
+        self.fill_frame()
+    }
+
+    fn fill_frame(&mut self) -> Result<bool, BuilderError> {
         let frame = self.current_frame().expect("current frame");
         let id = frame.id.clone();
         let target = frame.target_length() - self.insertions.shrinkage(&id);
@@ -2249,6 +2267,137 @@ impl DocumentBuilder {
         let target = self.current_frame().expect("current frame").height() - self.insertions.shrinkage(&id);
         self.output(&id, pagebuilder::set_vertical_glue(nodes, target));
         Ok(true)
+    }
+
+    /// Leave the paragraph and even out this page's balanced columns up to
+    /// here; what follows goes on in the frame after them (SILE's
+    /// `\balancecolumns`). The end of the document, or a page break, also
+    /// balances them.
+    pub fn balance_columns(&mut self) -> Result<&mut Self, BuilderError> {
+        self.add_vertical_penalty(BALANCE_PENALTY)
+    }
+
+    /// The current frame and the balanced frames after it, when it is
+    /// balanced.
+    fn balanced_columns(&self) -> Vec<FrameGeometry> {
+        let mut columns: Vec<FrameGeometry> = Vec::new();
+        let Some(state) = self.page.as_ref() else { return columns };
+        let mut frame = state.page.frame(&state.frame);
+        while let Some(f) = frame.filter(|f| f.balanced && !f.direction.is_some_and(FrameDirection::is_vertical) && !columns.iter().any(|c| c.id == f.id)) {
+            columns.push(f.clone());
+            frame = f.next.as_deref().and_then(|next| state.page.frame(next));
+        }
+        columns
+    }
+
+    /// Fill a run of balanced columns (SILE's `balanced-frames`), or `None`
+    /// to fill the current frame as usual. Material waits until it is to be
+    /// balanced, overflows the columns or holds a forced break; then the
+    /// columns are cut to the least height that holds it, moving frames
+    /// placed relative to them.
+    fn build_balanced_page(&mut self) -> Result<Option<bool>, BuilderError> {
+        let columns = self.balanced_columns();
+        if columns.len() < 2 {
+            return Ok(None);
+        }
+        let is_penalty = |n: &Node, max| matches!(n, Node::Penalty(p) if p.penalty <= max);
+        let Some(end) = self.vertical_queue.iter().position(|n| is_penalty(n, BALANCE_PENALTY)) else {
+            let room: f64 = columns.iter().map(FrameGeometry::height).sum();
+            let natural: f64 = self.vertical_queue.iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
+            let forced = self.vertical_queue.iter().any(|n| is_penalty(n, -10_000));
+            return Ok((natural <= room && !forced).then_some(false));
+        };
+        let Some(height) = self.balanced_height(&self.vertical_queue[..end], columns.len(), columns.iter().map(FrameGeometry::height).fold(f64::INFINITY, f64::min)) else {
+            return Ok(None);
+        };
+        self.set_column_height(&columns, height);
+        let rest = self.vertical_queue.split_off(end);
+        let Some(Node::Penalty(penalty)) = rest.first() else { unreachable!() };
+        let penalty = penalty.penalty;
+        self.vertical_queue.push(Node::penalty(-10_000));
+        for column in &columns {
+            self.page.as_mut().expect("page").frame = column.id.clone();
+            if self.vertical_queue.iter().all(|n| n.is_discardable() || n.is_vglue()) {
+                break;
+            }
+            self.fill_frame()?;
+        }
+        if self.vertical_queue.last().is_some_and(|n| is_penalty(n, -10_000)) {
+            self.vertical_queue.pop();
+        }
+        self.vertical_queue.extend(rest.into_iter().skip(1));
+        self.last_penalty = penalty;
+        Ok(Some(true))
+    }
+
+    /// The least column height, up to `max`, at which `material` fits in
+    /// `columns` columns.
+    fn balanced_height(&self, material: &[Node], columns: usize, max: f64) -> Option<f64> {
+        let grid = self.grid.is_some();
+        let fits = |height: f64| {
+            let mut queue = material.to_vec();
+            queue.push(Node::penalty(-10_000));
+            for _ in 0..columns {
+                let br = if grid {
+                    pagebuilder::find_grid_break(&mut queue, height, &mut pagebuilder::no_insertions)
+                } else {
+                    pagebuilder::find_break(&mut queue, height, false, &mut pagebuilder::no_insertions)
+                };
+                match br {
+                    Some(br) => {
+                        pagebuilder::split_page(&mut queue, &br);
+                    }
+                    None => return true,
+                }
+            }
+            queue.iter().all(|n| n.is_discardable() || n.is_vglue())
+        };
+        if !fits(max) {
+            return None;
+        }
+        let (mut low, mut high) = (0.0, max);
+        while high - low > 0.01 {
+            let mid = (low + high) / 2.0;
+            if fits(mid) {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        Some(high)
+    }
+
+    /// Cut balanced columns to `height`, re-solving the frames placed
+    /// relative to them.
+    fn set_column_height(&mut self, columns: &[FrameGeometry], height: f64) {
+        let before_specs = self.page.as_ref().expect("page").specs.clone();
+        let mut specs = before_specs.clone();
+        for spec in &mut specs {
+            if let Some(column) = columns.iter().find(|c| c.id == spec.id) {
+                spec.top = Some(format!("{}pt", column.top));
+                spec.height = Some(format!("{height}pt"));
+                spec.bottom = None;
+            }
+        }
+        let em = self.font_spec().map_or(10.0, |f| f.size);
+        let mut moved: Vec<FrameGeometry> = match (framespec::solve(self.paper, em, &before_specs), framespec::solve(self.paper, em, &specs)) {
+            (Ok(before), Ok(after)) => before.into_iter().zip(after).filter(|(b, a)| b != a).map(|(_, a)| a).collect(),
+            _ => Vec::new(),
+        };
+        for frame in &mut moved {
+            self.resolve_direction(frame);
+        }
+        let page = &mut self.page.as_mut().expect("page").page;
+        for frame in moved {
+            if let Some(existing) = page.frames.iter_mut().find(|f| f.id == frame.id) {
+                *existing = frame;
+            }
+        }
+        for column in columns {
+            if let Some(frame) = page.frames.iter_mut().find(|f| f.id == column.id) {
+                frame.bottom = frame.top + height;
+            }
+        }
     }
 
     /// Take the room promised to this page's insertions from the frames
@@ -4409,6 +4558,64 @@ mod tests {
             _ => None,
         });
         assert!(first_line.unwrap() > 10, "lines in b use b's width");
+    }
+
+    fn balanced_frames() -> Vec<FrameSpec> {
+        vec![
+            FrameSpec::new("l").left("72pt").right("290pt").top("72pt").bottom("770pt").next("r").balanced(),
+            FrameSpec::new("r").left("305pt").right("523pt").top("72pt").bottom("770pt").next("after").balanced(),
+            FrameSpec::new("after").left("72pt").right("523pt").top("bottom(r)").bottom("770pt"),
+        ]
+    }
+
+    fn lines_in(page: &Page, frame: &str) -> usize {
+        page.content.iter().filter(|(id, _)| id == frame).flat_map(|(_, nodes)| nodes).filter(|n| matches!(n, Node::VBox(_))).count()
+    }
+
+    #[test]
+    fn balanced_columns_share_the_material_at_the_end() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.declare_page_frames(&balanced_frames()).unwrap();
+        doc.set_content_frame("l").unwrap();
+        doc.add_text("word ".repeat(300));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        assert_eq!(pages.len(), 1);
+        let (l, r) = (lines_in(&pages[0], "l"), lines_in(&pages[0], "r"));
+        assert!(l > 5 && l.abs_diff(r) <= 1, "{l} and {r} lines");
+        let frame = |id| pages[0].frame(id).unwrap();
+        assert!(frame("l").height() < 698.0);
+        assert_eq!(frame("l").height(), frame("r").height());
+    }
+
+    #[test]
+    fn balancing_moves_the_frames_placed_after_the_columns() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.declare_page_frames(&balanced_frames()).unwrap();
+        doc.set_content_frame("l").unwrap();
+        doc.add_text("word ".repeat(200));
+        doc.balance_columns().unwrap();
+        doc.add_text("after");
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        let frame = |id| pages[0].frame(id).unwrap();
+        assert_eq!(frame("after").top, frame("r").bottom);
+        assert!(frame("r").bottom < 400.0);
+        assert_eq!(lines_in(&pages[0], "after"), 1);
+        assert!(lines_in(&pages[0], "r") > 0);
+    }
+
+    #[test]
+    fn balanced_columns_fill_up_when_the_material_overflows_them() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.declare_page_frames(&balanced_frames()).unwrap();
+        doc.set_content_frame("l").unwrap();
+        doc.add_text("word ".repeat(3000));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        assert!(pages.len() > 1);
+        assert_eq!(pages[0].frame("l").unwrap().height(), 698.0);
+        assert!(lines_in(&pages[0], "r") > 40);
     }
 
     #[test]

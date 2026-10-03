@@ -93,6 +93,9 @@ pub struct FrameSpec {
     /// Set as vertical Japanese: lines broken first-fit, one zenkaku tall
     /// (SILE's tate frames).
     pub tate: bool,
+    /// One of a run of columns, joined by `next`, that `balance_columns`
+    /// evens out (SILE's `balanced-frames`).
+    pub balanced: bool,
 }
 
 impl FrameSpec {
@@ -126,6 +129,10 @@ impl FrameSpec {
     }
     pub fn next(mut self, id: impl Into<String>) -> Self {
         self.next = Some(id.into());
+        self
+    }
+    pub fn balanced(mut self) -> Self {
+        self.balanced = true;
         self
     }
 
@@ -168,6 +175,7 @@ pub struct FrameGeometry {
     /// Set as vertical Japanese: lines broken first-fit, one zenkaku tall
     /// (SILE's tate frames).
     pub tate: bool,
+    pub balanced: bool,
 }
 
 impl FrameGeometry {
@@ -292,6 +300,7 @@ pub fn solve(paper: PaperSize, em: f64, specs: &[FrameSpec]) -> Result<Vec<Frame
             next: spec.next.clone(),
             direction: spec.direction,
             tate: spec.tate,
+            balanced: spec.balanced,
         })
         .collect())
 }
