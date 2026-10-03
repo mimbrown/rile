@@ -11,7 +11,8 @@ use sile_core::bible::Bible;
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
-use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, PageTemplate, Plain};
+use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain};
+use sile_core::date::DateTime;
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{HBox, Ink, LinkDest, Node, Stroke};
 use sile_core::toc::{DefaultTocStyle, TableOfContents};
@@ -252,6 +253,11 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "switch-master-one-page",
     "showframe",
     "makecolumns",
+    "letter",
+    "sender",
+    "recipient",
+    "salutation",
+    "date",
     "balancecolumns",
     "hrule",
     "hrulefill",
@@ -360,7 +366,7 @@ fn check(
                 }
             }
             "document" => {
-                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook")) {
+                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook" | "letter")) {
                     missing.insert(format!("class={class}"));
                 }
                 if let Some(p) = cmd.option("papersize")
@@ -390,6 +396,7 @@ fn check(
                     | "packages.masters"
                     | "packages.frametricks"
                     | "packages.balanced-frames"
+                    | "packages.date"
                     | "packages.counters"
                     | "packages.color"
                     | "packages.unichar"
@@ -620,6 +627,8 @@ pub(crate) struct Driver<'a> {
     grid_spacing: Option<f64>,
     bibliography: Bibliography,
     tex: TexMath,
+    /// The letter class's date, sender, recipient and salutation, as given.
+    letter: Option<[Option<Vec<Content>>; 4]>,
 }
 
 impl AsMut<DocumentBuilder> for Driver<'_> {
@@ -673,6 +682,7 @@ impl<'a> Driver<'a> {
             toplevel: None,
             target: (u32::MAX, 0, 0),
             grid_spacing: None,
+            letter: None,
             bibliography: Bibliography::default(),
             tex: TexMath::new(),
         })
@@ -1081,6 +1091,10 @@ impl<'a> Driver<'a> {
                 match cmd.option("class") {
                     Some("book") => self.doc.set_class(Book::new()),
                     Some("bible") => self.doc.set_class(Bible::new()),
+                    Some("letter") => {
+                        self.letter = Some(Default::default());
+                        self.doc.set_class(Letter::new())
+                    }
                     Some("jbook") => self.doc.set_class(Book::japanese(cmd.option("layout") == Some("tate"))),
                     Some("jplain") => self.doc.set_class(Plain::japanese(cmd.option("layout") == Some("tate"))),
                     _ => self.doc.set_class(Plain::new()),
@@ -2071,6 +2085,30 @@ impl<'a> Driver<'a> {
                     })
                     .collect();
                 self.doc.add_hyphenation_exceptions(&lang, words.split_whitespace());
+            }
+            "date" | "sender" | "recipient" | "salutation" if self.letter.is_some() => {
+                let i = ["date", "sender", "recipient", "salutation"].iter().position(|n| *n == cmd.name).expect("part");
+                self.letter.as_mut().expect("letter")[i] = Some(content.to_vec());
+            }
+            "date" => {
+                let format = cmd.option("format").unwrap_or("%c");
+                let time = match cmd.option("time") {
+                    Some(t) => DateTime::from_unix(t.parse().map_err(|_| format!("bad time {t}"))?, 0),
+                    None => DateTime::now_utc(),
+                };
+                self.sync()?;
+                self.doc.add_text(time.format(format).map_err(|e| e.to_string())?);
+            }
+            "letter" => {
+                let [date, sender, recipient, salutation] = self.letter.clone().ok_or("\\letter outside the letter class")?;
+                self.set("document.parindent", "0pt")?;
+                self.set("current.parindent", "0pt")?;
+                self.sync()?;
+                let part = |c: Option<Vec<Content>>| {
+                    c.map(|c| Box::new(move |d: &mut Self| d.process(&c).map_err(Failed)) as LetterPart<'_, Self, Failed>)
+                };
+                let parts = LetterParts { date: part(date), sender: part(sender), recipient: part(recipient), salutation: part(salutation) };
+                Letter::letter(self, parts, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
             }
             "chapter" | "section" | "subsection" => {
                 self.book()?;
