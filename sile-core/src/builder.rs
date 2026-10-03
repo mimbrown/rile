@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use unicode_linebreak::{BreakClass, break_property};
+
 use crate::color::Color;
 use crate::counter::{MultilevelCounter, PageNumber};
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight};
@@ -3368,6 +3370,45 @@ impl DocumentBuilder {
 
     /// Shape a short text in the style of `like` (SILE's `createNnodes`).
     fn text_nodes(&self, text: &str, like: &NNode) -> Vec<Node> {
+        let word = self.word_node(text, like);
+        #[cfg(debug_assertions)]
+        if let Some(word) = &word {
+            let nodes = self.run_nodes(text, like);
+            debug_assert_eq!(format!("{nodes:?}"), format!("{:?}", [word]), "{text:?} as one word");
+        }
+        word.map_or_else(|| self.run_nodes(text, like), |w| vec![w])
+    }
+
+    /// `text` as a single word in `like`'s font, when it is the hyphen or letters the
+    /// node maker would keep together and the font draws them plainly.
+    fn word_node(&self, text: &str, like: &NNode) -> Option<Node> {
+        let tokens = NodeMakerOptions::for_language(&like.language);
+        let letters = |c: char| c.is_alphabetic() && matches!(break_property(c as u32), BreakClass::Alphabetic | BreakClass::HebrewLetter);
+        if text.is_empty() || tokens.japanese || tokens.ethiopic || tokens.letterspace || !((text == "-" && !tokens.repeated_hyphen) || text.chars().all(letters)) {
+            return None;
+        }
+        let entry = self.fonts.get(&like.font_key)?;
+        if entry.face.has_color_layers() {
+            return None;
+        }
+        let mut glyphs = if entry.spec.language.is_empty() {
+            let spec = FontSpec { language: like.language.clone(), ..entry.spec.clone() };
+            crate::word_shaping::shape(&*self.shaper, text, &entry.face, &spec)
+        } else {
+            crate::word_shaping::shape(&*self.shaper, text, &entry.face, &entry.spec)
+        };
+        if entry.spec.direction == Direction::RTL {
+            glyphs.reverse();
+        }
+        glyphs.sort_by_key(|g| g.cluster);
+        let mut nnode = self.build_nnode(text, &glyphs, &like.font_key, &entry.spec, like.color);
+        nnode.language = like.language.clone();
+        nnode.bidi_level = like.bidi_level;
+        nnode.tag = like.tag;
+        Some(Node::NNode(nnode))
+    }
+
+    fn run_nodes(&self, text: &str, like: &NNode) -> Vec<Node> {
         let run = TextRun {
             text: text.to_string(),
             font_name: like.font_key.clone(),
