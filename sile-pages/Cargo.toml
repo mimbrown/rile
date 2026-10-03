@@ -1,5 +1,5 @@
 [package]
-name = "sile-svg"
+name = "sile-pages"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,7 +8,6 @@ harfbuzz = ["sile-core/harfbuzz"]
 
 [dependencies]
 sile-core = { path = "../sile-core" }
-ttf-parser = "0.25"
-
-[dev-dependencies]
-sile-pages = { path = "../sile-pages" }
+cassowary = "0.3"
+icu_collator = "2.3.1"
+icu_locale = "2.3.1"

@@ -5,6 +5,7 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 ## Current crates
 
 * `sile-core`: contains the core types and logic; lays documents out into a format-neutral `Layout` (pages, fonts, outline, metadata, structure)
+* `sile-pages`: pages on top of sile-core, through its public API only: `DocumentBuilder` (frames, templates, classes, insertions and footnotes, page breaking, parallel flows), frame declarations (`framespec`), folios, cropmarks, TOC, index and `lay_out_until_settled`
 * `sile-pdf`: writes a `Layout` as PDF (`sile_pdf::render`), with `PdfOptions` for how it is written
 * `sile-svg`: writes a `Layout` as SVG, one document per page (`sile_svg::render`); the CLI uses it for `.svg` outputs
 * `sile-cli`: the `sile` command, which typesets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) to tagged, accessible PDF through the builder API
@@ -14,10 +15,10 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 
 `sile_core::builder::Typesetter` turns text and settings into lines and a vertical list without knowing about pages: lines are set to its `FrameContext` (measure, direction, tate). Vertical-mode commands (`new_paragraph`, `add_vskip`, `add_rule`, ...) are provided methods of the `Arranger` trait, whose implementors say where the vertical list goes:
 
-* `DocumentBuilder` (`builder/paginator.rs`) pages it. It derefs to its typesetter and owns everything that knows about pages: frames, templates, classes, insertions, page breaking, parallel flows and references. It calls `sync_frame` whenever the frame being filled changes.
+* `sile_pages::DocumentBuilder` (`sile-pages/src/paginator.rs`) pages it. It derefs to its typesetter and owns everything that knows about pages: frames, templates, classes, insertions, page breaking, parallel flows and references. It calls `sync_frame` whenever the frame being filled changes.
 * `Galley` (`builder/galley.rs`) keeps it: no measure sets paragraphs at natural width, a measure breaks them, and `take_frame` cuts off what fits a height, leaving the overflow. `lay_out` gives one surface as tall as the material.
 
-Lists, tables, display math and footnotes are still `DocumentBuilder` methods.
+Content that needs vertical mode (lists, tables, display math, specimens) is written once as `Arranger` methods, and content that takes callbacks is generic over `Context`, which an arranger or a frontend's state around one implements. Anything sile-pages needs from the typesetter goes through sile-core's public API; footnotes, classes, the TOC and the index stay `DocumentBuilder`-only.
 
 ## Features
 
@@ -33,11 +34,11 @@ Patterns are SILE's own, converted to `sile-core/languages/*.pat`; localized mes
 
 ## Math
 
-`sile-core/src/math` ports SILE's math package. Formulas are a typed `MathNode` tree; `TexMath` parses SILE's TeX-like syntax into it and `mathml::Element` converts MathML (the parity driver uses this for `\mathml`). `DocumentBuilder::add_math` sets a formula inline or displayed. The operator dictionary `sile-core/math/operators.txt` is generated from SILE's by `scripts/import-sile-math.py <sile checkout>`.
+`sile-core/src/math` ports SILE's math package. Formulas are a typed `MathNode` tree; `TexMath` parses SILE's TeX-like syntax into it and `mathml::Element` converts MathML (the parity driver uses this for `\mathml`). `Arranger::add_math` sets a formula inline or displayed. The operator dictionary `sile-core/math/operators.txt` is generated from SILE's by `scripts/import-sile-math.py <sile checkout>`.
 
 ## Tagged PDF
 
-`DocumentBuilder::set_tagged` records the document's structure (`sile-core/src/structure.rs`, SILE's `pdfstructure`): every NNode and inked HBox carries the tag of the structure element it belongs to, and `sile-pdf` wraps content in marked content, untagged content being artifacts. Text opens paragraphs on its own; classes, lists, links, the TOC, images and math tag themselves. Page furniture (folios, running heads) is set inside `untagged`. Check output with veraPDF's PDF/UA-1 profile (`greenfield-apps` from Maven Central; software.verapdf.org is blocked).
+`Typesetter::set_tagged` records the document's structure (`sile-core/src/structure.rs`, SILE's `pdfstructure`): every NNode and inked HBox carries the tag of the structure element it belongs to, and `sile-pdf` wraps content in marked content, untagged content being artifacts. Text opens paragraphs on its own; classes, lists, links, the TOC, images and math tag themselves. Page furniture (folios, running heads) is set inside `untagged`. Check output with veraPDF's PDF/UA-1 profile (`greenfield-apps` from Maven Central; software.verapdf.org is blocked).
 
 ## SILE parity
 

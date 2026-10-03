@@ -948,6 +948,7 @@ dependencies = [
  "fontdb",
  "pulldown-cmark",
  "sile-core",
+ "sile-pages",
  "sile-pdf",
  "sile-svg",
 ]
@@ -956,12 +957,9 @@ dependencies = [
 name = "sile-core"
 version = "0.1.0"
 dependencies = [
- "cassowary",
  "fontdb",
  "harfbuzz-sys",
  "hayagriva",
- "icu_collator",
- "icu_locale",
  "icu_segmenter",
  "rustybuzz",
  "self_cell",
@@ -972,11 +970,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sile-pages"
+version = "0.1.0"
+dependencies = [
+ "cassowary",
+ "icu_collator",
+ "icu_locale",
+ "sile-core",
+]
+
+[[package]]
 name = "sile-parity"
 version = "0.1.0"
 dependencies = [
  "fontdb",
  "sile-core",
+ "sile-pages",
  "ttf-parser 0.25.1",
 ]
 
@@ -989,6 +998,7 @@ dependencies = [
  "miniz_oxide",
  "pdf-writer",
  "sile-core",
+ "sile-pages",
  "subsetter",
  "ttf-parser 0.25.1",
 ]
@@ -998,6 +1008,7 @@ name = "sile-svg"
 version = "0.1.0"
 dependencies = [
  "sile-core",
+ "sile-pages",
  "ttf-parser 0.25.1",
 ]
 

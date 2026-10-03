@@ -4,14 +4,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback};
-use sile_core::class::{Book, Plain};
+use sile_core::builder::{BaselineSkip, BuilderError, FontFallback};
+use sile_pages::DocumentBuilder;
+use sile_pages::class::{Book, Plain};
 use sile_core::font::FontSpec;
 use sile_core::frame::PaperSize;
 use sile_core::length::Length;
 use sile_core::measurement::Measurement;
-use sile_core::references::lay_out_until_settled;
-use sile_core::toc::{DefaultTocStyle, TableOfContents};
+use sile_pages::lay_out_until_settled;
+use sile_pages::toc::{DefaultTocStyle, TableOfContents};
 use sile_pdf::PdfOptions;
 
 use markdown::Markdown;

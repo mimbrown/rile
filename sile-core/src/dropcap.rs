@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder};
-use crate::class::with_font;
+use crate::builder::{with_font, BuilderError, Context};
 use crate::color::Color;
 use crate::font::FontSpec;
 use crate::length::Length;
@@ -63,10 +62,10 @@ impl Dropcap {
     /// measure it first.
     pub fn typeset<C, E>(&self, ctx: &mut C, mut content: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context,
         E: From<BuilderError>,
     {
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         let em = doc.font_spec().map_or(10.0, |f| f.size);
         let bs = doc.baseline_skip().map_or(1.2 * em, |b| b.skip_at(em).length.to_pt().unwrap_or(0.0));
         let current_size = doc.font_spec().map_or(10.0, |f| f.size);
@@ -76,7 +75,7 @@ impl Dropcap {
         } else {
             let text = self.depth_adjust.clone();
             pt(&self.shape(ctx, None, None, |c: &mut C| {
-                c.as_mut().add_text(text.clone());
+                c.arranger().add_text(text.clone());
                 Ok(())
             })?.depth)
         };
@@ -92,7 +91,7 @@ impl Dropcap {
         let target_width = pt(&measured.width) / current_size * size;
         let hbox = self.shape(ctx, Some(size), self.color, &mut content)?;
 
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         let mut lines = self.lines;
         let raise = if self.strict {
             self.raise + pt(&hbox.depth)
@@ -132,10 +131,10 @@ impl Dropcap {
         content: impl FnOnce(&mut C) -> Result<(), E>,
     ) -> Result<HBox, E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context,
         E: From<BuilderError>,
     {
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         let saved = doc.settings().clone();
         if let Some(color) = color {
             doc.set_color(color);
@@ -152,7 +151,7 @@ impl Dropcap {
             },
             content,
         );
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         let hbox = doc.make_hbox();
         doc.restore_settings(saved);
         result?;

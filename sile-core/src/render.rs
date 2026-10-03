@@ -1,6 +1,6 @@
 use crate::node::{HBox, Ink, Leader, LinerStyle, LinkDest, NNode, Node};
 use crate::color::Color;
-use crate::framespec::{Flow, FrameDirection, FrameGeometry};
+use crate::frame::{Flow, FrameDirection, FrameGeometry};
 use crate::image::Image;
 use crate::math::MathItem;
 use crate::pagebuilder::{Page, Underlay};

@@ -5,32 +5,26 @@ use std::sync::Arc;
 use unicode_linebreak::{BreakClass, break_property};
 
 use crate::color::Color;
-use crate::counter::{MultilevelCounter, PageNumber};
+use crate::counter::MultilevelCounter;
 use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight, Variations};
-use crate::class::{DocumentClass, PageTemplate};
-use crate::frame::PaperSize;
-use crate::framespec::{self, Flow, FrameDirection, FrameGeometry, FrameSpec};
+use crate::frame::{PaperSize, Flow, FrameDirection, FrameGeometry};
 use crate::hyphenation::HyphenationDictionary;
-use crate::insertion::{InsertionClass, PageInsertions, Stack};
 use crate::length::Length;
 use crate::linebreak::{self, BreakResult, LinebreakSettings};
 use crate::measurement::Measurement;
 use crate::node::{self, GlyphData, Ink, Leader, LinerStyle, LinkDest, NNode, Node, Stroke, VBox};
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
-use crate::pagebuilder::{self, Page, PageBreakSettings, Underlay};
-use crate::image::{Background, BackgroundFill};
+use crate::pagebuilder::{self, Page, PageBreakSettings};
 use crate::metadata::{Bookmark, Metadata};
-use crate::references::{self, CrossReferences, IndexMark, IndexPage, Label, TocEntry};
+use crate::references::{self, CrossReferences, IndexMark, Label};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
 mod arranger;
 mod galley;
-mod paginator;
 mod specimen;
 
-pub use arranger::Arranger;
+pub use arranger::{Arranger, Context};
 pub use galley::Galley;
-pub use paginator::DocumentBuilder;
 
 // ---------------------------------------------------------------------------
 // TextAlign
@@ -391,13 +385,12 @@ struct Grid {
 }
 
 /// A laid out document, ready to output.
-pub type PageHook = Box<dyn FnMut(&mut DocumentBuilder) -> Result<(), BuilderError>>;
-
 pub struct Layout {
     pub pages: Vec<Page>,
     /// The table of contents and labels found on the way.
     pub references: CrossReferences,
-    pub(crate) consulted_references: bool,
+    /// Whether the document asked for the references of a previous pass.
+    pub consulted_references: bool,
     paper: PaperSize,
     fonts: BTreeMap<String, RegisteredFont>,
     bookmarks: Vec<Bookmark>,
@@ -414,6 +407,14 @@ impl Layout {
     /// with the variation axis positions to instance them at.
     pub fn fonts(&self) -> impl Iterator<Item = (&str, &Arc<FontFace>, Variations)> {
         self.fonts.iter().map(|(name, entry)| (name.as_str(), &entry.face, entry.face.variations(&entry.spec)))
+    }
+
+    pub fn set_bookmarks(&mut self, bookmarks: Vec<Bookmark>) {
+        self.bookmarks = bookmarks;
+    }
+
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
     }
 
     pub fn bookmarks(&self) -> &[Bookmark] {
@@ -566,12 +567,22 @@ struct Capture {
 
 /// What a typesetter is working on, apart from settings, which all share.
 #[derive(Default)]
-struct FlowState {
+pub struct FlowState {
     paragraph: Vec<Inline>,
     open_boxes: Vec<(Group, Vec<Inline>)>,
     current_indent: Option<f64>,
     previous_depth: Option<f64>,
     queue: Vec<Node>,
+}
+
+impl FlowState {
+    pub fn queue(&self) -> &[Node] {
+        &self.queue
+    }
+
+    pub fn queue_mut(&mut self) -> &mut Vec<Node> {
+        &mut self.queue
+    }
 }
 
 /// Where the lines being set go: their measure, the direction they run
@@ -592,6 +603,38 @@ impl Default for FrameContext {
 
 // ---------------------------------------------------------------------------
 // Typesetter
+/// SILE's `plain.bigskipamount` and friends.
+pub fn bigskip() -> Length {
+    Length::new(Measurement::pt(12.0), Measurement::pt(4.0), Measurement::pt(4.0))
+}
+
+pub fn medskip() -> Length {
+    Length::new(Measurement::pt(6.0), Measurement::pt(2.0), Measurement::pt(2.0))
+}
+
+pub fn smallskip() -> Length {
+    Length::new(Measurement::pt(3.0), Measurement::pt(1.0), Measurement::pt(1.0))
+}
+
+/// Run `body` with the font changed by `font`, then put the font back.
+pub fn with_font<C, E>(
+    ctx: &mut C,
+    font: impl FnOnce(&mut FontSpec),
+    body: impl FnOnce(&mut C) -> Result<(), E>,
+) -> Result<(), E>
+where
+    C: Context,
+    E: From<BuilderError>,
+{
+    let saved = ctx.arranger().font_spec().cloned();
+    ctx.arranger().update_font(font)?;
+    let result = body(ctx);
+    if let Some(saved) = saved {
+        ctx.arranger().set_font_spec(saved)?;
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 
 /// Turns text and settings into lines and a vertical list, knowing
@@ -634,6 +677,18 @@ pub struct Typesetter {
     pub(crate) math_tables: BTreeMap<String, Arc<crate::math::MathTable>>,
     pub(crate) structure: Option<crate::structure::StructTree>,
     pub(crate) untagged: usize,
+    saved: Vec<SavedState>,
+}
+
+struct SavedState {
+    settings: Settings,
+    paragraph: Vec<Inline>,
+    open_boxes: Vec<(Group, Vec<Inline>)>,
+    current_indent: Option<f64>,
+    previous_depth: Option<f64>,
+    queue: Vec<Node>,
+    captures: Vec<Capture>,
+    lists: Vec<crate::lists::ListLevel>,
 }
 
 impl Default for Typesetter {
@@ -674,7 +729,90 @@ impl Typesetter {
             math_tables: BTreeMap::new(),
             structure: None,
             untagged: 0,
+            saved: Vec::new(),
         }
+    }
+
+    /// Set what `content` adds as Latin text lying on its side in vertical
+    /// Japanese, word by word, after a little space; elsewhere it is set as
+    /// is (SILE's `\\latin-in-tate`).
+    pub fn add_latin_in_tate<C, E>(ctx: &mut C, content: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: Context,
+        E: From<BuilderError>,
+    {
+        if ctx.arranger().frame_direction().writing != Flow::TTB {
+            return content(ctx);
+        }
+        let doc: &mut Typesetter = ctx.arranger();
+        let saved = doc.settings.clone();
+        let indent = doc.current_indent.unwrap_or(doc.settings.paragraph_indent);
+        doc.set_language("und").update_font(|f| f.direction = Direction::LTR)?;
+        doc.start_hbox();
+        let result = content(ctx);
+        let doc: &mut Typesetter = ctx.arranger();
+        let inlines = doc.open_boxes.pop().map(|(_, content)| content).unwrap_or_default();
+        result?;
+        doc.frame_override = Some(FrameDirection::LTR);
+        let nodes = doc.shape_inlines(&inlines);
+        doc.frame_override = None;
+        doc.settings = saved;
+        let zw = doc.zenkaku_width();
+        doc.add_glue(Length::new(Measurement::pt(0.5 * zw), Measurement::pt(0.25 * zw), Measurement::pt(0.25 * zw)));
+        // The inner material is set as a paragraph of its own, indent included.
+        doc.add_glue(Length::pt(indent));
+        for mut node in nodes? {
+            if node.is_glue() || node.is_kern() {
+                doc.push_inline(Inline::Node(Box::new(node)));
+            } else if pt_of(&node.line_contribution()) > 0.0 {
+                if let Node::NNode(n) = &mut node {
+                    for g in &mut n.glyphs {
+                        (g.x_advance, g.x_offset, g.y_offset) = (g.width, 0.0, 0.0);
+                    }
+                }
+                let mut hbox = natural_hbox(vec![node]);
+                hbox.ink = Some(Ink::LatinInTate(zw));
+                doc.add_box(hbox);
+            }
+        }
+        Ok(())
+    }
+
+    /// Set the paragraph, the vertical list and the settings aside, so
+    /// that what follows is typeset on its own until `restore_state`.
+    pub fn save_state(&mut self) -> &mut Self {
+        self.saved.push(SavedState {
+            settings: self.settings.clone(),
+            paragraph: std::mem::take(&mut self.paragraph),
+            open_boxes: std::mem::take(&mut self.open_boxes),
+            current_indent: self.current_indent.take(),
+            previous_depth: self.previous_depth.take(),
+            queue: std::mem::take(&mut self.vertical_queue),
+            captures: std::mem::take(&mut self.captures),
+            lists: std::mem::take(&mut self.lists.levels),
+        });
+        self
+    }
+
+    /// Restore what `save_state` set aside and return the vertical list
+    /// built meanwhile. A paragraph still open is dropped, so end it first.
+    pub fn restore_state(&mut self) -> Vec<Node> {
+        let Some(saved) = self.saved.pop() else {
+            return Vec::new();
+        };
+        self.settings = saved.settings;
+        self.paragraph = saved.paragraph;
+        self.open_boxes = saved.open_boxes;
+        self.current_indent = saved.current_indent;
+        self.previous_depth = saved.previous_depth;
+        self.captures = saved.captures;
+        self.lists.levels = saved.lists;
+        std::mem::replace(&mut self.vertical_queue, saved.queue)
+    }
+
+    /// How many states `save_state` has set aside.
+    pub fn saved_states(&self) -> usize {
+        self.saved.len()
     }
 
     // -- Fonts ---------------------------------------------------------------
@@ -960,6 +1098,10 @@ impl Typesetter {
 
     /// Space lines with SILE's `linespacing` package rather than the
     /// baseline skip alone.
+    pub fn line_spacing(&self) -> Option<LineSpacing> {
+        self.settings.line_spacing
+    }
+
     pub fn set_line_spacing(&mut self, spacing: Option<LineSpacing>) -> &mut Self {
         self.settings.line_spacing = spacing;
         self
@@ -1020,6 +1162,10 @@ impl Typesetter {
     pub fn set_space_settings(&mut self, settings: SpaceSettings) -> &mut Self {
         self.settings.space_settings = settings;
         self
+    }
+
+    pub fn linebreak_settings(&self) -> &LinebreakSettings {
+        &self.settings.linebreak_settings
     }
 
     pub fn linebreak_settings_mut(&mut self) -> &mut LinebreakSettings {
@@ -1397,6 +1543,12 @@ impl Typesetter {
         glyphs.iter().map(|g| g.width).sum::<f64>() * self.settings.tracking.unwrap_or(1.0)
     }
 
+    /// Add `node` to the paragraph as it is.
+    pub fn add_node(&mut self, node: Node) -> &mut Self {
+        self.push_inline(Inline::Node(Box::new(node)));
+        self
+    }
+
     /// SILE's `initline`: a paragraph opens with a zero box and its indent.
     fn push_inline(&mut self, mut item: Inline) {
         if let Inline::Node(node) = &mut item
@@ -1507,6 +1659,17 @@ impl Typesetter {
         Node::VGlue(node::VGlue { height: Length::pt(add), grid_leading: true, ..Default::default() })
     }
 
+    /// Set lines on a grid `spacing` apart, with vertical space rounded up
+    /// to fit; `grid_new_frame` starts it afresh.
+    pub fn set_grid(&mut self, spacing: f64) -> &mut Self {
+        self.grid = Some(Grid { spacing, cursor: 0.0 });
+        self
+    }
+
+    pub fn on_grid(&self) -> bool {
+        self.grid.is_some()
+    }
+
     /// Go back to ordinary line spacing (SILE's `\no-grid`).
     pub fn end_grid(&mut self) -> &mut Self {
         self.grid = None;
@@ -1515,7 +1678,7 @@ impl Typesetter {
 
     /// Start the grid afresh at the top of a frame (SILE's
     /// `startGridInFrame`).
-    fn grid_new_frame(&mut self) {
+    pub fn grid_new_frame(&mut self) {
         let Some(grid) = self.grid.as_mut() else { return };
         grid.cursor = 0.0;
         if self.vertical_queue.is_empty() {
@@ -1606,13 +1769,27 @@ impl Typesetter {
     }
 
     /// Take the vertical list set so far.
+    pub fn vertical_list(&self) -> &[Node] {
+        &self.vertical_queue
+    }
+
+    pub fn vertical_list_mut(&mut self) -> &mut Vec<Node> {
+        &mut self.vertical_queue
+    }
+
+    /// Set the next line as if nothing came before it, with no interline
+    /// glue above it, as at the top of a frame.
+    pub fn forget_last_line(&mut self) {
+        self.previous_depth = None;
+    }
+
     pub fn take_vertical_list(&mut self) -> Vec<Node> {
         std::mem::take(&mut self.vertical_queue)
     }
 
     /// The least column height, up to `max`, at which `material` fits in
     /// `columns` columns.
-    fn balanced_height(&self, material: &[Node], columns: usize, max: f64) -> Option<f64> {
+    pub fn balanced_height(&self, material: &[Node], columns: usize, max: f64) -> Option<f64> {
         let grid = self.grid.is_some();
         let fits = |height: f64| {
             let mut queue = material.to_vec();
@@ -1651,7 +1828,7 @@ impl Typesetter {
     /// they now go to (SILE's `pushBack`). Lines run together into one
     /// paragraph until their margins change, as in SILE; inter-line glue and
     /// penalties go.
-    fn push_back(&mut self) -> Result<(), BuilderError> {
+    pub fn push_back(&mut self) -> Result<(), BuilderError> {
         let queue = std::mem::take(&mut self.vertical_queue);
         self.previous_depth = None;
         let mut nodes: Vec<Node> = Vec::new();
@@ -1690,7 +1867,9 @@ impl Typesetter {
         self.rebreak(&mut nodes, margins)
     }
 
-    fn rebreak(&mut self, nodes: &mut Vec<Node>, margins: Option<(Length, Length)>) -> Result<(), BuilderError> {
+    /// Break `nodes`, set lines, again as a paragraph between `margins`
+    /// and add the lines to the vertical list.
+    pub fn rebreak(&mut self, nodes: &mut Vec<Node>, margins: Option<(Length, Length)>) -> Result<(), BuilderError> {
         while nodes.last().is_some_and(|n| n.is_penalty() || n.is_zero()) {
             nodes.pop();
         }
@@ -1708,7 +1887,9 @@ impl Typesetter {
         Ok(())
     }
 
-    fn take_flow(&mut self) -> FlowState {
+    /// Take the paragraph and vertical list being worked on, to carry on
+    /// with another flow.
+    pub fn take_flow(&mut self) -> FlowState {
         FlowState {
             paragraph: std::mem::take(&mut self.paragraph),
             open_boxes: std::mem::take(&mut self.open_boxes),
@@ -1718,7 +1899,7 @@ impl Typesetter {
         }
     }
 
-    fn put_flow(&mut self, flow: FlowState) {
+    pub fn put_flow(&mut self, flow: FlowState) {
         self.paragraph = flow.paragraph;
         self.open_boxes = flow.open_boxes;
         self.current_indent = flow.current_indent;
@@ -1803,7 +1984,8 @@ impl Typesetter {
         self.start_liner(LinerStyle::Link(dest))
     }
 
-    fn new_destination(&mut self) -> String {
+    /// Add a destination here with a name of its own, and return the name.
+    pub fn new_destination(&mut self) -> String {
         self.destinations += 1;
         let name = format!("dest{}", self.destinations);
         self.add_destination(name.clone());
@@ -1834,6 +2016,28 @@ impl Typesetter {
         let nodes = self.typeset_inlines(inlines, hsize, self.writing_direction(), self.settings.skips, &mut previous_depth)?;
         self.previous_depth = previous_depth;
         Ok(nodes)
+    }
+
+    /// `running` as set on page `page` of `pages`, broken into lines
+    /// `hsize` long.
+    pub fn typeset_running(&mut self, running: &RunningText, page: usize, pages: usize, hsize: f64) -> Result<Vec<Node>, BuilderError> {
+        let line = running.resolved(page, pages, &self.settings.language);
+        let skips = LineSkips::default().aligned(running.align);
+        self.typeset_inlines(&line, hsize, running.direction, skips, &mut None)
+    }
+
+    /// Hand `pages`, set by this typesetter, over to be output.
+    pub fn into_layout(self, paper: PaperSize, pages: Vec<Page>) -> Layout {
+        Layout {
+            pages,
+            references: CrossReferences::default(),
+            consulted_references: false,
+            paper,
+            fonts: self.fonts,
+            bookmarks: Vec::new(),
+            metadata: Metadata::default(),
+            structure: self.structure,
+        }
     }
 
     /// Shape, break and package paragraph material into lines of width
@@ -2830,19 +3034,6 @@ fn natural_width(node: &Node) -> Length {
     }
 }
 
-/// `D:` and digits, then a `HH'mm'` offset (as SILE checks it).
-fn is_pdf_date(date: &str) -> bool {
-    let Some(rest) = date.strip_prefix("D:") else { return false };
-    let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-    let squashed: String = rest[digits..].chars().filter(|c| !c.is_whitespace()).collect();
-    let offset = squashed.strip_prefix('-').unwrap_or("");
-    let offset = offset.strip_suffix('\'').unwrap_or(offset);
-    digits > 0
-        && offset.len() == 5
-        && offset.as_bytes()[2] == b'\''
-        && offset.bytes().enumerate().all(|(i, b)| i == 2 || b.is_ascii_digit())
-}
-
 /// `length` with any `em` parts in points for a font of size `em`.
 fn resolve_em(length: Length, em: f64) -> Length {
     let part = |m: Measurement| match m.unit {
@@ -3009,12 +3200,13 @@ mod tests {
     /// The committed Gentium Plus, so tests don't depend on what fonts the
     /// machine has.
     fn load_any_system_font() -> Option<(Vec<u8>, String)> {
-        Some((crate::class::tests_support::gentium(), "Gentium Plus".to_string()))
+        Some((crate::test_support::gentium(), "Gentium Plus".to_string()))
     }
 
-    fn builder_with_font() -> Option<DocumentBuilder> {
+    /// A galley as wide as an A4 page's text.
+    fn builder_with_font() -> Option<Galley> {
         let (data, family) = load_any_system_font()?;
-        let mut doc = DocumentBuilder::new(PaperSize::A4);
+        let mut doc = Galley::new(Some(451.0));
         let spec = FontSpec {
             family: Some(family),
             size: 12.0,
@@ -3023,6 +3215,10 @@ mod tests {
         doc.load_font_data("body", data, spec).ok()?;
         doc.set_font("body");
         Some(doc)
+    }
+
+    fn debug(doc: Galley) -> String {
+        doc.lay_out().unwrap().render_debug()
     }
 
     #[test]
@@ -3037,26 +3233,10 @@ mod tests {
     }
 
     #[test]
-    fn vertical_frames_shape_downwards_and_turn_latin_on_its_side() {
-        let mut doc = crate::class::tests_support::doc(crate::class::Plain::japanese(true));
-        doc.update_font(|f| f.direction = Direction::Frame).unwrap();
-        doc.add_text("tate");
-        DocumentBuilder::add_latin_in_tate(&mut doc, |d: &mut DocumentBuilder| -> Result<(), BuilderError> {
-            d.add_text("yoko");
-            Ok(())
-        })
-        .unwrap();
-        doc.new_paragraph().unwrap();
-        let trace = doc.render_debug().unwrap();
-        assert!(trace.contains(";TTB;\n"), "{trace}");
-        assert!(trace.contains(";LTR;\n"), "{trace}");
-    }
-
-    #[test]
     fn the_typesetter_sets_lines_without_pages() {
         let mut ts = Typesetter::new();
         let spec = FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() };
-        ts.load_font_data("body", crate::class::tests_support::gentium(), spec).unwrap();
+        ts.load_font_data("body", crate::test_support::gentium(), spec).unwrap();
         ts.set_font("body").set_frame_context(FrameContext { line_length: 100.0, ..Default::default() });
         ts.add_text("Lines are broken to the measure the typesetter is given, with no page in sight.");
         assert!(ts.end_paragraph().unwrap());
@@ -3070,7 +3250,8 @@ mod tests {
     #[test]
     fn overfull_word_does_not_panic() {
         let Some(mut doc) = builder_with_font() else { return };
-        doc.set_margins(72.0, 250.0, 72.0, 250.0);
+        let frame = FrameContext { line_length: 95.0, ..doc.frame_context() };
+        doc.set_frame_context(frame);
         doc.add_text("x".repeat(400));
         doc.new_paragraph().unwrap();
         doc.add_text(format!("a b {} c d", "y".repeat(400)));
@@ -3081,7 +3262,7 @@ mod tests {
     fn debug_trace_lists_each_word() {
         let Some(mut doc) = builder_with_font() else { return };
         doc.add_text("Hello world");
-        let trace = doc.render_debug().unwrap();
+        let trace = debug(doc);
         assert!(trace.starts_with("Set paper size"));
         assert!(trace.contains("\t(Hello)\n") && trace.contains("\t(world)\n"), "{trace}");
         assert!(trace.ends_with("End page\nFinish\n"));
@@ -3102,7 +3283,7 @@ mod tests {
         let Some(mut doc) = builder_with_font() else { return };
         doc.add_text("Before ").start_underline();
         doc.add_text("underlined words ".repeat(12)).end_hbox().add_text("after.");
-        let rules = rule_lines(&doc.render_debug().unwrap());
+        let rules = rule_lines(&debug(doc));
         assert!(rules.len() >= 2, "one stroke per line: {rules:?}");
         assert!(rules[1][1] > rules[0][1]);
     }
@@ -3112,7 +3293,7 @@ mod tests {
         let Some(mut doc) = builder_with_font() else { return };
         doc.add_hrule(20.0, 5.0, 1.0).add_text("x");
         doc.add_hrulefill(Stroke { raise: 0.0, thickness: 0.2 });
-        let rules = rule_lines(&doc.render_debug().unwrap());
+        let rules = rule_lines(&debug(doc));
         assert_eq!(rules.len(), 2);
         assert_eq!((rules[0][2], rules[0][3]), (20.0, 6.0));
         assert_eq!(rules[1][3], 0.2);
@@ -3123,7 +3304,7 @@ mod tests {
     fn leaders_repeat_their_box() {
         let Some(mut doc) = builder_with_font() else { return };
         doc.add_text("A").start_leaders(None).add_text(".").end_hbox().add_text("B");
-        let trace = doc.render_debug().unwrap();
+        let trace = debug(doc);
         assert!(trace.matches("\t(.)\n").count() > 10, "{trace}");
     }
 
@@ -3131,10 +3312,10 @@ mod tests {
     fn tracking_scales_advances_but_not_glyph_advances() {
         let Some(mut doc) = builder_with_font() else { return };
         doc.add_text("mini");
-        let plain = doc.render_debug().unwrap();
+        let plain = debug(doc);
         let Some(mut doc) = builder_with_font() else { return };
         doc.set_tracking(Some(1.5)).add_text("mini");
-        let tracked = doc.render_debug().unwrap();
+        let tracked = debug(doc);
         assert!(plain.contains(" w="), "{plain}");
         assert!(tracked.contains(" a="), "{tracked}");
     }
@@ -3163,8 +3344,9 @@ mod tests {
     #[test]
     fn rtl_frames_set_lines_from_the_right() {
         let Some(mut doc) = builder_with_font() else { return };
-        doc.set_direction(Direction::RTL).set_paragraph_indent(0.0).add_text("one min");
-        let trace = doc.render_debug().unwrap();
+        doc.set_direction(Direction::RTL);
+        doc.set_paragraph_indent(0.0).add_text("one min");
+        let trace = debug(doc);
         let x = |label: &str| {
             let at = trace.find(&format!("({label})")).unwrap();
             let mx = trace[..at].rfind("Mx \t").unwrap();
@@ -3178,8 +3360,8 @@ mod tests {
     fn ruby_readings_sit_above_a_base_widened_to_fit() {
         let Some(mut doc) = builder_with_font() else { return };
         doc.set_paragraph_indent(0.0);
-        DocumentBuilder::add_ruby(&mut doc, "reading", |d| Ok::<_, BuilderError>(d.add_text("x")).map(|_| ())).unwrap();
-        let trace = doc.render_debug().unwrap();
+        crate::ruby::add_ruby(&mut doc, "reading", |d| Ok::<_, BuilderError>(d.add_text("x")).map(|_| ())).unwrap();
+        let trace = debug(doc);
         let y = |label: &str| {
             let at = trace.find(&format!("({label})")).unwrap();
             let my = trace[..at].rfind("My \t").unwrap();
@@ -3200,7 +3382,7 @@ mod tests {
             doc.end_item().unwrap();
         }
         doc.end_list().unwrap();
-        let trace = doc.render_debug().unwrap();
+        let trace = debug(doc);
         let x = |label: &str| {
             let at = trace.find(&format!("({label})")).unwrap();
             let mx = trace[..at].rfind("Mx \t").unwrap();
@@ -3217,55 +3399,9 @@ mod tests {
         doc.set_line_spacing(Some(spacing)).add_text("one");
         doc.new_paragraph().unwrap();
         doc.add_text("two");
-        let trace = doc.render_debug().unwrap();
+        let trace = debug(doc);
         let ys: Vec<f64> = trace.lines().filter_map(|l| l.strip_prefix("My \t")).map(|y| y.parse().unwrap()).collect();
         assert!((ys[1] - ys[0] - 30.0).abs() < 1e-3, "{trace}");
-    }
-
-    #[test]
-    fn make_columns_splits_the_frame_evenly() {
-        let mut doc = DocumentBuilder::new(PaperSize::A4);
-        doc.make_columns(3, 10.0).unwrap();
-        let pages = doc.into_pages().unwrap();
-        let frames = &pages[0].frames;
-        let width = |id: &str| frames.iter().find(|f| f.id == id).unwrap().width();
-        assert!((width("content") - width("content_col1")).abs() < 1e-9);
-        assert!((width("content") - width("content_col2")).abs() < 1e-9);
-        assert_eq!(width("content_gutter1"), 10.0);
-    }
-
-    #[test]
-    fn page_frames_apply_to_the_current_page_only() {
-        let Some(mut doc) = builder_with_font() else { return };
-        let narrow = FrameSpec::new("a").left("100pt").right("300pt").top("100pt").bottom("200pt").next("b");
-        let wide = FrameSpec::new("b").left("50pt").right("500pt").top("300pt").bottom("700pt");
-        doc.declare_page_frames(&[narrow, wide]).unwrap();
-        doc.set_content_frame("a").unwrap();
-        doc.add_text("word ".repeat(1500));
-        doc.new_paragraph().unwrap();
-        let pages = doc.into_pages().unwrap();
-        assert!(pages.len() > 1);
-        let ids = |p: &Page| p.content.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids(&pages[0]), ["a", "b"]);
-        assert!(ids(&pages[1]).iter().all(|id| id == "content"));
-    }
-
-    #[test]
-    fn lines_moving_to_a_wider_frame_are_broken_again() {
-        let Some(mut doc) = builder_with_font() else { return };
-        let narrow = FrameSpec::new("a").left("100pt").right("200pt").top("100pt").bottom("150pt").next("b");
-        let wide = FrameSpec::new("b").left("100pt").right("500pt").top("300pt").bottom("700pt");
-        doc.declare_page_frames(&[narrow, wide]).unwrap();
-        doc.set_content_frame("a").unwrap();
-        doc.add_text("word ".repeat(60));
-        doc.new_paragraph().unwrap();
-        let pages = doc.into_pages().unwrap();
-        let (_, wide_lines) = pages[0].content.iter().find(|(id, _)| id == "b").unwrap();
-        let first_line = wide_lines.iter().find_map(|n| match n {
-            Node::VBox(v) => Some(v.nodes.iter().filter(|n| n.is_nnode()).count()),
-            _ => None,
-        });
-        assert!(first_line.unwrap() > 10, "lines in b use b's width");
     }
 
     #[test]
@@ -3274,7 +3410,7 @@ mod tests {
         doc.set_complex_spaces(true);
         doc.add_text("word ".repeat(100));
         doc.new_paragraph().unwrap();
-        let pages = doc.into_pages().unwrap();
+        let pages = doc.lay_out().unwrap().pages;
         let lines: Vec<&VBox> = pages[0].content.iter().flat_map(|(_, n)| n).filter_map(|n| match n {
             Node::VBox(v) => Some(v),
             _ => None,
@@ -3294,90 +3430,6 @@ mod tests {
         assert!(!lines[1].nodes.iter().any(|n| matches!(n, Node::Glue(g) if pt_of(&g.width) > 0.0)));
     }
 
-    #[test]
-    fn best_fit_pages_keep_every_line_and_fit_their_frames() {
-        let lines_of = |best_fit: bool| {
-            let mut doc = builder_with_font()?;
-            doc.set_best_fit_pages(best_fit);
-            doc.set_paragraph_skip(Length::new(Measurement::pt(6.0), Measurement::pt(3.0), Measurement::pt(1.0)));
-            for i in 0..40 {
-                doc.add_text("word ".repeat(40 + i * 7));
-                doc.new_paragraph().unwrap();
-            }
-            let pages = doc.into_pages().unwrap();
-            let target = pages[0].frame("content").unwrap().height();
-            let mut lines = 0;
-            for page in &pages {
-                let (_, nodes) = page.content.iter().find(|(id, _)| id == "content").unwrap();
-                let natural: f64 = nodes.iter().filter(|n| matches!(n, Node::VBox(_))).map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
-                assert!(natural <= target + 1e-6, "{natural} > {target}");
-                lines += nodes.iter().filter(|n| matches!(n, Node::VBox(_))).count();
-            }
-            Some((lines, pages.len()))
-        };
-        let (Some((lines, pages)), Some((default_lines, _))) = (lines_of(true), lines_of(false)) else { return };
-        assert_eq!(lines, default_lines);
-        assert!(pages > 3);
-    }
-
-    fn balanced_frames() -> Vec<FrameSpec> {
-        vec![
-            FrameSpec::new("l").left("72pt").right("290pt").top("72pt").bottom("770pt").next("r").balanced(),
-            FrameSpec::new("r").left("305pt").right("523pt").top("72pt").bottom("770pt").next("after").balanced(),
-            FrameSpec::new("after").left("72pt").right("523pt").top("bottom(r)").bottom("770pt"),
-        ]
-    }
-
-    fn lines_in(page: &Page, frame: &str) -> usize {
-        page.content.iter().filter(|(id, _)| id == frame).flat_map(|(_, nodes)| nodes).filter(|n| matches!(n, Node::VBox(_))).count()
-    }
-
-    #[test]
-    fn balanced_columns_share_the_material_at_the_end() {
-        let Some(mut doc) = builder_with_font() else { return };
-        doc.declare_page_frames(&balanced_frames()).unwrap();
-        doc.set_content_frame("l").unwrap();
-        doc.add_text("word ".repeat(300));
-        doc.new_paragraph().unwrap();
-        let pages = doc.into_pages().unwrap();
-        assert_eq!(pages.len(), 1);
-        let (l, r) = (lines_in(&pages[0], "l"), lines_in(&pages[0], "r"));
-        assert!(l > 5 && l.abs_diff(r) <= 1, "{l} and {r} lines");
-        let frame = |id| pages[0].frame(id).unwrap();
-        assert!(frame("l").height() < 698.0);
-        assert_eq!(frame("l").height(), frame("r").height());
-    }
-
-    #[test]
-    fn balancing_moves_the_frames_placed_after_the_columns() {
-        let Some(mut doc) = builder_with_font() else { return };
-        doc.declare_page_frames(&balanced_frames()).unwrap();
-        doc.set_content_frame("l").unwrap();
-        doc.add_text("word ".repeat(200));
-        doc.balance_columns().unwrap();
-        doc.add_text("after");
-        doc.new_paragraph().unwrap();
-        let pages = doc.into_pages().unwrap();
-        let frame = |id| pages[0].frame(id).unwrap();
-        assert_eq!(frame("after").top, frame("r").bottom);
-        assert!(frame("r").bottom < 400.0);
-        assert_eq!(lines_in(&pages[0], "after"), 1);
-        assert!(lines_in(&pages[0], "r") > 0);
-    }
-
-    #[test]
-    fn balanced_columns_fill_up_when_the_material_overflows_them() {
-        let Some(mut doc) = builder_with_font() else { return };
-        doc.declare_page_frames(&balanced_frames()).unwrap();
-        doc.set_content_frame("l").unwrap();
-        doc.add_text("word ".repeat(3000));
-        doc.new_paragraph().unwrap();
-        let pages = doc.into_pages().unwrap();
-        assert!(pages.len() > 1);
-        assert_eq!(pages[0].frame("l").unwrap().height(), 698.0);
-        assert!(lines_in(&pages[0], "r") > 40);
-    }
-
     // -- Font loading --------------------------------------------------------
 
     #[test]
@@ -3386,7 +3438,7 @@ mod tests {
             Some(v) => v,
             None => return,
         };
-        let mut doc = DocumentBuilder::new(PaperSize::A4);
+        let mut doc = Typesetter::new();
         let spec = FontSpec {
             family: Some(family),
             size: 12.0,
@@ -3444,16 +3496,6 @@ mod tests {
         assert!(doc.vertical_queue[0].is_discardable());
     }
 
-    // -- Metadata ------------------------------------------------------------
-
-    #[test]
-    fn pdf_dates_need_an_offset() {
-        assert!(is_pdf_date("D:19990209153925 - 08 ' 00 '"));
-        assert!(is_pdf_date("D:19990209153925-08'00"));
-        assert!(!is_pdf_date("should fail"));
-        assert!(!is_pdf_date("D:19990209153925"));
-    }
-
     // -- Word splitting tests ------------------------------------------------
 
     #[test]
@@ -3498,49 +3540,5 @@ mod tests {
     fn split_words_trailing_space() {
         let words = split_words("Hello ");
         assert_eq!(words[0], "Hello");
-    }
-}
-
-#[cfg(test)]
-mod parallel_tests {
-    use super::*;
-    use crate::class::tests_support::*;
-    use crate::class::Plain;
-
-    /// How far down its frame the line holding `text` starts.
-    fn offset_of(page: &Page, frame: &str, text: &str) -> Option<f64> {
-        let (_, nodes) = page.content.iter().find(|(id, _)| id == frame)?;
-        let mut y = 0.0;
-        for node in nodes {
-            if let Node::VBox(b) = node
-                && b.nodes.iter().any(|n| matches!(n, Node::NNode(n) if n.text == text))
-            {
-                return Some(y);
-            }
-            y += pt_of(&node.height()) + pt_of(&node.depth());
-        }
-        None
-    }
-
-    #[test]
-    fn sync_lines_up_what_comes_next_in_each_flow() {
-        let mut d = doc(Plain::new());
-        d.declare_frames(&[
-            FrameSpec::new("left").top("top(content)").bottom("bottom(content)").left("left(content)").right("48%pw"),
-            FrameSpec::new("right").top("top(content)").bottom("bottom(content)").left("52%pw").right("right(content)"),
-        ])
-        .unwrap();
-        d.begin_parallel(&[("left", "left"), ("right", "right")]).unwrap();
-        d.select_parallel("left").unwrap().add_text("One");
-        d.new_paragraph().unwrap().add_text("Two");
-        d.select_parallel("right").unwrap().add_text("Un");
-        d.sync_parallel().unwrap();
-        d.select_parallel("left").unwrap().add_text("Three");
-        d.select_parallel("right").unwrap().add_text("Trois");
-        d.sync_parallel().unwrap();
-        let pages = d.into_pages().unwrap();
-        let left = offset_of(&pages[0], "left", "Three").unwrap();
-        assert!(left > 0.0);
-        assert!((left - offset_of(&pages[0], "right", "Trois").unwrap()).abs() < 1e-6);
     }
 }
