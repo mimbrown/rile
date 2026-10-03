@@ -12,7 +12,7 @@ use crate::measurement::Measurement;
 pub struct GlyphItem {
     pub gid: u16,
     pub cluster: u32,
-    pub text: String,
+    pub text: std::sync::Arc<str>,
     pub width: f64,
     pub height: f64,
     pub depth: f64,
@@ -277,7 +277,7 @@ fn parse_features(features_str: &str) -> Vec<rustybuzz::Feature> {
 
 /// Map glyph cluster indices back to source text substrings.
 /// Works with any shaper that produces cluster values (byte offsets into `text`).
-pub(crate) fn extract_glyph_texts_from_clusters(text: &str, clusters: &[u32]) -> Vec<String> {
+pub(crate) fn extract_glyph_texts_from_clusters(text: &str, clusters: &[u32]) -> Vec<std::sync::Arc<str>> {
     if clusters.is_empty() {
         return vec![];
     }
@@ -304,12 +304,12 @@ pub(crate) fn extract_glyph_texts_from_clusters(text: &str, clusters: &[u32]) ->
             let end = *cluster_end.get(&cluster).unwrap_or(&text_len) as usize;
             let end = end.min(text.len());
             let start = start.min(end);
-            text[start..end].to_string()
+            text[start..end].into()
         })
         .collect()
 }
 
-fn extract_glyph_texts(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<String> {
+fn extract_glyph_texts(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<std::sync::Arc<str>> {
     let clusters: Vec<u32> = infos.iter().map(|g| g.cluster).collect();
     extract_glyph_texts_from_clusters(text, &clusters)
 }
@@ -552,7 +552,7 @@ mod tests {
         assert_ne!(items[0].gid, 0);
         assert!(items[0].width > 0.0);
         assert!(items[0].height > 0.0);
-        assert_eq!(items[0].text, "A");
+        assert_eq!(&*items[0].text, "A");
     }
 
     #[test]
@@ -564,8 +564,8 @@ mod tests {
         let shaper = RustyBuzzShaper::new();
         let items = shaper.shape("AB", &face, &spec);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].text, "A");
-        assert_eq!(items[1].text, "B");
+        assert_eq!(&*items[0].text, "A");
+        assert_eq!(&*items[1].text, "B");
     }
 
     #[test]

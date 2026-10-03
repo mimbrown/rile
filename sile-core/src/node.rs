@@ -46,7 +46,7 @@ pub struct GlyphData {
     pub y_offset: f64,
     /// The source text of the cluster this glyph starts (empty for the
     /// remaining glyphs of a multi-glyph cluster).
-    pub text: String,
+    pub text: std::sync::Arc<str>,
 }
 
 // ─── Helper functions (mirrors _maxnode / SU.sum) ────────────────────────────

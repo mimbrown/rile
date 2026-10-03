@@ -244,8 +244,44 @@ fn fit_class(shortfall: f64, stretch: f64, shrink: f64) -> (i64, FitnessClass) {
 // LineBreaker
 // ---------------------------------------------------------------------------
 
+/// The paragraph's nodes as given, and the terminators the breaker adds.
+struct Nodes<'a> {
+    given: &'a [Node],
+    added: Vec<Node>,
+}
+
+impl Nodes<'_> {
+    fn len(&self) -> usize {
+        self.given.len() + self.added.len()
+    }
+
+    fn last(&self) -> Option<&Node> {
+        self.added.last().or(self.given.last())
+    }
+
+    fn pop(&mut self) {
+        if self.added.pop().is_none()
+            && let Some((_, rest)) = self.given.split_last()
+        {
+            self.given = rest;
+        }
+    }
+
+    fn push(&mut self, node: Node) {
+        self.added.push(node);
+    }
+}
+
+impl std::ops::Index<usize> for Nodes<'_> {
+    type Output = Node;
+
+    fn index(&self, i: usize) -> &Node {
+        self.given.get(i).unwrap_or_else(|| &self.added[i - self.given.len()])
+    }
+}
+
 struct LineBreaker<'a> {
-    nodes: Vec<Node>,
+    nodes: Nodes<'a>,
     hsize: f64,
     settings: &'a LinebreakSettings,
 
@@ -285,9 +321,9 @@ struct LineBreaker<'a> {
 }
 
 impl<'a> LineBreaker<'a> {
-    fn new(nodes: &[Node], hsize: f64, settings: &'a LinebreakSettings) -> Self {
+    fn new(nodes: &'a [Node], hsize: f64, settings: &'a LinebreakSettings) -> Self {
         Self {
-            nodes: nodes.to_vec(),
+            nodes: Nodes { given: nodes, added: Vec::new() },
             hsize,
             settings,
             arena: Vec::with_capacity(64),

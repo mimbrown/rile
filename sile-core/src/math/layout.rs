@@ -370,7 +370,7 @@ struct Glyph {
     depth: f64,
     x_offset: f64,
     y_offset: f64,
-    text: String,
+    text: std::sync::Arc<str>,
 }
 
 #[derive(Debug, Clone)]
