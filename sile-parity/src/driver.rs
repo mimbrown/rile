@@ -1,4 +1,4 @@
-//! Interprets a SIL tree by calling sile-core's `DocumentBuilder`, emulating
+//! Interprets a SIL tree by calling rile's `DocumentBuilder`, emulating
 //! SILE's `plain` and `book` classes closely enough to compare layouts.
 //! Anything outside the supported subset is reported rather than approximated.
 
@@ -7,39 +7,39 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
-use sile_pages::bible::Bible;
-use sile_core::builder::{Arranger, BaselineSkip, BuilderError, Context, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign, Typesetter};
-use sile_pages::DocumentBuilder;
-use sile_core::counter::format_number;
-use sile_core::color::Color;
-use sile_pages::class::{
+use rile_pages::bible::Bible;
+use rile::builder::{Arranger, BaselineSkip, BuilderError, Context, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign, Typesetter};
+use rile_pages::DocumentBuilder;
+use rile::counter::format_number;
+use rile::color::Color;
+use rile_pages::class::{
     diglot, pecha, triglot, Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain, DIGLOT_FLOWS, TRIGLOT_FLOWS,
 };
-use sile_core::chords;
-use sile_core::date::DateTime;
-use sile_pages::insertion::InsertionClass;
-use sile_core::node::{HBox, Ink, LinkDest, Node, Stroke};
-use sile_pages::toc::{DefaultTocStyle, TableOfContents};
-use sile_core::pullquote::Pullquote;
-use sile_core::dropcap::Dropcap;
-use sile_core::svg_image::SvgImage;
-use sile_pages::index::{DefaultIndexStyle, Indexer};
-use sile_core::bibliography::{Bibliography, Cite};
-use sile_pages::cropmarks::Cropmarks;
-use sile_core::features::OtFeatures;
-use sile_core::image::{Background, BackgroundFill, Image};
-use sile_core::url::{url_pieces, UrlPenalties, UrlPiece};
-use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
-use sile_core::frame::PaperSize;
-use sile_core::frame::FrameDirection;
-use sile_pages::framespec::FrameSpec;
-use sile_core::length::Length;
-use sile_core::lists::{ListKind, ListOptions};
-use sile_core::math::mathml;
-use sile_core::math::{MathLength, MathMode, MathNode, TexMath};
-use sile_core::measurement::{Measurement, Unit};
-use sile_core::node::INFINITY;
-use sile_core::shaper::SpaceSettings;
+use rile::chords;
+use rile::date::DateTime;
+use rile_pages::insertion::InsertionClass;
+use rile::node::{HBox, Ink, LinkDest, Node, Stroke};
+use rile_pages::toc::{DefaultTocStyle, TableOfContents};
+use rile::pullquote::Pullquote;
+use rile::dropcap::Dropcap;
+use rile::svg_image::SvgImage;
+use rile_pages::index::{DefaultIndexStyle, Indexer};
+use rile::bibliography::{Bibliography, Cite};
+use rile_pages::cropmarks::Cropmarks;
+use rile::features::OtFeatures;
+use rile::image::{Background, BackgroundFill, Image};
+use rile::url::{url_pieces, UrlPenalties, UrlPiece};
+use rile::font::{Direction, FontSpec, FontStyle, FontWeight};
+use rile::frame::PaperSize;
+use rile::frame::FrameDirection;
+use rile_pages::framespec::FrameSpec;
+use rile::length::Length;
+use rile::lists::{ListKind, ListOptions};
+use rile::math::mathml;
+use rile::math::{MathLength, MathMode, MathNode, TexMath};
+use rile::measurement::{Measurement, Unit};
+use rile::node::INFINITY;
+use rile::shaper::SpaceSettings;
 
 use crate::fonts::Fonts;
 use crate::ports::{self, Port};
@@ -825,7 +825,7 @@ impl<'a> Driver<'a> {
     /// `\footnote`: a raised mark here, and the note, numbered and set with
     /// the document's own settings at 90% size, sent to the footnotes frame.
     fn footnote(&mut self, content: &[Content]) -> Result<(), String> {
-        let err = |e: sile_core::builder::BuilderError| e.to_string();
+        let err = |e: rile::builder::BuilderError| e.to_string();
         self.footnote_class()?;
         let number = self.doc.counter_mut("footnote").to_string();
         self.scoped(|d| {
@@ -1125,7 +1125,7 @@ impl<'a> Driver<'a> {
             cmd.option(k)
                 .ok_or_else(|| format!("\\{} needs {k}", cmd.name))
         };
-        let err = |e: sile_core::builder::BuilderError| e.to_string();
+        let err = |e: rile::builder::BuilderError| e.to_string();
         match cmd.name.as_str() {
             "document" => {
                 if let Some(p) = cmd.option("papersize") {
@@ -1676,7 +1676,7 @@ impl<'a> Driver<'a> {
             "ruby" => {
                 let reading = opt("reading")?.to_string();
                 self.sync()?;
-                sile_core::ruby::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+                rile::ruby::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
             }
             "save-book-title" | "save-chapter-number" => {
                 let text = sil::plain_text(content);
@@ -1709,7 +1709,7 @@ impl<'a> Driver<'a> {
             }
             "pdf:metadata" => {
                 match self.doc.set_pdf_metadata(opt("key")?, opt("value")?) {
-                    Ok(_) | Err(sile_core::builder::BuilderError::InvalidMetadata(_)) => {}
+                    Ok(_) | Err(rile::builder::BuilderError::InvalidMetadata(_)) => {}
                     Err(e) => return Err(err(e)),
                 }
             }

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Convert SILE's language data into sile-core/languages/: Liang hyphenation
+"""Convert SILE's language data into rile/languages/: Liang hyphenation
 patterns (languages/*/hyphens*.lua) as .pat files and Fluent messages
 (languages/*/messages.ftl) as .ftl files, plus the table that embeds them
-(sile-core/src/language_data.rs).
+(rile/src/language_data.rs).
 
 Usage: scripts/import-sile-languages.py <path to a SILE checkout>
 
@@ -106,7 +106,7 @@ def write(path, data, keep_minima=True, base=None):
 
 def main():
     sile = pathlib.Path(sys.argv[1])
-    out = pathlib.Path(__file__).resolve().parent.parent / "sile-core" / "languages"
+    out = pathlib.Path(__file__).resolve().parent.parent / "rile" / "languages"
     out.mkdir(exist_ok=True)
     for old in [*out.glob("*.pat"), *out.glob("*.ftl")]:
         old.unlink()

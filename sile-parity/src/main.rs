@@ -32,7 +32,7 @@ pub struct TestResult {
 
 const USAGE: &str = "usage: sile-parity [--corpus DIR] [--out DIR] [--trace TEST] [FILTER...]
 
-Runs SILE's regression tests through sile-core and compares the layouts with
+Runs SILE's regression tests through rile and compares the layouts with
 SILE's expected debug output. Fetch the corpus first with
 scripts/fetch-parity-corpus.sh.
 

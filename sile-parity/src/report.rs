@@ -146,8 +146,8 @@ fn index_page(results: &[TestResult]) -> String {
     let mut h = String::new();
     let _ = write!(
         h,
-        "<title>SILE Parity</title>\n<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap'>\n<link rel='stylesheet' href='style.css'>\n<main class='wrap'>\n<header class='masthead'><p class='eyebrow'>sile-rust · regression corpus</p><h1>SILE Parity</h1>\
-<p class='lede'>Each of SILE's regression tests is typeset by sile-core and compared with SILE's expected output in three tiers: the same glyphs, the same line and page breaks, and glyph positions within {tol}pt.</p></header>\n",
+        "<title>SILE Parity</title>\n<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap'>\n<link rel='stylesheet' href='style.css'>\n<main class='wrap'>\n<header class='masthead'><p class='eyebrow'>rile · regression corpus</p><h1>SILE Parity</h1>\
+<p class='lede'>Each of SILE's regression tests is typeset by rile and compared with SILE's expected output in three tiers: the same glyphs, the same line and page breaks, and glyph positions within {tol}pt.</p></header>\n",
         tol = crate::compare::TOLERANCE_PT
     );
 
@@ -282,8 +282,8 @@ fn detail(r: &TestResult, fonts: &Fonts) -> String {
         let missing = || "<p class='missing'>No page</p>".to_string();
         let _ = write!(
             body,
-            "<section class='spread'><h2>Page {}</h2><div class='panes'><figure><figcaption>SILE</figcaption>{}</figure><figure><figcaption>sile-rust</figcaption>{}</figure></div>\
-<figure class='wide'><figcaption><i class='key sile'></i>SILE <i class='key ours'></i>sile-rust, overlaid</figcaption>{}</figure>",
+            "<section class='spread'><h2>Page {}</h2><div class='panes'><figure><figcaption>SILE</figcaption>{}</figure><figure><figcaption>rile</figcaption>{}</figure></div>\
+<figure class='wide'><figcaption><i class='key sile'></i>SILE <i class='key ours'></i>rile, overlaid</figcaption>{}</figure>",
             i + 1,
             e.map(|p| svg::page(p, vb, &mut defs))
                 .unwrap_or_else(missing),

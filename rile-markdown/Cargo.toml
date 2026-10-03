@@ -1,0 +1,17 @@
+[package]
+name = "rile-markdown"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["pages", "math"]
+harfbuzz = ["rile/harfbuzz"]
+# Footnotes at the foot of the page and book headings with rile-pages.
+pages = ["dep:rile-pages"]
+# `$`/`$$` math; without it formulas are set as code.
+math = ["rile/math"]
+
+[dependencies]
+rile = { path = "../rile", default-features = false }
+rile-pages = { path = "../rile-pages", default-features = false, optional = true }
+pulldown-cmark = { version = "0.13.4", default-features = false }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Convert SILE's math operator dictionary (packages/math/mathml-entities.lua,
-itself generated from the W3C's unicode.xml) into sile-core/math/operators.txt.
+itself generated from the W3C's unicode.xml) into rile/math/operators.txt.
 
 Usage: scripts/import-sile-math.py <path to a SILE checkout>
 
@@ -44,7 +44,7 @@ def main():
             f, pos = forms(src, pos)
             fields += f
         lines.append("\t".join(fields))
-    out = pathlib.Path(__file__).resolve().parent.parent / "sile-core/math/operators.txt"
+    out = pathlib.Path(__file__).resolve().parent.parent / "rile/math/operators.txt"
     out.parent.mkdir(exist_ok=True)
     out.write_text("\n".join(lines) + "\n")
     print(f"{len(lines)} symbols")
