@@ -8,7 +8,8 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 * `sile-pages`: pages on top of sile-core, through its public API only: `DocumentBuilder` (frames, templates, classes, insertions and footnotes, page breaking, parallel flows), frame declarations (`framespec`), folios, cropmarks, TOC, index and `lay_out_until_settled`
 * `sile-pdf`: writes a `Layout` as PDF (`sile_pdf::render`), with `PdfOptions` for how it is written
 * `sile-svg`: writes a `Layout` as SVG, one document per page (`sile_svg::render`); the CLI uses it for `.svg` outputs
-* `sile-cli`: the `sile` command, which typesets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) to tagged, accessible PDF through the builder API
+* `sile-markdown`: sets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) into any arranger. `MarkdownTarget` lets an arranger set headings and footnotes itself: `DocumentBuilder` (feature `pages`) uses page footnotes and book sectioning; elsewhere headings are plain and notes are endnotes
+* `sile-cli`: the `sile` command, which typesets Markdown to tagged, accessible PDF or SVG, on pages or (`--width`) in a galley
 * `sile-parity`: test-only tool that runs SILE's regression tests through `sile-core` and compares layouts with SILE's expected output
 
 ## Typesetter, arrangers and galleys

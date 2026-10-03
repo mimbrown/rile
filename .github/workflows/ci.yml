@@ -33,7 +33,7 @@ jobs:
       - name: Without optional features
         if: matrix.shaper == 'rustybuzz'
         run: |
-          for crate in sile-core sile-pages sile-pdf sile-svg; do
+          for crate in sile-core sile-markdown sile-pages sile-pdf sile-svg; do
             cargo test -p $crate --no-default-features
             cargo clippy -p $crate --no-default-features --all-targets
           done
