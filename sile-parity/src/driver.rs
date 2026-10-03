@@ -252,6 +252,7 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "switch-master-one-page",
     "showframe",
     "makecolumns",
+    "balancecolumns",
     "hrule",
     "hrulefill",
     "fullrule",
@@ -340,7 +341,7 @@ fn check(
             "frame" => {
                 for (k, v) in &cmd.options {
                     match k.as_str() {
-                        "id" | "left" | "right" | "top" | "bottom" | "width" | "height" | "next" => {}
+                        "id" | "left" | "right" | "top" | "bottom" | "width" | "height" | "next" | "balanced" => {}
                         "direction" if FrameDirection::parse(v).is_some() => {}
                         "direction" => {
                             missing.insert(format!("frame[direction={v}]"));
@@ -388,6 +389,7 @@ fn check(
                     | "packages.leaders"
                     | "packages.masters"
                     | "packages.frametricks"
+                    | "packages.balanced-frames"
                     | "packages.counters"
                     | "packages.color"
                     | "packages.unichar"
@@ -1363,6 +1365,10 @@ impl<'a> Driver<'a> {
                 self.sync()?;
                 self.doc.make_columns(columns, gutter).map_err(err)?;
             }
+            "balancecolumns" => {
+                self.sync()?;
+                self.doc.balance_columns().map_err(err)?;
+            }
             "showframe" => {
                 let id = cmd.option("id").filter(|id| *id != "all");
                 self.doc.show_frame(id).map_err(err)?;
@@ -1379,6 +1385,7 @@ impl<'a> Driver<'a> {
                         "width" => spec.width = v,
                         "height" => spec.height = v,
                         "next" => spec.next = v,
+                        "balanced" => spec.balanced = matches!(v.as_deref(), Some("1" | "true" | "yes")),
                         "direction" => spec.direction = v.as_deref().and_then(FrameDirection::parse),
                         _ => {}
                     }

@@ -1591,6 +1591,7 @@ mod tests {
             next: None,
             direction: None,
             tate: false,
+            balanced: false,
         };
         crate::pagebuilder::Page::new(number, PaperSize::A4, vec![content])
     }
