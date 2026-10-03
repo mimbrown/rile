@@ -3196,6 +3196,7 @@ impl DocumentBuilder {
             .map(|name| self.fonts.get(name).map(|f| (name.as_str(), f)).ok_or_else(|| BuilderError::NoFont(name.clone())))
             .collect::<Result<Vec<_>, _>>()?;
         let tracking = run.tracking.unwrap_or(1.0);
+        let language: Arc<str> = run.language.as_str().into();
         let mut shaped = self.shape_with_fallbacks(&run.text, &fonts, &run.language, run.color);
         for s in &mut shaped {
             s.glyph.width *= tracking;
@@ -3206,12 +3207,13 @@ impl DocumentBuilder {
         let glyphs: Vec<GlyphItem> = shaped.iter().map(|s| s.glyph.clone()).collect();
         let items: Vec<Item> = shaped.iter().map(|s| s.item).collect();
 
-        let mut nodes = Vec::new();
+        let mut nodes = Vec::with_capacity(shaped.len());
         let mut lo = 0;
         while lo < shaped.len() {
             let (font, color) = (shaped[lo].font, shaped[lo].color);
             let hi = (lo..shaped.len()).find(|&i| (shaped[i].font, shaped[i].color) != (font, color)).unwrap_or(shaped.len());
             let (font_name, entry) = fonts[font];
+            let font_key: Arc<str> = font_name.into();
             let (face, spec) = (&entry.face, &entry.spec);
             let mut zenkaku = None;
             let space = || crate::word_shaping::shape(&*self.shaper, " ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
@@ -3220,8 +3222,8 @@ impl DocumentBuilder {
                     Token::Word(range) => {
                         let range = range.start + lo..range.end + lo;
                         let text: String = items[range.clone()].iter().map(|i| i.text).collect();
-                        let mut nnode = self.build_nnode(&text, &glyphs[range], font_name, spec, color);
-                        nnode.language = run.language.clone();
+                        let mut nnode = self.build_nnode(&text, &glyphs[range], &font_key, spec, color);
+                        nnode.language = Arc::clone(&language);
                         nnode.bidi_level = run.bidi_level;
                         nnode.tag = run.tag;
                         nodes.push(Node::NNode(nnode));
@@ -3231,8 +3233,8 @@ impl DocumentBuilder {
                     Token::Penalty(p) => nodes.push(Node::penalty(p)),
                     Token::RepeatedHyphen => {
                         let hyphen = crate::word_shaping::shape(&*self.shaper, "-", face, spec);
-                        let mut nnode = self.build_nnode("-", &hyphen, font_name, spec, color);
-                        nnode.language = run.language.clone();
+                        let mut nnode = self.build_nnode("-", &hyphen, &font_key, spec, color);
+                        nnode.language = Arc::clone(&language);
                         nnode.bidi_level = run.bidi_level;
                         nnode.tag = run.tag;
                         nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
@@ -3280,7 +3282,7 @@ impl DocumentBuilder {
             stop: usize,
         }
         let mut runs = std::collections::VecDeque::from([Pending { font: 0, start: 0, stop: text.len() }]);
-        let mut shaped: Vec<Shaped> = Vec::new();
+        let mut shaped: Vec<Shaped> = Vec::with_capacity(text.len());
         let mut popped = 0;
         while let Some(run) = runs.pop_front() {
             let (_, font) = fonts[run.font];
@@ -3336,13 +3338,13 @@ impl DocumentBuilder {
                 out.push(node);
                 continue;
             };
-            let lang = if word.language.is_empty() { self.settings.language.clone() } else { word.language.clone() };
+            let lang = if word.language.is_empty() { self.settings.language.clone() } else { word.language.to_string() };
             let mut segments = self.hyphenation.hyphenate_word(&word.text, &lang);
-            if segments.len() <= 1 || !self.fonts.contains_key(&word.font_key) {
+            if segments.len() <= 1 || !self.fonts.contains_key(&*word.font_key) {
                 out.push(Node::NNode(word));
                 continue;
             }
-            let mut pieces = Vec::new();
+            let mut pieces = Vec::with_capacity(2 * segments.len());
             let mut syllables = 0;
             for j in 0..segments.len() {
                 let point = (j + 1 < segments.len()).then(|| hyphenation_point(&lang, &mut segments, j, self.settings.replace_apostrophe_at_hyphenation));
@@ -3387,12 +3389,12 @@ impl DocumentBuilder {
         if text.is_empty() || tokens.japanese || tokens.ethiopic || tokens.letterspace || !((text == "-" && !tokens.repeated_hyphen) || text.chars().all(letters)) {
             return None;
         }
-        let entry = self.fonts.get(&like.font_key)?;
+        let entry = self.fonts.get(&*like.font_key)?;
         if entry.face.has_color_layers() {
             return None;
         }
         let mut glyphs = if entry.spec.language.is_empty() {
-            let spec = FontSpec { language: like.language.clone(), ..entry.spec.clone() };
+            let spec = FontSpec { language: like.language.to_string(), ..entry.spec.clone() };
             crate::word_shaping::shape(&*self.shaper, text, &entry.face, &spec)
         } else {
             crate::word_shaping::shape(&*self.shaper, text, &entry.face, &entry.spec)
@@ -3411,9 +3413,9 @@ impl DocumentBuilder {
     fn run_nodes(&self, text: &str, like: &NNode) -> Vec<Node> {
         let run = TextRun {
             text: text.to_string(),
-            font_name: like.font_key.clone(),
+            font_name: like.font_key.to_string(),
             color: like.color,
-            language: like.language.clone(),
+            language: like.language.to_string(),
             tokens: NodeMakerOptions::for_language(&like.language),
             letter_space: None,
             tracking: None,
@@ -3429,7 +3431,7 @@ impl DocumentBuilder {
         &self,
         text: &str,
         glyphs: &[GlyphItem],
-        font_name: &str,
+        font_name: &Arc<str>,
         spec: &FontSpec,
         color: Option<Color>,
     ) -> NNode {
@@ -3463,11 +3465,10 @@ impl DocumentBuilder {
             });
         }
 
-        let mut nnode = NNode::with_glyphs(text, glyph_data, font_name, spec.size, width, height, depth);
+        let mut nnode = NNode::with_glyphs(text, glyph_data, Arc::clone(font_name), spec.size, width, height, depth);
         nnode.misfit = misfit;
         nnode.vertical = spec.direction == Direction::TTB;
         nnode.color = color;
-        nnode.language = self.settings.language.clone();
         nnode
     }
 
@@ -3541,7 +3542,7 @@ impl DocumentBuilder {
         let mut metrics = (0.0_f64, 0.0_f64, 0.0_f64);
         for node in nodes {
             let Node::NNode(n) = node else { continue };
-            let Some(font) = self.fonts.get(&n.font_key) else { continue };
+            let Some(font) = self.fonts.get(&*n.font_key) else { continue };
             let size = font.spec.size;
             metrics.0 = metrics.0.max(font.face.scale(font.face.ascender(), size));
             metrics.1 = metrics.1.max(-font.face.scale(font.face.descender(), size));
@@ -3616,11 +3617,11 @@ impl DocumentBuilder {
             let line = rejoin_unbroken_words(line);
             let mut line = reopen_liners(line, &mut open_liners);
             let ratio = line_ratio(br.width, &line, start_skip + end_skip);
-            line.insert(0, Node::glue(start_skip));
-            line.insert(0, Node::zerohbox());
-            line.push(Node::glue(end_skip));
-            line.push(Node::zerohbox());
-            let mut line = rebox_liners(line);
+            let mut framed = Vec::with_capacity(line.len() + 4);
+            framed.extend([Node::zerohbox(), Node::glue(start_skip)]);
+            framed.append(&mut line);
+            framed.extend([Node::glue(end_skip), Node::zerohbox()]);
+            let mut line = rebox_liners(framed);
             if reorder {
                 line = reorder_bidi(line, direction);
             }
@@ -3773,9 +3774,13 @@ fn reorder_bidi(mut line: Vec<Node>, direction: Direction) -> Vec<Node> {
             _ => {}
         }
     }
+    let top = levels.iter().copied().max().unwrap_or(0);
+    if top == 0 {
+        return line;
+    }
     let n = line.len();
     let mut matrix: Vec<usize> = (0..n).collect();
-    for level in 1..=levels.iter().copied().max().unwrap_or(0) {
+    for level in 1..=top {
         let mut start = None;
         for i in 0..n {
             if levels[i] >= level {
