@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["math", "bibliography"]
 harfbuzz = ["dep:harfbuzz-sys"]
+# SILE's math package: formulas from a typed tree, TeX-like syntax or MathML.
+math = []
+# Citations and bibliographies from BibTeX through CSL styles (hayagriva).
+bibliography = ["dep:hayagriva"]
 
 [dependencies]
 ttf-parser = "0.25"
@@ -16,5 +20,5 @@ unicode-bidi = "0.3"
 harfbuzz-sys = { version = "0.6", default-features = false, optional = true }
 unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.13.3"
-hayagriva = "0.10.1"
+hayagriva = { version = "0.10.1", optional = true }
 icu_segmenter = "2"

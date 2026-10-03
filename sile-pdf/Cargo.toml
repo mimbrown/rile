@@ -4,15 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["images"]
 harfbuzz = ["sile-core/harfbuzz"]
+# Decodes PNG images to embed them; JPEGs are embedded as they are
+# without it, and PNGs are left out.
+images = ["dep:image"]
 
 [dependencies]
-sile-core = { path = "../sile-core" }
+sile-core = { path = "../sile-core", default-features = false }
 ttf-parser = "0.25"
 pdf-writer = "0.12"
 subsetter = "0.2"
 miniz_oxide = "0.8"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 
 [dev-dependencies]
 sile-pages = { path = "../sile-pages" }

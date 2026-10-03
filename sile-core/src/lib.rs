@@ -1,3 +1,4 @@
+#[cfg(feature = "bibliography")]
 pub mod bibliography;
 pub mod builder;
 pub mod chords;
@@ -15,6 +16,7 @@ pub mod messages;
 pub mod length;
 pub mod linebreak;
 pub mod lists;
+#[cfg(feature = "math")]
 pub mod math;
 pub mod ruby;
 pub mod measurement;

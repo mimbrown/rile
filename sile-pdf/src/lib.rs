@@ -277,24 +277,30 @@ impl PdfOutputter {
 
     // -- Image management --------------------------------------------------
 
+    #[cfg(feature = "images")]
     pub fn add_image_jpeg(&mut self, data: Vec<u8>) -> Result<usize, PdfError> {
         let reader = image::ImageReader::new(std::io::Cursor::new(&data))
             .with_guessed_format()
             .map_err(|e| PdfError::Image(e.to_string()))?;
         let dims = reader.into_dimensions().map_err(|e| PdfError::Image(e.to_string()))?;
+        Ok(self.push_jpeg(data, dims))
+    }
 
+    /// A JPEG embedded as it is, `pixels` in size.
+    fn push_jpeg(&mut self, data: Vec<u8>, pixels: (u32, u32)) -> usize {
         let idx = self.images.len();
         self.images.push(ImageEntry {
             data,
-            width: dims.0,
-            height: dims.1,
+            width: pixels.0,
+            height: pixels.1,
             channels: 3,
             is_jpeg: true,
             alpha: None,
         });
-        Ok(idx)
+        idx
     }
 
+    #[cfg(feature = "images")]
     pub fn add_image_png(&mut self, data: &[u8]) -> Result<usize, PdfError> {
         let img = image::load_from_memory_with_format(data, image::ImageFormat::Png)
             .map_err(|e| PdfError::Image(e.to_string()))?;
@@ -951,11 +957,16 @@ impl sile_core::render::Canvas for PdfOutputter {
         let index = match self.placed_images.get(&key) {
             Some(&index) => index,
             None => {
-                let added = match image.format {
-                    sile_core::image::ImageFormat::Png => self.add_image_png(&image.data),
-                    sile_core::image::ImageFormat::Jpeg => self.add_image_jpeg(image.data.to_vec()),
+                let index = match image.format {
+                    #[cfg(feature = "images")]
+                    sile_core::image::ImageFormat::Png => match self.add_image_png(&image.data) {
+                        Ok(index) => index,
+                        Err(_) => return,
+                    },
+                    #[cfg(not(feature = "images"))]
+                    sile_core::image::ImageFormat::Png => return,
+                    sile_core::image::ImageFormat::Jpeg => self.push_jpeg(image.data.to_vec(), image.pixels),
                 };
-                let Ok(index) = added else { return };
                 self.placed_images.insert(key, index);
                 index
             }

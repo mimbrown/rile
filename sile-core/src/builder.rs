@@ -470,6 +470,7 @@ pub struct Settings {
     /// The fallbacks applied to the current font, as registered fonts.
     fallback_fonts: Vec<String>,
     linebreak_settings: LinebreakSettings,
+    #[cfg(feature = "math")]
     math: crate::math::MathSettings,
     boustrophedon: bool,
     complex_spaces: bool,
@@ -501,6 +502,7 @@ impl Default for Settings {
             fallbacks: Vec::new(),
             fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
+            #[cfg(feature = "math")]
             math: Default::default(),
             boustrophedon: false,
             complex_spaces: false,
@@ -674,6 +676,7 @@ pub struct Typesetter {
     messages: crate::messages::Messages,
     /// Languages set a letter to a word (`break_between_letters`).
     letter_languages: Vec<String>,
+    #[cfg(feature = "math")]
     pub(crate) math_tables: BTreeMap<String, Arc<crate::math::MathTable>>,
     pub(crate) structure: Option<crate::structure::StructTree>,
     pub(crate) untagged: usize,
@@ -726,6 +729,7 @@ impl Typesetter {
             grid: None,
             messages: Default::default(),
             letter_languages: Vec::new(),
+            #[cfg(feature = "math")]
             math_tables: BTreeMap::new(),
             structure: None,
             untagged: 0,
@@ -932,19 +936,23 @@ impl Typesetter {
         Ok(key)
     }
 
+    #[cfg(feature = "math")]
     pub(crate) fn registered_face(&self, key: &str) -> Option<(&FontSpec, &Arc<FontFace>)> {
         self.fonts.get(key).map(|f| (&f.spec, &f.face))
     }
 
+    #[cfg(feature = "math")]
     pub(crate) fn shaper(&self) -> &dyn Shaper {
         self.shaper.as_ref()
     }
 
     /// The math font and display settings (SILE's `math.*`).
+    #[cfg(feature = "math")]
     pub fn math_settings(&self) -> &crate::math::MathSettings {
         &self.settings.math
     }
 
+    #[cfg(feature = "math")]
     pub fn math_settings_mut(&mut self) -> &mut crate::math::MathSettings {
         &mut self.settings.math
     }
@@ -1554,7 +1562,7 @@ impl Typesetter {
         if let Inline::Node(node) = &mut item
             && let Node::HBox(hbox) = &mut **node
             && hbox.tag.is_none()
-            && matches!(hbox.ink, Some(Ink::Image(_) | Ink::Svg(_) | Ink::Math(_)))
+            && hbox.ink.as_ref().is_some_and(Ink::is_figure)
         {
             hbox.tag = self.current_tag();
         }

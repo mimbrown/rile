@@ -2,6 +2,7 @@ use crate::node::{HBox, Ink, Leader, LinerStyle, LinkDest, NNode, Node};
 use crate::color::Color;
 use crate::frame::{Flow, FrameDirection, FrameGeometry};
 use crate::image::Image;
+#[cfg(feature = "math")]
 use crate::math::MathItem;
 use crate::pagebuilder::{Page, Underlay};
 use crate::svg_image::SvgFigure;
@@ -295,6 +296,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     c.advance_writing(width);
                 }
                 Some(Ink::Phantom) => c.advance_writing(line.width(node)),
+                #[cfg(feature = "math")]
                 Some(Ink::Math(items)) => {
                     canvas.set_tag(hbox.tag);
                     draw_math(&items.0, c, line, canvas);
@@ -342,6 +344,7 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
     }
 }
 
+#[cfg(feature = "math")]
 fn draw_math(items: &[MathItem], c: &Cursor, line: &Line, canvas: &mut dyn Canvas) {
     let r = line.ratio;
     for item in items {
