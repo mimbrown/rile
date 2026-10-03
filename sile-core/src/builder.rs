@@ -3020,7 +3020,7 @@ impl DocumentBuilder {
         } else {
             linebreak::break_paragraph(h_nodes, hsize, &lb_settings, |nodes| self.hyphenate(nodes))
         };
-        self.build_lines(&h_nodes, &breaks, direction, reorder, skips, previous_depth)
+        self.build_lines(h_nodes, &breaks, direction, reorder, skips, previous_depth)
     }
 
     fn shape_inlines(&mut self, inlines: &[Inline]) -> Result<Vec<Node>, BuilderError> {
@@ -3332,32 +3332,32 @@ impl DocumentBuilder {
     fn hyphenate(&mut self, nodes: Vec<Node>) -> Vec<Node> {
         let mut out = Vec::with_capacity(nodes.len());
         for node in nodes {
-            let Node::NNode(word) = &node else {
+            let Node::NNode(word) = node else {
                 out.push(node);
                 continue;
             };
             let lang = if word.language.is_empty() { self.settings.language.clone() } else { word.language.clone() };
             let mut segments = self.hyphenation.hyphenate_word(&word.text, &lang);
             if segments.len() <= 1 || !self.fonts.contains_key(&word.font_key) {
-                out.push(node);
+                out.push(Node::NNode(word));
                 continue;
             }
             let mut pieces = Vec::new();
             let mut syllables = 0;
             for j in 0..segments.len() {
                 let point = (j + 1 < segments.len()).then(|| hyphenation_point(&lang, &mut segments, j, self.settings.replace_apostrophe_at_hyphenation));
-                let nnodes: Vec<Node> = self.text_nodes(&segments[j], word).into_iter().filter(Node::is_nnode).collect();
+                let nnodes: Vec<Node> = self.text_nodes(&segments[j], &word).into_iter().filter(Node::is_nnode).collect();
                 syllables += nnodes.len();
                 pieces.extend(nnodes);
                 if let Some((prebreak, replacement)) = point {
-                    let replacement = replacement.map(|r| self.text_nodes(&r, word)).unwrap_or_default();
-                    pieces.push(Node::discretionary(self.text_nodes(&prebreak, word), vec![], replacement));
+                    let replacement = replacement.map(|r| self.text_nodes(&r, &word)).unwrap_or_default();
+                    pieces.push(Node::discretionary(self.text_nodes(&prebreak, &word), vec![], replacement));
                 }
             }
             if let Some(Node::NNode(last)) = pieces.iter_mut().rev().find(|p| p.is_nnode()) {
                 last.space_after = word.space_after;
             }
-            let parent = Arc::new(node::HyphenatedWord { word: word.clone(), syllables });
+            let parent = Arc::new(node::HyphenatedWord { word, syllables });
             for piece in &mut pieces {
                 if let Node::NNode(n) = piece {
                     n.parent = Some(Arc::clone(&parent));
@@ -3556,7 +3556,7 @@ impl DocumentBuilder {
     /// glue and package each line (SILE's `breakpointsToLines`).
     fn build_lines(
         &mut self,
-        h_nodes: &[Node],
+        h_nodes: Vec<Node>,
         breaks: &[BreakResult],
         direction: Direction,
         reorder: bool,
@@ -3567,17 +3567,19 @@ impl DocumentBuilder {
         let mut start = 0;
         let mut postbreak: Vec<Node> = Vec::new();
         let mut open_liners: Vec<LinerStyle> = Vec::new();
+        let count = h_nodes.len();
+        let mut h_nodes = h_nodes.into_iter();
 
         for br in breaks {
-            if br.position == 0 || h_nodes.is_empty() {
+            if br.position == 0 || count == 0 {
                 continue;
             }
-            let end = br.position.min(h_nodes.len() - 1);
+            let end = br.position.min(count - 1);
             if start > end {
                 continue;
             }
             let mut line: Vec<Node> = std::mem::take(&mut postbreak);
-            line.extend(h_nodes[start..=end].iter().cloned());
+            line.extend(h_nodes.by_ref().take(end + 1 - start));
             start = end + 1;
             // Lines holding nothing but discardables (e.g. two breaks in a
             // row) are dropped.
@@ -3585,9 +3587,9 @@ impl DocumentBuilder {
                 continue;
             }
             let broken = matches!(line.last(), Some(Node::Discretionary(_)));
-            if let Some(Node::Discretionary(d)) = line.last() {
-                let d = d.clone();
-                line.pop();
+            if broken
+                && let Some(Node::Discretionary(d)) = line.pop()
+            {
                 line.extend(d.prebreak);
                 postbreak = d.postbreak;
             }
@@ -3820,7 +3822,7 @@ fn mark_word_spaces(nodes: &mut [Node]) {
 /// Put back whole any hyphenated word whose syllables all landed on this
 /// line, so it is set as shaped rather than syllable by syllable.
 fn rejoin_unbroken_words(line: Vec<Node>) -> Vec<Node> {
-    let mut out = Vec::with_capacity(line.len());
+    let mut words = Vec::new();
     let mut i = 0;
     while i < line.len() {
         if let Node::NNode(NNode { parent: Some(parent), .. }) = &line[i] {
@@ -3841,13 +3843,30 @@ fn rejoin_unbroken_words(line: Vec<Node>) -> Vec<Node> {
                 end -= 1;
             }
             if syllables == parent.syllables {
-                out.push(Node::NNode(parent.word.clone()));
+                words.push((i, end, Arc::clone(parent)));
                 i = end;
                 continue;
             }
         }
-        out.push(line[i].clone());
         i += 1;
+    }
+    if words.is_empty() {
+        return line;
+    }
+    let mut out = Vec::with_capacity(line.len());
+    let mut words = words.into_iter().peekable();
+    for (i, node) in line.into_iter().enumerate() {
+        match words.peek() {
+            Some((start, end, parent)) if i >= *start => {
+                if i == *start {
+                    out.push(Node::NNode(parent.word.clone()));
+                }
+                if i + 1 == *end {
+                    words.next();
+                }
+            }
+            _ => out.push(node),
+        }
     }
     out
 }
