@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder};
+use crate::builder::{BuilderError, Typesetter};
 use crate::color::Color;
 use crate::node::{HBox, Ink};
 use crate::length::Length;
@@ -142,7 +142,7 @@ pub struct Background {
     pub all_pages: bool,
 }
 
-impl DocumentBuilder {
+impl Typesetter {
     /// Set `image` in the text at `width` by `height`, either of which may
     /// be left out to keep its proportions (SILE's `\img`).
     pub fn add_image(&mut self, image: Arc<Image>, width: Option<f64>, height: Option<f64>) -> &mut Self {

@@ -1940,7 +1940,8 @@ mod tests {
         for (family, variations) in fonts {
             let spec = FontSpec { family: Some(family.to_string()), variations: variations.to_string(), ..Default::default() };
             doc.set_font_spec(spec).unwrap();
-            doc.add_text("Hi").new_paragraph().unwrap();
+            doc.add_text("Hi");
+            doc.new_paragraph().unwrap();
         }
         render(&doc.lay_out().unwrap(), PdfOptions { compress: false, ..Default::default() }).unwrap()
     }

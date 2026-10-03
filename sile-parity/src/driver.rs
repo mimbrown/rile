@@ -1459,8 +1459,8 @@ impl<'a> Driver<'a> {
             "repertoire" | "pangrams" => {
                 self.sync()?;
                 match cmd.name.as_str() {
-                    "repertoire" => self.doc.add_repertoire(),
-                    _ => self.doc.add_pangrams(),
+                    "repertoire" => self.doc.add_repertoire().map(|_| ()),
+                    _ => self.doc.add_pangrams().map(|_| ()),
                 }
                 .map_err(err)?;
             }

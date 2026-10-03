@@ -13,7 +13,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Typesetter};
 use crate::font::{Direction, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::length::Length;
 use crate::measurement::Measurement;
@@ -654,7 +654,7 @@ fn ex_height(face: &FontFace, size: f64) -> f64 {
     face.x_height().map_or(size / 2.0, |h| face.scale(h, size))
 }
 
-impl DocumentBuilder {
+impl Typesetter {
     /// The math font for the current settings: sized to match the text
     /// font's x-height unless `MathSettings::size` is set.
     fn math_font(&mut self) -> Result<(FontSpec, Arc<FontFace>), BuilderError> {
@@ -696,7 +696,9 @@ impl DocumentBuilder {
         self.math_tables.insert(key, Arc::clone(&table));
         Ok(table)
     }
+}
 
+impl DocumentBuilder {
     /// Typeset `formula` in the text, or displayed on its own line,
     /// centred, with an optional number flush right (SILE's `\math` and
     /// `\mathml`).

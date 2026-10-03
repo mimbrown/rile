@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{BuilderError, DocumentBuilder, Inline};
+use super::{BuilderError, DocumentBuilder, Inline, Typesetter};
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::{GlyphData, NNode, Node};
@@ -16,7 +16,7 @@ const PANGRAMS: [&str; 6] = [
     "Voix ambiguë d’un cœur qui au zéphyr préfère les jattes de kiwi.",
 ];
 
-impl DocumentBuilder {
+impl Typesetter {
     /// Every glyph of the current font after `.notdef`, in glyph order and
     /// an em apart (SILE's `\repertoire`).
     pub fn add_repertoire(&mut self) -> Result<&mut Self, BuilderError> {
@@ -34,7 +34,9 @@ impl DocumentBuilder {
         }
         Ok(self)
     }
+}
 
+impl DocumentBuilder {
     /// Six pangrams, then a big skip (SILE's `\pangrams`).
     pub fn add_pangrams(&mut self) -> Result<&mut Self, BuilderError> {
         for pangram in PANGRAMS {

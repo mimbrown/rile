@@ -5,7 +5,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder};
+use crate::builder::{BuilderError, Typesetter};
 use crate::length::Length;
 use crate::node::{HBox, Ink};
 
@@ -84,7 +84,7 @@ impl SvgImage {
     }
 }
 
-impl DocumentBuilder {
+impl Typesetter {
     /// Set `image` in the text at `width` or `height` in points, keeping
     /// its proportions, drawn at `density` dots per inch (SILE's `\svg`).
     pub fn add_svg(

@@ -1,6 +1,6 @@
 //! Numbered and bulleted lists (SILE's `lists` package).
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Typesetter};
 use crate::counter::format_number;
 use crate::length::Length;
 use crate::structure::Role;
@@ -90,10 +90,6 @@ pub(crate) struct Lists {
 }
 
 impl DocumentBuilder {
-    pub fn list_settings_mut(&mut self) -> &mut ListSettings {
-        &mut self.lists.settings
-    }
-
     /// Start a list; items follow with `begin_item` / `end_item`.
     pub fn begin_list(&mut self, kind: ListKind, options: &ListOptions) -> Result<&mut Self, BuilderError> {
         let depth = self.lists.levels.iter().filter(|l| l.kind == kind).count() + 1;
@@ -123,13 +119,8 @@ impl DocumentBuilder {
         self.list_spacing(true, true, 0)?;
         self.begin_structure(Role::L);
         let skips = self.line_skips();
-        self.lists.levels.push(ListLevel {
-            kind,
-            label,
-            counter: options.start.map_or(0, |s| s - 1),
-            indent,
-            saved: (skips, self.paragraph_indent()),
-        });
+        let saved = (skips, self.paragraph_indent());
+        self.lists.levels.push(ListLevel { kind, label, counter: options.start.map_or(0, |s| s - 1), indent, saved });
         let left = skips.left + Length::pt(base_indent + indent);
         self.set_current_indent(Some(0.0)).set_paragraph_indent(0.0).set_line_skips(LineSkips { left, ..skips });
         Ok(self)
@@ -220,6 +211,12 @@ impl DocumentBuilder {
             }
         }
         Ok(())
+    }
+}
+
+impl Typesetter {
+    pub fn list_settings_mut(&mut self) -> &mut ListSettings {
+        &mut self.lists.settings
     }
 
     fn push_list_spacing(&mut self) {

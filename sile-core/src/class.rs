@@ -877,7 +877,8 @@ pub(crate) mod tests_support {
         let spec = FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() };
         doc.load_font_data("body", gentium(), spec).unwrap();
         doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts/gentium-plus-5.000"));
-        doc.set_font("body").set_class(class);
+        doc.set_font("body");
+        doc.set_class(class);
         doc
     }
 
