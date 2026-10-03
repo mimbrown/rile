@@ -288,8 +288,8 @@ pub fn find_best_fit_break(queue: &[Node], target_height: f64, settings: &Linebr
         .iter()
         .map(|n| match n {
             Node::VBox(_) => Node::hbox(pt(n.height()) + pt(n.depth()), 0.0, 0.0),
-            Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => Node::glue(g.height.clone()),
-            Node::VKern(k) => Node::kern(k.height.clone()),
+            Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => Node::glue(g.height),
+            Node::VKern(k) => Node::kern(k.height),
             Node::Penalty(p) => Node::penalty(p.penalty),
             _ => Node::kern(Length::zero()),
         })

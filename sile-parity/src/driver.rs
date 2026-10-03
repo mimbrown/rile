@@ -1154,7 +1154,7 @@ impl<'a> Driver<'a> {
                         pecha(&mut self.doc).map_err(err)?;
                         self.set_default("document.language", "bo")?;
                         self.set("document.parindent", "0pt")?;
-                        self.settings.skips = self.settings.skips.clone().aligned(TextAlign::Right);
+                        self.settings.skips = self.settings.skips.aligned(TextAlign::Right);
                     }
                     Some("triglot") => {
                         triglot(&mut self.doc).map_err(err)?;

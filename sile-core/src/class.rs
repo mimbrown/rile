@@ -406,7 +406,7 @@ impl DocumentClass for Pecha {
         let (width, height, depth) = (pt(&number.width), pt(&number.height), pt(&number.depth));
         let x = frame.left + (frame.width() - width) / 2.0;
         let baseline = frame.top + (frame.height() - height - depth) / 2.0 + height;
-        let mut folio = crate::node::HBox::new(number.width.clone(), number.height.clone(), number.depth.clone());
+        let mut folio = crate::node::HBox::new(number.width, number.height, number.depth);
         folio.nodes.push(crate::node::Node::HBox(number));
         doc.add_overlay(crate::pagebuilder::Underlay::Box(folio, [x, baseline]))?;
         Ok(())
