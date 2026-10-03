@@ -1,0 +1,14 @@
+[package]
+name = "rile-svg"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+harfbuzz = ["rile/harfbuzz"]
+
+[dependencies]
+rile = { path = "../rile", default-features = false }
+ttf-parser = "0.25"
+
+[dev-dependencies]
+rile-pages = { path = "../rile-pages" }

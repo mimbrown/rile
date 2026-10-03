@@ -1,0 +1,22 @@
+[package]
+name = "rile-cli"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+harfbuzz = ["rile/harfbuzz"]
+
+[dependencies]
+rile = { path = "../rile" }
+rile-pages = { path = "../rile-pages" }
+rile-pdf = { path = "../rile-pdf" }
+rile-svg = { path = "../rile-svg" }
+rile-markdown = { path = "../rile-markdown" }
+fontdb = "0.22"
+clap = { version = "4.6.7", features = ["derive"] }
+
+[[bin]]
+name = "rile"
+path = "src/main.rs"
+doc = false

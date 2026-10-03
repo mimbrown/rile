@@ -1,19 +1,19 @@
 //! Rust in place of the Lua in SILE's tests. Each port does what the test's
-//! Lua does, written against sile-core the way a Rust document would, so
+//! Lua does, written against rile the way a Rust document would, so
 //! the test runs without a Lua interpreter.
 
-use sile_pages::bible::Bible;
-use sile_core::builder::{Arranger, BuilderError};
-use sile_pages::DocumentBuilder;
-use sile_core::color::Color;
-use sile_core::builder::{bigskip, smallskip, with_font};
-use sile_pages::class::Book;
-use sile_core::font::{FontStyle, FontWeight};
-use sile_core::frame::FrameDirection;
-use sile_pages::framespec::FrameSpec;
-use sile_core::linebreak::ParShape;
-use sile_core::node::{LinerPainter, LinerStyle};
-use sile_core::textcase;
+use rile_pages::bible::Bible;
+use rile::builder::{Arranger, BuilderError};
+use rile_pages::DocumentBuilder;
+use rile::color::Color;
+use rile::builder::{bigskip, smallskip, with_font};
+use rile_pages::class::Book;
+use rile::font::{FontStyle, FontWeight};
+use rile::frame::FrameDirection;
+use rile_pages::framespec::FrameSpec;
+use rile::linebreak::ParShape;
+use rile::node::{LinerPainter, LinerStyle};
+use rile::textcase;
 
 use crate::driver::Driver;
 use crate::sil::Command;
@@ -121,7 +121,7 @@ fn times_table(d: &mut Driver) -> Result<(), String> {
 }
 
 fn bug_1674(d: &mut Driver) -> Result<(), String> {
-    let italic = |f: &mut sile_core::font::FontSpec| f.style = FontStyle::Italic;
+    let italic = |f: &mut rile::font::FontSpec| f.style = FontStyle::Italic;
     with_doc(d, |doc| {
         doc.add_text("Foo ");
         with_font(doc, italic, |doc| Ok::<_, BuilderError>(doc.add_text("bar")).map(|_| ()))?;
