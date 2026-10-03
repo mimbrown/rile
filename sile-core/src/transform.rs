@@ -1,8 +1,8 @@
 //! Boxes drawn rotated or scaled (SILE's `rotate` and `scalebox` packages),
 //! and tables of boxes in columns (SILE's `simpletable`).
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, Typesetter};
-use crate::class::smallskip;
+use crate::builder::{Arranger, BuilderError, Typesetter};
+use crate::builder::smallskip;
 use crate::length::Length;
 use crate::node::{HBox, Ink};
 
@@ -84,37 +84,33 @@ impl Typesetter {
     }
 }
 
-impl DocumentBuilder {
-    /// Set `rows` of cells as a table: each column as wide as its widest
-    /// cell, a small skip after each row (SILE's `simpletable`).
-    pub fn add_simple_table(&mut self, rows: Vec<Vec<HBox>>) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode(false)?;
-        let mut widths: Vec<Length> = Vec::new();
-        for row in &rows {
-            for (i, cell) in row.iter().enumerate() {
-                match widths.get_mut(i) {
-                    Some(w) if pt(&cell.width) > pt(w) => *w = cell.width,
-                    Some(_) => {}
-                    None => widths.push(cell.width),
-                }
+pub(crate) fn add_simple_table<A: Arranger + ?Sized>(a: &mut A, rows: Vec<Vec<HBox>>) -> Result<(), BuilderError> {
+    a.leave_hmode(false)?;
+    let mut widths: Vec<Length> = Vec::new();
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            match widths.get_mut(i) {
+                Some(w) if pt(&cell.width) > pt(w) => *w = cell.width,
+                Some(_) => {}
+                None => widths.push(cell.width),
             }
         }
-        let indent = self.paragraph_indent();
-        self.set_paragraph_indent(0.0);
-        let result = rows.into_iter().try_for_each(|row| -> Result<(), BuilderError> {
-            for (i, mut cell) in row.into_iter().enumerate() {
-                cell.width = widths[i];
-                self.add_box(cell);
-            }
-            self.leave_hmode(false)?;
-            self.add_explicit_vskip(smallskip())?;
-            Ok(())
-        });
-        self.set_paragraph_indent(indent);
-        result?;
-        self.leave_hmode(false)?;
-        Ok(self)
     }
+    let indent = a.paragraph_indent();
+    a.set_paragraph_indent(0.0);
+    let result = rows.into_iter().try_for_each(|row| -> Result<(), BuilderError> {
+        for (i, mut cell) in row.into_iter().enumerate() {
+            cell.width = widths[i];
+            a.add_box(cell);
+        }
+        a.leave_hmode(false)?;
+        a.add_explicit_vskip(smallskip())?;
+        Ok(())
+    });
+    a.set_paragraph_indent(indent);
+    result?;
+    a.leave_hmode(false)?;
+    Ok(())
 }
 
 fn pt(length: &Length) -> f64 {
@@ -124,17 +120,17 @@ fn pt(length: &Length) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::class::tests_support::doc;
-    use crate::class::Plain;
+    use crate::builder::Galley;
+    use crate::test_support::galley;
 
-    fn word(d: &mut DocumentBuilder, text: &str) -> HBox {
+    fn word(d: &mut Galley, text: &str) -> HBox {
         d.start_hbox().add_text(text);
         d.make_hbox().unwrap()
     }
 
     #[test]
     fn a_quarter_turn_swaps_width_and_height() {
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         let hbox = word(&mut d, "Turn");
         let (w, h) = (pt(&hbox.width), pt(&hbox.height) + pt(&hbox.depth));
         d.add_rotated(hbox, 90.0);
@@ -156,7 +152,7 @@ mod tests {
 
     #[test]
     fn scaling_mirrors_and_rejects_zero() {
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         let hbox = word(&mut d, "Big");
         assert!(d.add_scaled(hbox.clone(), 0.0, 1.0).is_err());
         d.add_scaled(hbox, -2.0, 1.0).unwrap();
@@ -165,7 +161,7 @@ mod tests {
 
     #[test]
     fn table_columns_take_the_widest_cell() {
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         let rows = vec![vec![word(&mut d, "a"), word(&mut d, "b")], vec![word(&mut d, "wide cell"), word(&mut d, "c")]];
         let wide = pt(&rows[1][0].width);
         d.add_simple_table(rows).unwrap();

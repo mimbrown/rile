@@ -11,7 +11,7 @@ use hayagriva::{
     Library, LocatorPayload, Rendered, SpecificLocator,
 };
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{Arranger, BuilderError, LineSkips};
 use crate::font::{FontStyle as Style_, FontWeight as Weight};
 use crate::length::Length;
 use crate::node::LinkDest;
@@ -139,7 +139,7 @@ impl Bibliography {
 
     /// Cite `cites` together, setting the citation the style makes of them
     /// (SILE's `\cite` and `\cites`).
-    pub fn cite(&mut self, doc: &mut DocumentBuilder, cites: Vec<Cite>) -> Result<(), BuilderError> {
+    pub fn cite<A: Arranger>(&mut self, doc: &mut A, cites: Vec<Cite>) -> Result<(), BuilderError> {
         self.items(&cites)?;
         self.citations.push(cites);
         let rendered = self.render(&[])?;
@@ -155,7 +155,7 @@ impl Bibliography {
     }
 
     /// Set the bibliography entry for `key` here (SILE's `\reference`).
-    pub fn reference(&self, doc: &mut DocumentBuilder, key: &str) -> Result<(), BuilderError> {
+    pub fn reference<A: Arranger>(&self, doc: &mut A, key: &str) -> Result<(), BuilderError> {
         let entry = self.entry(key).ok_or_else(|| error(format!("no entry {key}")))?;
         let mut driver = BibliographyDriver::new();
         driver.citation(CitationRequest::new(vec![CitationItem::with_entry(entry)], &self.style, self.locale.clone(), &self.locales, None));
@@ -168,7 +168,7 @@ impl Bibliography {
 
     /// Set the bibliography of the works cited so far, or of every work
     /// loaded unless `cited_only` (SILE's `\printbibliography`).
-    pub fn typeset(&self, doc: &mut DocumentBuilder, cited_only: bool) -> Result<(), BuilderError> {
+    pub fn typeset<A: Arranger>(&self, doc: &mut A, cited_only: bool) -> Result<(), BuilderError> {
         let extra = if cited_only {
             Vec::new()
         } else {
@@ -211,14 +211,14 @@ impl Bibliography {
         result
     }
 
-    fn set(&self, doc: &mut DocumentBuilder, children: &ElemChildren) -> Result<(), BuilderError> {
+    fn set<A: Arranger>(&self, doc: &mut A, children: &ElemChildren) -> Result<(), BuilderError> {
         for child in &children.0 {
             self.set_child(doc, child, Formatting::default())?;
         }
         Ok(())
     }
 
-    fn set_child(&self, doc: &mut DocumentBuilder, child: &ElemChild, _outer: Formatting) -> Result<(), BuilderError> {
+    fn set_child<A: Arranger>(&self, doc: &mut A, child: &ElemChild, _outer: Formatting) -> Result<(), BuilderError> {
         match child {
             ElemChild::Text(t) => formatted(doc, &t.text, t.formatting)?,
             ElemChild::Markup(text) => {
@@ -245,7 +245,7 @@ impl Bibliography {
 
 /// `text` in the font `formatting` asks for. Super- and subscripts are
 /// raised or lowered and set smaller, as SILE fakes them.
-fn formatted(doc: &mut DocumentBuilder, text: &str, formatting: Formatting) -> Result<(), BuilderError> {
+fn formatted<A: Arranger>(doc: &mut A, text: &str, formatting: Formatting) -> Result<(), BuilderError> {
     if formatting == Formatting::default() {
         doc.add_text(text);
         return Ok(());
@@ -290,8 +290,8 @@ fn formatted(doc: &mut DocumentBuilder, text: &str, formatting: Formatting) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::class::tests_support::*;
-    use crate::class::Plain;
+    use crate::test_support::*;
+    use crate::builder::Galley;
 
     const BIB: &str = r#"
 @book{knuth1984,
@@ -308,8 +308,8 @@ mod tests {
 }
 "#;
 
-    fn text(d: DocumentBuilder) -> String {
-        let pages = d.into_pages().unwrap();
+    fn text(d: Galley) -> String {
+        let pages = d.lay_out().unwrap().pages;
         text_in(&pages[0], "content")
     }
 
@@ -317,7 +317,7 @@ mod tests {
     fn citations_and_bibliography_follow_the_style() {
         let mut bib = Bibliography::default();
         bib.load_bibtex(BIB).unwrap();
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         d.add_text("See ");
         bib.cite(&mut d, vec![Cite { key: "knuth1984".into(), locator: Some(("page".into(), "42".into())) }]).unwrap();
         d.new_paragraph().unwrap();
@@ -333,7 +333,7 @@ mod tests {
         let mut bib = Bibliography::default();
         bib.load_bibtex(BIB).unwrap();
         bib.set_style("ieee", None).unwrap();
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         bib.cite(&mut d, vec![Cite::new("lamport1986")]).unwrap();
         bib.cite(&mut d, vec![Cite::new("knuth1984")]).unwrap();
         d.new_paragraph().unwrap();
@@ -341,6 +341,6 @@ mod tests {
         let text = text(d);
         assert!(text.starts_with("[1][2]"), "{text}");
         assert!(text.contains("Lamport") && text.contains("Knuth"), "{text}");
-        assert!(bib.cite(&mut doc(Plain::new()), vec![Cite::new("nobody")]).is_err());
+        assert!(bib.cite(&mut galley(), vec![Cite::new("nobody")]).is_err());
     }
 }

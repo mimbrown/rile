@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
+use sile_core::builder::{Arranger, BuilderError, LineSkips};
+use crate::DocumentBuilder;
 use crate::class::{Book, DocumentClass, PageTemplate};
-use crate::length::Length;
+use sile_core::length::Length;
 
 /// Where a verse starts.
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +127,7 @@ impl DocumentClass for Bible {
         self.book.folio.output(doc)
     }
 
-    fn folio(&self) -> Option<crate::counter::PageNumber> {
+    fn folio(&self) -> Option<sile_core::counter::PageNumber> {
         self.book.folio()
     }
 }

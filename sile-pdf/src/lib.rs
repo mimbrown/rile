@@ -1049,7 +1049,7 @@ impl sile_core::render::Canvas for PdfOutputter {
         self.current.as_mut().expect("no current page").tag = tag;
     }
 
-    fn frame_outline(&mut self, frame: &sile_core::framespec::FrameGeometry) {
+    fn frame_outline(&mut self, frame: &sile_core::frame::FrameGeometry) {
         self.mark();
         let page = self.current.as_mut().expect("no current page");
         let y = page.height - frame.bottom;
@@ -1570,7 +1570,7 @@ mod tests {
 
 
     fn test_page(number: usize) -> sile_core::pagebuilder::Page {
-        let content = sile_core::framespec::FrameGeometry {
+        let content = sile_core::frame::FrameGeometry {
             id: "content".into(),
             left: 72.0,
             top: 72.0,
@@ -1933,7 +1933,7 @@ mod tests {
     }
 
     fn render_with_test_fonts(fonts: &[(&str, &str)]) -> Vec<u8> {
-        use sile_core::builder::DocumentBuilder;
+        use sile_pages::DocumentBuilder;
         use sile_core::font::FontSpec;
         use sile_core::frame::PaperSize;
         let mut doc = DocumentBuilder::new(PaperSize::A5);

@@ -5,11 +5,12 @@ use icu_collator::options::CollatorOptions;
 use icu_collator::Collator;
 use icu_locale::Locale;
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
-use crate::class::{bigskip, smallskip};
-use crate::length::Length;
-use crate::node::LinkDest;
-use crate::references::IndexPage;
+use sile_core::builder::{Arranger, BuilderError, LineSkips};
+use crate::DocumentBuilder;
+use sile_core::builder::{bigskip, smallskip};
+use sile_core::length::Length;
+use sile_core::node::LinkDest;
+use sile_core::references::IndexPage;
 
 /// How page ranges are written (SILE's `page-range-format`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +188,8 @@ mod tests {
     use super::*;
     use crate::class::tests_support::*;
     use crate::class::Plain;
-    use crate::references::{lay_out_until_settled, CrossReferences};
+    use crate::lay_out_until_settled;
+    use sile_core::references::CrossReferences;
 
     fn document(references: Option<CrossReferences>, indexer: &Indexer) -> Result<DocumentBuilder, BuilderError> {
         let mut d = doc(Plain::new());
@@ -213,7 +215,7 @@ mod tests {
         let mut lines = Vec::new();
         for (_, nodes) in &last.content {
             for node in nodes {
-                if let crate::node::Node::VBox(v) = node {
+                if let sile_core::node::Node::VBox(v) = node {
                     let mut text = String::new();
                     collect(&v.nodes, &mut text);
                     lines.push(text);
@@ -223,11 +225,11 @@ mod tests {
         lines
     }
 
-    fn collect(nodes: &[crate::node::Node], out: &mut String) {
+    fn collect(nodes: &[sile_core::node::Node], out: &mut String) {
         for n in nodes {
             match n {
-                crate::node::Node::NNode(n) => out.push_str(&n.text),
-                crate::node::Node::HBox(b) => collect(&b.nodes, out),
+                sile_core::node::Node::NNode(n) => out.push_str(&n.text),
+                sile_core::node::Node::HBox(b) => collect(&b.nodes, out),
                 _ => {}
             }
         }

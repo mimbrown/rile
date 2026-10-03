@@ -1,6 +1,6 @@
 use crate::color::Color;
 use crate::frame::PaperSize;
-use crate::framespec::FrameGeometry;
+use crate::frame::FrameGeometry;
 use crate::length::Length;
 use crate::linebreak::LinebreakSettings;
 use crate::measurement::Measurement;

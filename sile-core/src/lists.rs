@@ -1,6 +1,6 @@
 //! Numbered and bulleted lists (SILE's `lists` package).
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Typesetter};
+use crate::builder::{Arranger, BuilderError, LineSkips, Typesetter};
 use crate::counter::format_number;
 use crate::length::Length;
 use crate::structure::Role;
@@ -89,129 +89,122 @@ pub(crate) struct Lists {
     pub(crate) settings: ListSettings,
 }
 
-impl DocumentBuilder {
-    /// Start a list; items follow with `begin_item` / `end_item`.
-    pub fn begin_list(&mut self, kind: ListKind, options: &ListOptions) -> Result<&mut Self, BuilderError> {
-        let depth = self.lists.levels.iter().filter(|l| l.kind == kind).count() + 1;
-        let mut label = ListLabel::default_for(kind, depth);
-        match &mut label {
-            ListLabel::Number { display, before, after } => {
-                if options.before.is_some() || options.after.is_some() {
-                    *before = options.before.clone().unwrap_or_default();
-                    *after = options.after.clone().unwrap_or_default();
-                }
-                if let Some(d) = &options.display {
-                    *display = d.clone();
-                }
+pub(crate) fn begin_list<A: Arranger + ?Sized>(a: &mut A, kind: ListKind, options: &ListOptions) -> Result<(), BuilderError> {
+    let depth = a.lists.levels.iter().filter(|l| l.kind == kind).count() + 1;
+    let mut label = ListLabel::default_for(kind, depth);
+    match &mut label {
+        ListLabel::Number { display, before, after } => {
+            if options.before.is_some() || options.after.is_some() {
+                *before = options.before.clone().unwrap_or_default();
+                *after = options.after.clone().unwrap_or_default();
             }
-            ListLabel::Bullet(bullet) => {
-                if let Some(b) = &options.bullet {
-                    *bullet = b.clone();
-                }
+            if let Some(d) = &options.display {
+                *display = d.clone();
             }
         }
-        let base_indent = if depth == 1 { self.paragraph_indent() } else { 0.0 };
-        let margin = match kind {
-            ListKind::Enumerate => self.lists.settings.enumerate_margin,
-            ListKind::Itemize => self.lists.settings.itemize_margin,
-        };
-        let indent = self.resolve(margin);
-        self.list_spacing(true, true, 0)?;
-        self.begin_structure(Role::L);
-        let skips = self.line_skips();
-        let saved = (skips, self.paragraph_indent());
-        self.lists.levels.push(ListLevel { kind, label, counter: options.start.map_or(0, |s| s - 1), indent, saved });
-        let left = skips.left + Length::pt(base_indent + indent);
-        self.set_current_indent(Some(0.0)).set_paragraph_indent(0.0).set_line_skips(LineSkips { left, ..skips });
-        Ok(self)
-    }
-
-    pub fn end_list(&mut self) -> Result<&mut Self, BuilderError> {
-        if let Some(level) = self.lists.levels.pop() {
-            let (skips, indent) = level.saved;
-            self.set_line_skips(skips).set_paragraph_indent(indent);
-        }
-        self.list_spacing(true, false, 0)?;
-        self.end_structure();
-        Ok(self)
-    }
-
-    /// Start an item of the innermost list with its label hung in the
-    /// margin; `bullet` overrides the list's bullet for this item.
-    pub fn begin_item(&mut self, bullet: Option<&str>) -> Result<&mut Self, BuilderError> {
-        self.begin_marked_item(bullet, None)
-    }
-
-    /// Start an item marked with a checkbox, ticked when `done`, in place of
-    /// the list's label.
-    pub fn begin_task_item(&mut self, done: bool) -> Result<&mut Self, BuilderError> {
-        self.begin_marked_item(None, Some(done))
-    }
-
-    fn begin_marked_item(&mut self, bullet: Option<&str>, task: Option<bool>) -> Result<&mut Self, BuilderError> {
-        let Some(level) = self.lists.levels.last_mut() else {
-            return Ok(self);
-        };
-        level.counter += 1;
-        let (counter, label, indent) = (level.counter, level.label.clone(), level.indent);
-        self.list_spacing(false, true, counter)?;
-        self.begin_structure(Role::LI).begin_structure(Role::Lbl);
-        let text = match &label {
-            ListLabel::Number { display, before, after } => {
-                format!("{before}{}{after}", format_number(counter, display).unwrap_or_else(|| counter.to_string()))
-            }
-            ListLabel::Bullet(b) => bullet.unwrap_or(b).to_string(),
-        };
-        self.start_hbox();
-        match task {
-            Some(done) => {
-                let size = 0.65 * self.font_spec().map_or(10.0, |f| f.size);
-                let image = SvgImage::parse(if done { CHECKED } else { UNCHECKED }, 72.0);
-                let figure = SvgFigure { scale: size / image.height, image: Arc::new(image), drop: false };
-                self.add_box(HBox { ink: Some(Ink::Svg(figure)), ..HBox::new(Length::pt(size), Length::pt(size), Length::zero()) });
-                self.set_actual_text(if done { "\u{2611}" } else { "\u{2610}" });
-            }
-            None => {
-                self.add_text(text);
+        ListLabel::Bullet(bullet) => {
+            if let Some(b) = &options.bullet {
+                *bullet = b.clone();
             }
         }
-        let mut mark = self.make_hbox()?;
-        let stepback = match label {
-            ListLabel::Number { .. } => indent - self.resolve(self.lists.settings.enumerate_label_indent),
-            ListLabel::Bullet(_) => indent / 2.0 + mark.width.to_pt_abs() / 2.0,
-        };
-        self.add_kern(Length::pt(-stepback));
-        mark.width = Length::pt(stepback);
-        self.add_box(mark);
-        self.end_structure().begin_structure(Role::LBody);
-        Ok(self)
     }
+    let base_indent = if depth == 1 { a.paragraph_indent() } else { 0.0 };
+    let margin = match kind {
+        ListKind::Enumerate => a.lists.settings.enumerate_margin,
+        ListKind::Itemize => a.lists.settings.itemize_margin,
+    };
+    let indent = a.resolve(margin);
+    list_spacing(a, true, true, 0)?;
+    a.begin_structure(Role::L);
+    let skips = a.line_skips();
+    let saved = (skips, a.paragraph_indent());
+    a.lists.levels.push(ListLevel { kind, label, counter: options.start.map_or(0, |s| s - 1), indent, saved });
+    let left = skips.left + Length::pt(base_indent + indent);
+    a.set_current_indent(Some(0.0)).set_paragraph_indent(0.0).set_line_skips(LineSkips { left, ..skips });
+    Ok(())
+}
 
-    pub fn end_item(&mut self) -> Result<&mut Self, BuilderError> {
-        self.set_current_indent(Some(0.0));
-        let counter = self.lists.levels.last().map_or(0, |l| l.counter);
-        self.list_spacing(false, false, counter)?;
-        self.end_structure().end_structure();
-        Ok(self)
+pub(crate) fn end_list<A: Arranger + ?Sized>(a: &mut A) -> Result<(), BuilderError> {
+    if let Some(level) = a.lists.levels.pop() {
+        let (skips, indent) = level.saved;
+        a.set_line_skips(skips).set_paragraph_indent(indent);
     }
+    list_spacing(a, true, false, 0)?;
+    a.end_structure();
+    Ok(())
+}
 
-    /// SILE's `maybeAddListSpacing`.
-    fn list_spacing(&mut self, list: bool, entering: bool, counter: i64) -> Result<(), BuilderError> {
-        let depth = self.lists.levels.len() + usize::from(list);
-        self.leave_hmode(false)?;
-        if entering && !list && (counter != 1 || depth >= 2) {
-            self.push_list_spacing();
+pub(crate) fn begin_item<A: Arranger + ?Sized>(a: &mut A, bullet: Option<&str>) -> Result<(), BuilderError> {
+    begin_marked_item(a, bullet, None)
+}
+
+pub(crate) fn begin_task_item<A: Arranger + ?Sized>(a: &mut A, done: bool) -> Result<(), BuilderError> {
+    begin_marked_item(a, None, Some(done))
+}
+
+fn begin_marked_item<A: Arranger + ?Sized>(a: &mut A, bullet: Option<&str>, task: Option<bool>) -> Result<(), BuilderError> {
+    let Some(level) = a.lists.levels.last_mut() else {
+        return Ok(());
+    };
+    level.counter += 1;
+    let (counter, label, indent) = (level.counter, level.label.clone(), level.indent);
+    list_spacing(a, false, true, counter)?;
+    a.begin_structure(Role::LI).begin_structure(Role::Lbl);
+    let text = match &label {
+        ListLabel::Number { display, before, after } => {
+            format!("{before}{}{after}", format_number(counter, display).unwrap_or_else(|| counter.to_string()))
         }
-        if !entering && list {
-            self.push_list_spacing();
-            if depth == 1
-                && let Some(i) = self.lists.spacing
-            {
-                self.remove_vertical(i - 1, Node::is_vglue);
-            }
+        ListLabel::Bullet(b) => bullet.unwrap_or(b).to_string(),
+    };
+    a.start_hbox();
+    match task {
+        Some(done) => {
+            let size = 0.65 * a.font_spec().map_or(10.0, |f| f.size);
+            let image = SvgImage::parse(if done { CHECKED } else { UNCHECKED }, 72.0);
+            let figure = SvgFigure { scale: size / image.height, image: Arc::new(image), drop: false };
+            a.add_box(HBox { ink: Some(Ink::Svg(figure)), ..HBox::new(Length::pt(size), Length::pt(size), Length::zero()) });
+            a.set_actual_text(if done { "\u{2611}" } else { "\u{2610}" });
         }
-        Ok(())
+        None => {
+            a.add_text(text);
+        }
     }
+    let mut mark = a.make_hbox()?;
+    let stepback = match label {
+        ListLabel::Number { .. } => indent - a.resolve(a.lists.settings.enumerate_label_indent),
+        ListLabel::Bullet(_) => indent / 2.0 + mark.width.to_pt_abs() / 2.0,
+    };
+    a.add_kern(Length::pt(-stepback));
+    mark.width = Length::pt(stepback);
+    a.add_box(mark);
+    a.end_structure().begin_structure(Role::LBody);
+    Ok(())
+}
+
+pub(crate) fn end_item<A: Arranger + ?Sized>(a: &mut A) -> Result<(), BuilderError> {
+    a.set_current_indent(Some(0.0));
+    let counter = a.lists.levels.last().map_or(0, |l| l.counter);
+    list_spacing(a, false, false, counter)?;
+    a.end_structure().end_structure();
+    Ok(())
+}
+
+/// SILE's `maybeAddListSpacing`.
+fn list_spacing<A: Arranger + ?Sized>(a: &mut A, list: bool, entering: bool, counter: i64) -> Result<(), BuilderError> {
+    let depth = a.lists.levels.len() + usize::from(list);
+    a.leave_hmode(false)?;
+    if entering && !list && (counter != 1 || depth >= 2) {
+        a.push_list_spacing();
+    }
+    if !entering && list {
+        a.push_list_spacing();
+        if depth == 1
+            && let Some(i) = a.lists.spacing
+        {
+            a.remove_vertical(i - 1, Node::is_vglue);
+        }
+    }
+    Ok(())
 }
 
 impl Typesetter {

@@ -1,4 +1,5 @@
-use sile_core::builder::{Arranger, DocumentBuilder, Galley, Typesetter};
+use sile_core::builder::{Arranger, Galley, Typesetter};
+use sile_pages::DocumentBuilder;
 use sile_core::color::Color;
 use sile_core::font::FontSpec;
 use sile_core::frame::PaperSize;

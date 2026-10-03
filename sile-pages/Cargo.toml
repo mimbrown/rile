@@ -1,0 +1,13 @@
+[package]
+name = "sile-pages"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+harfbuzz = ["sile-core/harfbuzz"]
+
+[dependencies]
+sile-core = { path = "../sile-core" }
+cassowary = "0.3"
+icu_collator = "2.3.1"
+icu_locale = "2.3.1"

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use sile_core::builder::Layout;
 use sile_core::color::Color;
 use sile_core::font::{FontFace, Variations};
-use sile_core::framespec::FrameGeometry;
+use sile_core::frame::FrameGeometry;
 use sile_core::image::{Image, ImageFormat};
 use sile_core::node::{LinkDest, NNode};
 use sile_core::render::{Canvas, draw_pages};

@@ -3,14 +3,15 @@
 
 use std::any::Any;
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
-use crate::counter::PageNumber;
-use crate::date::DateTime;
-use crate::font::{FontSpec, FontStyle, FontWeight};
-use crate::framespec::{FrameDirection, FrameSpec};
-use crate::length::Length;
-use crate::measurement::Measurement;
-use crate::structure::Role;
+use sile_core::builder::{bigskip, medskip, smallskip, with_font, Arranger, BuilderError, Context, LineSkips, Material, TextAlign};
+use crate::DocumentBuilder;
+use sile_core::counter::PageNumber;
+use sile_core::date::DateTime;
+use sile_core::font::{FontSpec, FontStyle, FontWeight};
+use crate::framespec::FrameSpec;
+use sile_core::frame::FrameDirection;
+use sile_core::length::Length;
+use sile_core::structure::Role;
 
 /// The frames of a page and the one content starts in.
 #[derive(Debug, Clone, PartialEq)]
@@ -220,33 +221,33 @@ impl Letter {
     /// Paragraphs are not indented from here on.
     pub fn letter<C, E>(ctx: &mut C, parts: LetterParts<'_, C, E>, body: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context<Arranger = DocumentBuilder>,
         E: From<BuilderError>,
     {
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         doc.set_paragraph_indent(0.0).set_current_indent(Some(0.0));
         let saved = doc.settings().clone();
         let skips = doc.line_skips().aligned(TextAlign::Left);
         doc.set_line_skips(skips);
         let result = Self::parts(ctx, parts, body);
-        ctx.as_mut().restore_settings(saved);
+        ctx.arranger().restore_settings(saved);
         result
     }
 
     fn parts<C, E>(ctx: &mut C, parts: LetterParts<'_, C, E>, body: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context<Arranger = DocumentBuilder>,
         E: From<BuilderError>,
     {
-        let skip = |ctx: &mut C| ctx.as_mut().add_explicit_vskip(bigskip()).map(|_| ());
+        let skip = |ctx: &mut C| ctx.arranger().add_explicit_vskip(bigskip()).map(|_| ());
         match parts.date {
             Some(date) => date(ctx)?,
             None => {
                 let today = DateTime::now_utc().format("%A, %d %B").expect("valid format");
-                ctx.as_mut().add_text(today);
+                ctx.arranger().add_text(today);
             }
         }
-        ctx.as_mut().new_paragraph()?;
+        ctx.arranger().new_paragraph()?;
         skip(ctx)?;
         if let Some(sender) = parts.sender {
             sender(ctx)?;
@@ -259,7 +260,7 @@ impl Letter {
             skip(ctx)?;
         }
         body(ctx)?;
-        ctx.as_mut().new_paragraph()?;
+        ctx.arranger().new_paragraph()?;
         Ok(())
     }
 }
@@ -401,14 +402,14 @@ impl DocumentClass for Pecha {
         doc.use_toplevel().start_hbox().add_text(tibetan_number(self.folio.value));
         let number = doc.make_hbox();
         doc.restore_settings(saved);
-        let number = crate::transform::rotated(number?, -90.0);
+        let number = sile_core::transform::rotated(number?, -90.0);
         let pt = |l: &Length| l.length.to_pt().unwrap_or(0.0);
         let (width, height, depth) = (pt(&number.width), pt(&number.height), pt(&number.depth));
         let x = frame.left + (frame.width() - width) / 2.0;
         let baseline = frame.top + (frame.height() - height - depth) / 2.0 + height;
-        let mut folio = crate::node::HBox::new(number.width, number.height, number.depth);
-        folio.nodes.push(crate::node::Node::HBox(number));
-        doc.add_overlay(crate::pagebuilder::Underlay::Box(folio, [x, baseline]))?;
+        let mut folio = sile_core::node::HBox::new(number.width, number.height, number.depth);
+        folio.nodes.push(sile_core::node::Node::HBox(number));
+        doc.add_overlay(sile_core::pagebuilder::Underlay::Box(folio, [x, baseline]))?;
         Ok(())
     }
 
@@ -600,38 +601,6 @@ impl Default for Heading {
     }
 }
 
-/// SILE's `plain.bigskipamount` and friends.
-pub fn bigskip() -> Length {
-    Length::new(Measurement::pt(12.0), Measurement::pt(4.0), Measurement::pt(4.0))
-}
-
-pub fn medskip() -> Length {
-    Length::new(Measurement::pt(6.0), Measurement::pt(2.0), Measurement::pt(2.0))
-}
-
-pub fn smallskip() -> Length {
-    Length::new(Measurement::pt(3.0), Measurement::pt(1.0), Measurement::pt(1.0))
-}
-
-/// Run `body` with the font changed by `font`, then put the font back.
-pub fn with_font<C, E>(
-    ctx: &mut C,
-    font: impl FnOnce(&mut FontSpec),
-    body: impl FnOnce(&mut C) -> Result<(), E>,
-) -> Result<(), E>
-where
-    C: AsMut<DocumentBuilder>,
-    E: From<BuilderError>,
-{
-    let saved = ctx.as_mut().font_spec().cloned();
-    ctx.as_mut().update_font(font)?;
-    let result = body(ctx);
-    if let Some(saved) = saved {
-        ctx.as_mut().set_font_spec(saved)?;
-    }
-    result
-}
-
 fn bold(size: f64) -> impl FnOnce(&mut FontSpec) {
     move |f| {
         f.weight = FontWeight(800);
@@ -660,11 +629,11 @@ fn sectioning(doc: &mut DocumentBuilder, heading: Heading, level: usize, msg: Op
 /// What `title` sets, as text for the table of contents.
 fn title_text<C, E>(ctx: &mut C, title: &mut impl FnMut(&mut C) -> Result<(), E>) -> Result<String, E>
 where
-    C: AsMut<DocumentBuilder>,
+    C: Context<Arranger = DocumentBuilder>,
 {
-    ctx.as_mut().begin_capture();
+    ctx.arranger().begin_capture();
     let result = title(ctx);
-    let text = ctx.as_mut().end_capture().text();
+    let text = ctx.arranger().end_capture().text();
     result.map(|_| text)
 }
 
@@ -677,10 +646,10 @@ impl Book {
     /// make the title the left running head (SILE's `\chapter`).
     pub fn chapter<C, E>(ctx: &mut C, heading: Heading, mut title: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context<Arranger = DocumentBuilder>,
         E: From<BuilderError>,
     {
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         doc.new_paragraph()?;
         if book(doc).chapters_open_spread {
             Book::open_spread(doc, true, false, true)?;
@@ -689,20 +658,20 @@ impl Book {
         book(doc).right_head = None;
         *doc.counter_mut("footnote") = 1;
         let label = title_text(ctx, &mut title)?;
-        ctx.as_mut().begin_structure(Role::H1);
+        ctx.arranger().begin_structure(Role::H1);
         with_font(ctx, bold(22.0), |ctx| {
-            sectioning(ctx.as_mut(), heading, 1, Some("book-chapter-title"), label);
+            sectioning(ctx.arranger(), heading, 1, Some("book-chapter-title"), label);
             Ok(())
         })?;
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         book(doc).folio.state = FolioState::OffThisPage;
         Self::chapter_post(doc)?;
         let titled = with_font(ctx, bold(22.0), &mut title);
-        ctx.as_mut().end_structure();
+        ctx.arranger().end_structure();
         titled?;
-        ctx.as_mut().begin_capture();
+        ctx.arranger().begin_capture();
         let captured = with_font(ctx, |f| f.size = 9.0, &mut title);
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         let head = doc.end_capture();
         captured?;
         book(doc).left_head = Some(head);
@@ -719,21 +688,21 @@ impl Book {
     /// head while folios are shown (SILE's `\section`).
     pub fn section<C, E>(ctx: &mut C, heading: Heading, mut title: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context<Arranger = DocumentBuilder>,
         E: From<BuilderError>,
     {
-        Self::heading_start(ctx.as_mut(), bigskip())?;
+        Self::heading_start(ctx.arranger(), bigskip())?;
         let label = title_text(ctx, &mut title)?;
-        ctx.as_mut().begin_structure(Role::H2);
+        ctx.arranger().begin_structure(Role::H2);
         let titled = with_font(ctx, bold(15.0), |ctx| {
-            sectioning(ctx.as_mut(), heading, 2, None, label);
-            ctx.as_mut().add_text(" ");
+            sectioning(ctx.arranger(), heading, 2, None, label);
+            ctx.arranger().add_text(" ");
             title(ctx)
         });
-        ctx.as_mut().end_structure();
+        ctx.arranger().end_structure();
         titled?;
-        if book(ctx.as_mut()).folio.state == FolioState::On {
-            ctx.as_mut().begin_capture();
+        if book(ctx.arranger()).folio.state == FolioState::On {
+            ctx.arranger().begin_capture();
             let captured = with_font(
                 ctx,
                 |f| {
@@ -741,7 +710,7 @@ impl Book {
                     f.style = FontStyle::Italic;
                 },
                 |ctx| {
-                    let doc = ctx.as_mut();
+                    let doc = ctx.arranger();
                     let skips = doc.line_skips();
                     doc.set_line_skips(skips.aligned(TextAlign::Right));
                     if heading.numbering {
@@ -749,36 +718,36 @@ impl Book {
                         doc.add_text(number).add_text(" ");
                     }
                     let result = title(ctx);
-                    let doc = ctx.as_mut();
+                    let doc = ctx.arranger();
                     doc.new_paragraph()?;
                     doc.set_line_skips(skips);
                     result
                 },
             );
-            let head = ctx.as_mut().end_capture();
+            let head = ctx.arranger().end_capture();
             captured?;
-            book(ctx.as_mut()).right_head = Some(head);
+            book(ctx.arranger()).right_head = Some(head);
         }
-        Ok(Self::heading_end(ctx.as_mut())?)
+        Ok(Self::heading_end(ctx.arranger())?)
     }
 
     /// A numbered subsection heading (SILE's `\subsection`).
     pub fn subsection<C, E>(ctx: &mut C, heading: Heading, mut title: impl FnMut(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context<Arranger = DocumentBuilder>,
         E: From<BuilderError>,
     {
-        Self::heading_start(ctx.as_mut(), medskip())?;
+        Self::heading_start(ctx.arranger(), medskip())?;
         let label = title_text(ctx, &mut title)?;
-        ctx.as_mut().begin_structure(Role::H3);
+        ctx.arranger().begin_structure(Role::H3);
         let titled = with_font(ctx, bold(12.0), |ctx| {
-            sectioning(ctx.as_mut(), heading, 3, None, label);
-            ctx.as_mut().add_text(" ");
+            sectioning(ctx.arranger(), heading, 3, None, label);
+            ctx.arranger().add_text(" ");
             title(ctx)
         });
-        ctx.as_mut().end_structure();
+        ctx.arranger().end_structure();
         titled?;
-        Ok(Self::heading_end(ctx.as_mut())?)
+        Ok(Self::heading_end(ctx.arranger())?)
     }
 
     /// Between a chapter's number and its title: a new unindented
@@ -862,10 +831,10 @@ impl DocumentClass for Book {
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
-    use crate::font::FontSpec;
-    use crate::frame::PaperSize;
-    use crate::node::Node;
-    use crate::pagebuilder::Page;
+    use sile_core::font::FontSpec;
+    use sile_core::frame::PaperSize;
+    use sile_core::node::Node;
+    use sile_core::pagebuilder::Page;
 
     pub fn gentium() -> Vec<u8> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts/gentium-plus-5.000/GentiumPlus-R.ttf");
@@ -905,8 +874,8 @@ pub(crate) mod tests_support {
 mod tests {
     use super::tests_support::*;
     use super::*;
-    use crate::frame::PaperSize;
-    use crate::pagebuilder::Page;
+    use sile_core::frame::PaperSize;
+    use sile_core::pagebuilder::Page;
 
     fn fill_pages(doc: &mut DocumentBuilder, pages: usize) {
         for _ in 0..pages {
@@ -967,8 +936,8 @@ mod footnote_tests {
     use super::tests_support::*;
     use super::*;
     use crate::insertion::InsertionClass;
-    use crate::length::Length;
-    use crate::node::Node;
+    use sile_core::length::Length;
+    use sile_core::node::Node;
 
     fn footnote(d: &mut DocumentBuilder, text: &str) {
         d.push_typesetter(Some("footnotes")).unwrap();
@@ -1181,10 +1150,10 @@ mod pecha_tests {
         d.add_text("More.");
         let pages = d.into_pages().unwrap();
         assert_eq!(pages.len(), 2);
-        let crate::pagebuilder::Underlay::Box(folio, [x, _]) = &pages[1].overlay[0] else { panic!("no folio") };
-        let crate::node::Node::HBox(number) = &folio.nodes[0] else { panic!("no number") };
+        let sile_core::pagebuilder::Underlay::Box(folio, [x, _]) = &pages[1].overlay[0] else { panic!("no folio") };
+        let sile_core::node::Node::HBox(number) = &folio.nodes[0] else { panic!("no number") };
         let text: String = number.nodes.iter().filter_map(|n| match n {
-            crate::node::Node::NNode(n) => Some(n.text.to_string()),
+            sile_core::node::Node::NNode(n) => Some(n.text.to_string()),
             _ => None,
         }).collect();
         assert_eq!(text, "༢");

@@ -3,7 +3,7 @@
 //! content drawn for it, so that screen readers and text extraction can
 //! follow the document in reading order.
 
-use crate::builder::{BuilderError, DocumentBuilder, Typesetter};
+use crate::builder::{Arranger, BuilderError, Typesetter};
 
 /// The standard structure types of PDF 1.7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -376,20 +376,18 @@ impl Typesetter {
     }
 }
 
-impl DocumentBuilder {
-    pub fn with_structure<T>(&mut self, role: Role, f: impl FnOnce(&mut Self) -> Result<T, BuilderError>) -> Result<T, BuilderError> {
-        self.begin_structure(role);
-        let result = f(self);
-        self.end_structure();
-        result
-    }
+pub(crate) fn with_structure<T, A: Arranger + ?Sized>(a: &mut A, role: Role, f: impl FnOnce(&mut A) -> Result<T, BuilderError>) -> Result<T, BuilderError> {
+    a.begin_structure(role);
+    let result = f(a);
+    a.end_structure();
+    result
+}
 
-    pub fn untagged<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        self.untagged += 1;
-        let result = f(self);
-        self.untagged -= 1;
-        result
-    }
+pub(crate) fn untagged<T, A: Arranger + ?Sized>(a: &mut A, f: impl FnOnce(&mut A) -> T) -> T {
+    a.untagged += 1;
+    let result = f(a);
+    a.untagged -= 1;
+    result
 }
 
 #[cfg(test)]

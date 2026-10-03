@@ -613,7 +613,7 @@ fn moves(value: &ValueRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::class::tests_support::gentium;
+    use crate::test_support::gentium;
 
     fn pieces(text: &str, sticky: &str) -> Vec<String> {
         let sticky: BTreeSet<char> = sticky.chars().collect();

@@ -1,13 +1,14 @@
 //! Tables of contents, set from the entries the previous pass found (SILE's
 //! `tableofcontents` package).
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
-use crate::class::{bigskip, medskip, smallskip, with_font};
-use crate::font::{FontSpec, FontWeight};
-use crate::length::Length;
-use crate::node::LinkDest;
-use crate::references::TocEntry;
-use crate::structure::Role;
+use sile_core::builder::{Arranger, BuilderError, LineSkips};
+use crate::DocumentBuilder;
+use sile_core::builder::{bigskip, medskip, smallskip, with_font};
+use sile_core::font::{FontSpec, FontWeight};
+use sile_core::length::Length;
+use sile_core::node::LinkDest;
+use sile_core::references::TocEntry;
+use sile_core::structure::Role;
 
 type Content<'a> = &'a mut dyn FnMut(&mut DocumentBuilder) -> Result<(), BuilderError>;
 
@@ -145,7 +146,8 @@ mod tests {
     use super::*;
     use crate::class::tests_support::*;
     use crate::class::{Book, Heading};
-    use crate::references::{lay_out_until_settled, CrossReferences};
+    use crate::lay_out_until_settled;
+    use sile_core::references::CrossReferences;
 
     fn book(references: Option<CrossReferences>) -> Result<DocumentBuilder, BuilderError> {
         let mut d = doc(Book::new());

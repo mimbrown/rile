@@ -23,17 +23,7 @@ impl DerefMut for Galley {
     }
 }
 
-impl AsMut<Galley> for Galley {
-    fn as_mut(&mut self) -> &mut Galley {
-        self
-    }
-}
-
-impl Arranger for Galley {
-    fn typesetter(&mut self) -> &mut Typesetter {
-        &mut self.ts
-    }
-}
+impl Arranger for Galley {}
 
 impl Default for Galley {
     fn default() -> Self {
@@ -50,6 +40,12 @@ impl Galley {
     pub fn with_typesetter(mut ts: Typesetter, measure: Option<f64>) -> Self {
         ts.frame.line_length = measure.unwrap_or(f64::INFINITY);
         Self { ts }
+    }
+
+    /// The direction lines run in, and follow each other in.
+    pub fn set_direction(&mut self, direction: impl Into<FrameDirection>) -> &mut Self {
+        self.ts.frame.direction = direction.into();
+        self
     }
 
     pub fn into_typesetter(self) -> Typesetter {
@@ -112,16 +108,8 @@ impl Galley {
                 page
             })
             .collect::<Vec<_>>();
-        Layout {
-            paper: pages.first().map_or(PaperSize { width: 0.0, height: 0.0 }, |p| p.paper),
-            pages,
-            references: CrossReferences::default(),
-            consulted_references: false,
-            fonts: self.ts.fonts,
-            bookmarks: Vec::new(),
-            metadata: Metadata::default(),
-            structure: self.ts.structure,
-        }
+        let paper = pages.first().map_or(PaperSize { width: 0.0, height: 0.0 }, |p| p.paper);
+        self.ts.into_layout(paper, pages)
     }
 }
 
@@ -138,7 +126,7 @@ mod tests {
     fn galley(measure: Option<f64>) -> Galley {
         let mut galley = Galley::new(measure);
         let spec = FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() };
-        galley.load_font_data("body", crate::class::tests_support::gentium(), spec).unwrap();
+        galley.load_font_data("body", crate::test_support::gentium(), spec).unwrap();
         galley.set_font("body");
         galley
     }
@@ -190,6 +178,24 @@ mod tests {
         assert!(per_frame.len() > 1, "{per_frame:?}");
         assert_eq!(per_frame.iter().sum::<usize>(), all);
         assert!(layout.pages.iter().all(|p| p.paper.height == 30.0));
+    }
+
+    #[test]
+    fn lists_and_tables_are_set_in_a_galley_too() {
+        use crate::lists::{ListKind, ListOptions};
+        use crate::table::CellAlign;
+        let mut g = galley(Some(200.0));
+        g.begin_list(ListKind::Itemize, &ListOptions::default()).unwrap();
+        g.begin_item(None).unwrap().add_text("An item");
+        g.end_item().unwrap().end_list().unwrap();
+        g.begin_table(&[CellAlign::Left, CellAlign::Right]).unwrap();
+        g.begin_table_row(false);
+        g.begin_table_cell().add_text("cell");
+        g.end_table_cell();
+        g.end_table_row();
+        g.end_table().unwrap();
+        let text = crate::test_support::text_in(&g.lay_out().unwrap().pages[0], "content");
+        assert!(text.contains("Anitem") && text.contains("cell"), "{text}");
     }
 
     fn galley_nodes(text: &str) -> Vec<Node> {

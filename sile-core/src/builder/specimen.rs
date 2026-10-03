@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{Arranger, BuilderError, DocumentBuilder, Inline, Typesetter};
+use super::{Arranger, BuilderError, Inline, Typesetter};
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::{GlyphData, NNode, Node};
@@ -36,42 +36,38 @@ impl Typesetter {
     }
 }
 
-impl DocumentBuilder {
-    /// Six pangrams, then a big skip (SILE's `\pangrams`).
-    pub fn add_pangrams(&mut self) -> Result<&mut Self, BuilderError> {
-        for pangram in PANGRAMS {
-            self.add_text(format!("{pangram} "));
-        }
-        self.add_explicit_vskip(crate::class::bigskip())
+pub(crate) fn add_pangrams<A: Arranger + ?Sized>(a: &mut A) -> Result<(), BuilderError> {
+    for pangram in PANGRAMS {
+        a.add_text(format!("{pangram} "));
     }
+    a.add_explicit_vskip(super::bigskip())?;
+    Ok(())
+}
 
-    /// Set each line of `text` as an unindented paragraph of its own, in the
-    /// current font scaled to make it `width` wide (SILE's `\set-to-width`).
-    pub fn set_to_width(&mut self, width: f64, text: &str) -> Result<&mut Self, BuilderError> {
-        let name = self.settings.font.clone().ok_or_else(|| BuilderError::NoFont(String::new()))?;
-        for line in text.split('\n').filter(|l| !l.is_empty()) {
-            let font = self.fonts.get(&name).ok_or_else(|| BuilderError::NoFont(name.clone()))?;
-            let natural: f64 = crate::word_shaping::shape(&*self.shaper, line, &font.face, &font.spec).iter().map(|g| g.width).sum();
-            let size = font.spec.size;
-            self.set_current_indent(Some(0.0));
-            self.set_font_size(size * width / natural)?;
-            self.add_text(line);
-            let ended = self.new_paragraph().map(|_| ());
-            self.set_font_size(size)?;
-            ended?;
-        }
-        Ok(self)
+pub(crate) fn set_to_width<A: Arranger + ?Sized>(a: &mut A, width: f64, text: &str) -> Result<(), BuilderError> {
+    let name = a.settings.font.clone().ok_or_else(|| BuilderError::NoFont(String::new()))?;
+    for line in text.split('\n').filter(|l| !l.is_empty()) {
+        let font = a.fonts.get(&name).ok_or_else(|| BuilderError::NoFont(name.clone()))?;
+        let natural: f64 = crate::word_shaping::shape(&*a.shaper, line, &font.face, &font.spec).iter().map(|g| g.width).sum();
+        let size = font.spec.size;
+        a.set_current_indent(Some(0.0));
+        a.set_font_size(size * width / natural)?;
+        a.add_text(line);
+        let ended = a.new_paragraph().map(|_| ());
+        a.set_font_size(size)?;
+        ended?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::class::tests_support::*;
-    use crate::class::Plain;
+    use crate::test_support::*;
+    use crate::builder::Arranger;
     use crate::node::Node;
 
-    fn lines(doc: crate::builder::DocumentBuilder) -> Vec<crate::node::VBox> {
-        let pages = doc.into_pages().unwrap();
+    fn lines(doc: crate::builder::Galley) -> Vec<crate::node::VBox> {
+        let pages = doc.lay_out().unwrap().pages;
         pages.into_iter().flat_map(|p| p.content).filter(|(id, _)| id == "content").flat_map(|(_, n)| n).filter_map(|n| match n {
             Node::VBox(v) => Some(v),
             _ => None,
@@ -80,7 +76,7 @@ mod tests {
 
     #[test]
     fn the_repertoire_shows_every_glyph_but_notdef() {
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         let glyphs = d.fonts.values().next().unwrap().face.glyph_count() as usize;
         d.add_repertoire().unwrap();
         let shown: usize = lines(d).iter().map(|l| l.nodes.iter().filter(|n| n.is_nnode()).count()).sum();
@@ -89,7 +85,7 @@ mod tests {
 
     #[test]
     fn lines_set_to_width_fill_it() {
-        let mut d = doc(Plain::new());
+        let mut d = galley();
         d.set_to_width(200.0, "Gentium\nPlus").unwrap();
         let lines = lines(d);
         assert_eq!(lines.len(), 2);
