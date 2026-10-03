@@ -1,7 +1,7 @@
 //! Boxes drawn rotated or scaled (SILE's `rotate` and `scalebox` packages),
 //! and tables of boxes in columns (SILE's `simpletable`).
 
-use crate::builder::{BuilderError, DocumentBuilder};
+use crate::builder::{BuilderError, DocumentBuilder, Typesetter};
 use crate::class::smallskip;
 use crate::length::Length;
 use crate::node::{HBox, Ink};
@@ -60,7 +60,7 @@ pub fn rotated(hbox: HBox, degrees: f64) -> HBox {
     }
 }
 
-impl DocumentBuilder {
+impl Typesetter {
     /// Add `hbox` turned clockwise by `degrees`, taking up the space it then
     /// covers (SILE's `\rotate`).
     pub fn add_rotated(&mut self, hbox: HBox, degrees: f64) -> &mut Self {
@@ -82,7 +82,9 @@ impl DocumentBuilder {
         };
         Ok(self.add_box(scaled))
     }
+}
 
+impl DocumentBuilder {
     /// Set `rows` of cells as a table: each column as wide as its widest
     /// cell, a small skip after each row (SILE's `simpletable`).
     pub fn add_simple_table(&mut self, rows: Vec<Vec<HBox>>) -> Result<&mut Self, BuilderError> {

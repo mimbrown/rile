@@ -59,7 +59,7 @@ impl Cropmarks {
 
         let saved = doc.settings().clone();
         doc.start_hbox();
-        let header = doc.update_font(|f| f.size = 6.0).and_then(|doc| (self.header)(doc, sheet));
+        let header = doc.update_font(|f| f.size = 6.0).map(|_| ()).and_then(|_| (self.header)(doc, sheet));
         let hbox = doc.make_hbox();
         doc.restore_settings(saved);
         header?;

@@ -1,6 +1,6 @@
 //! Line breaks in URLs (SILE's `url` package).
 
-use crate::builder::DocumentBuilder;
+use crate::builder::Typesetter;
 
 /// A stretch of a URL, or a break point within it.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +55,7 @@ pub fn url_pieces(url: &str, penalties: UrlPenalties) -> Vec<UrlPiece<'_>> {
     out
 }
 
-impl DocumentBuilder {
+impl Typesetter {
     /// Add `url` with break points, unhyphenated, in the current font.
     pub fn add_url(&mut self, url: &str, penalties: UrlPenalties) -> &mut Self {
         let language = self.language().to_string();

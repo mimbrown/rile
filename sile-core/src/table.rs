@@ -2,7 +2,7 @@
 //! the header rows.
 
 use crate::class::medskip;
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material};
+use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, Typesetter};
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::{HBox, Node, VBox};
@@ -22,16 +22,7 @@ pub(crate) struct TableState {
     rows: Vec<(bool, Vec<Material>)>,
 }
 
-impl DocumentBuilder {
-    /// Start a table with these columns; rows are added with
-    /// `begin_table_row` and laid out at `end_table`.
-    pub fn begin_table(&mut self, columns: &[CellAlign]) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode(false)?;
-        self.begin_structure(Role::Table);
-        self.tables.push(TableState { columns: columns.to_vec(), rows: Vec::new() });
-        Ok(self)
-    }
-
+impl Typesetter {
     /// Start a row; header rows' cells are column headers.
     pub fn begin_table_row(&mut self, header: bool) -> &mut Self {
         if let Some(table) = self.tables.last_mut() {
@@ -56,6 +47,17 @@ impl DocumentBuilder {
 
     pub fn end_table_row(&mut self) -> &mut Self {
         self.end_structure()
+    }
+}
+
+impl DocumentBuilder {
+    /// Start a table with these columns; rows are added with
+    /// `begin_table_row` and laid out at `end_table`.
+    pub fn begin_table(&mut self, columns: &[CellAlign]) -> Result<&mut Self, BuilderError> {
+        self.leave_hmode(false)?;
+        self.begin_structure(Role::Table);
+        self.tables.push(TableState { columns: columns.to_vec(), rows: Vec::new() });
+        Ok(self)
     }
 
     /// Set the table: columns at their natural widths when they fit,

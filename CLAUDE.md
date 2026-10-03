@@ -9,6 +9,10 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 * `sile-cli`: the `sile` command, which typesets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) to tagged, accessible PDF through the builder API
 * `sile-parity`: test-only tool that runs SILE's regression tests through `sile-core` and compares layouts with SILE's expected output
 
+## Typesetter and paginator
+
+`sile_core::builder::Typesetter` turns text and settings into lines and a vertical list without knowing about pages: lines are set to its `FrameContext` (measure, direction, tate). `DocumentBuilder` (`builder/paginator.rs`) wraps it, derefs to it, and owns everything that knows about pages: frames, templates, classes, insertions, page breaking, parallel flows and references. It calls `sync_frame` whenever the frame being filled changes. Vertical-mode commands (`new_paragraph`, `add_vskip`, ...) are on `DocumentBuilder` because they build pages.
+
 ## Features
 
 * Default builds are pure Rust (rustybuzz). `--features harfbuzz` links system HarfBuzz, needed for Graphite fonts.

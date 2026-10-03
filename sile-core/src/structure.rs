@@ -3,7 +3,7 @@
 //! content drawn for it, so that screen readers and text extraction can
 //! follow the document in reading order.
 
-use crate::builder::{BuilderError, DocumentBuilder};
+use crate::builder::{BuilderError, DocumentBuilder, Typesetter};
 
 /// The standard structure types of PDF 1.7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -263,7 +263,7 @@ impl StructTree {
     }
 }
 
-impl DocumentBuilder {
+impl Typesetter {
     /// Tag the PDF with the document's structure, for accessibility. Turn
     /// it on before adding content.
     pub fn set_tagged(&mut self, tagged: bool) -> &mut Self {
@@ -373,6 +373,22 @@ impl DocumentBuilder {
 
     pub(crate) fn is_untagged(&self) -> bool {
         self.untagged > 0
+    }
+}
+
+impl DocumentBuilder {
+    pub fn with_structure<T>(&mut self, role: Role, f: impl FnOnce(&mut Self) -> Result<T, BuilderError>) -> Result<T, BuilderError> {
+        self.begin_structure(role);
+        let result = f(self);
+        self.end_structure();
+        result
+    }
+
+    pub fn untagged<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.untagged += 1;
+        let result = f(self);
+        self.untagged -= 1;
+        result
     }
 }
 

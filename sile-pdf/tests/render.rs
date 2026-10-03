@@ -21,7 +21,8 @@ fn doc(class: impl DocumentClass + 'static) -> DocumentBuilder {
     let spec = FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() };
     doc.load_font_data("body", gentium(), spec).unwrap();
     doc.load_fonts_dir(FONTS);
-    doc.set_font("body").set_class(class);
+    doc.set_font("body");
+    doc.set_class(class);
     doc
 }
 
@@ -102,7 +103,8 @@ fn pages_are_centred_on_their_sheets() {
 
 fn tagged_book() -> String {
     let mut d = doc(Book::new());
-    d.set_tagged(true).set_title("Tagged");
+    d.set_tagged(true);
+    d.set_title("Tagged");
     Book::chapter(&mut d, Heading::default(), |d: &mut DocumentBuilder| -> Result<(), BuilderError> {
         d.add_text("Openings");
         Ok(())
