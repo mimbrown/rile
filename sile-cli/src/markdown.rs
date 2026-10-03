@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use sile_core::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
-use sile_core::class::{bigskip, medskip, smallskip, with_font, Book, Heading};
+use sile_core::builder::{Arranger, BuilderError, Context, LineSkips};
+use sile_pages::DocumentBuilder;
+use sile_core::builder::{bigskip, medskip, smallskip, with_font};
+use sile_pages::class::{Book, Heading};
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::image::Image;
 use sile_core::length::Length;
@@ -30,8 +32,10 @@ pub struct Markdown<'a> {
     pub warnings: Vec<String>,
 }
 
-impl AsMut<DocumentBuilder> for Markdown<'_> {
-    fn as_mut(&mut self) -> &mut DocumentBuilder {
+impl Context for Markdown<'_> {
+    type Arranger = DocumentBuilder;
+
+    fn arranger(&mut self) -> &mut DocumentBuilder {
         &mut self.doc
     }
 }
@@ -350,10 +354,10 @@ impl<'a> Markdown<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sile_core::class::Plain;
+    use sile_pages::class::Plain;
     use sile_core::frame::PaperSize;
 
-    fn trace(class: impl sile_core::class::DocumentClass, src: &str) -> (String, Vec<String>) {
+    fn trace(class: impl sile_pages::class::DocumentClass, src: &str) -> (String, Vec<String>) {
         let mut doc = DocumentBuilder::new(PaperSize::A5);
         doc.set_class(class);
         doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts"));

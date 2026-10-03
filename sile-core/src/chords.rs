@@ -1,10 +1,10 @@
 //! Chord names set above lyrics (SILE's `chordmode` package).
 
-use crate::builder::{BuilderError, DocumentBuilder};
+use crate::builder::{Arranger, BuilderError, Context, Typesetter};
 use crate::length::Length;
 
 /// How far above the lyric's baseline chords sit by default: two ex.
-pub fn default_offset(doc: &DocumentBuilder) -> f64 {
+pub fn default_offset(doc: &Typesetter) -> f64 {
     2.0 * doc.x_height()
 }
 
@@ -19,12 +19,12 @@ pub fn add_chord<C, E>(
     lyric: impl FnOnce(&mut C) -> Result<(), E>,
 ) -> Result<(), E>
 where
-    C: AsMut<DocumentBuilder>,
+    C: Context,
     E: From<BuilderError>,
 {
-    ctx.as_mut().start_hbox();
+    ctx.arranger().start_hbox();
     chord(ctx)?;
-    let doc = ctx.as_mut();
+    let doc = ctx.arranger();
     let mut chord_box = doc.make_hbox()?;
     let chord_width = pt(&chord_box.width);
     chord_box.width = Length::zero();
@@ -32,7 +32,7 @@ where
     doc.add_baseline_shift(offset).add_box(chord_box).add_baseline_shift(-offset);
     doc.start_hbox();
     lyric(ctx)?;
-    let doc = ctx.as_mut();
+    let doc = ctx.arranger();
     let mut lyric_box = doc.make_hbox()?;
     if pt(&lyric_box.width) < chord_width {
         let em = doc.font_spec().map_or(10.0, |f| f.size);
@@ -48,13 +48,13 @@ where
 /// Typeset lyrics with chords written inline, `I’ve be<G>en a wild
 /// rover` (SILE's `chordmode`), each chord above the text up to the next
 /// chord or the end of the line.
-pub fn add_chord_lyrics(doc: &mut DocumentBuilder, lyrics: &str, offset: f64) -> Result<(), BuilderError> {
+pub fn add_chord_lyrics<A: Arranger>(doc: &mut A, lyrics: &str, offset: f64) -> Result<(), BuilderError> {
     for (chord, text) in parse(lyrics) {
         match chord {
             Some(chord) => add_chord(
                 doc,
                 offset,
-                |d: &mut DocumentBuilder| {
+                |d: &mut A| {
                     d.add_text(chord);
                     Ok::<_, BuilderError>(())
                 },
@@ -137,9 +137,9 @@ mod tests {
     #[test]
     fn chords_take_no_room_and_widen_their_lyric() {
         use crate::node::Node;
-        let mut doc = crate::class::tests_support::doc(crate::class::Plain::new());
+        let mut doc = crate::test_support::galley();
         add_chord_lyrics(&mut doc, "<Cmaj7>a", 10.0).unwrap();
-        let pages = doc.into_pages().unwrap();
+        let pages = doc.lay_out().unwrap().pages;
         let (_, nodes) = pages[0].content.iter().find(|(id, _)| id == "content").unwrap();
         let Some(Node::VBox(line)) = nodes.iter().find(|n| matches!(n, Node::VBox(_))) else { panic!("no line") };
         let boxes: Vec<_> = line.nodes.iter().filter_map(|n| match n {

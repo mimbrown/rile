@@ -2,12 +2,15 @@
 //! Lua does, written against sile-core the way a Rust document would, so
 //! the test runs without a Lua interpreter.
 
-use sile_core::bible::Bible;
-use sile_core::builder::{Arranger, BuilderError, DocumentBuilder};
+use sile_pages::bible::Bible;
+use sile_core::builder::{Arranger, BuilderError};
+use sile_pages::DocumentBuilder;
 use sile_core::color::Color;
-use sile_core::class::{bigskip, smallskip, with_font, Book};
+use sile_core::builder::{bigskip, smallskip, with_font};
+use sile_pages::class::Book;
 use sile_core::font::{FontStyle, FontWeight};
-use sile_core::framespec::{FrameDirection, FrameSpec};
+use sile_core::frame::FrameDirection;
+use sile_pages::framespec::FrameSpec;
 use sile_core::linebreak::ParShape;
 use sile_core::node::{LinerPainter, LinerStyle};
 use sile_core::textcase;

@@ -1,18 +1,23 @@
 use std::ops::{Deref, DerefMut};
 
-use super::*;
+use std::collections::BTreeMap;
 
-struct SavedTypesetter {
-    settings: Settings,
-    paragraph: Vec<Inline>,
-    open_boxes: Vec<(Group, Vec<Inline>)>,
-    current_indent: Option<f64>,
-    previous_depth: Option<f64>,
-    queue: Vec<Node>,
-    captures: Vec<Capture>,
-    lists: Vec<crate::lists::ListLevel>,
-    frame: String,
-}
+use sile_core::builder::*;
+use sile_core::color::Color;
+use sile_core::counter::PageNumber;
+use sile_core::frame::{FrameDirection, FrameGeometry, PaperSize};
+use sile_core::length::Length;
+use sile_core::measurement::Measurement;
+use sile_core::node::{self, Ink, Node};
+use sile_core::pagebuilder::{self, Page, Underlay};
+use sile_core::image::{Background, BackgroundFill};
+use sile_core::metadata::{Bookmark, Metadata};
+use sile_core::references::{self, CrossReferences, IndexMark, IndexPage, Label, TocEntry};
+
+use crate::PageHook;
+use crate::class::{DocumentClass, PageTemplate};
+use crate::framespec::{self, FrameSpec};
+use crate::insertion::{InsertionClass, PageInsertions, Stack};
 
 /// A typesetter per frame, kept level with each other (SILE's `parallel`
 /// package), keyed by name in the order frames are output.
@@ -63,7 +68,8 @@ pub struct DocumentBuilder {
     insertion_classes: BTreeMap<String, InsertionClass>,
     insertions: PageInsertions,
     /// Typesetting states set aside by `push_typesetter`.
-    typesetters: Vec<SavedTypesetter>,
+    /// The flow each `push_typesetter` left.
+    flows: Vec<String>,
     parallel: Option<Parallel>,
     /// Frames added to every page's template (SILE's `class:declareFrame`).
     extra_frames: Vec<FrameSpec>,
@@ -100,10 +106,6 @@ impl DerefMut for DocumentBuilder {
 }
 
 impl Arranger for DocumentBuilder {
-    fn typesetter(&mut self) -> &mut Typesetter {
-        &mut self.ts
-    }
-
     fn before_lines(&mut self) -> Result<(), BuilderError> {
         self.ensure_page()?;
         self.sync_frame();
@@ -111,19 +113,13 @@ impl Arranger for DocumentBuilder {
     }
 
     fn after_lines(&mut self, independent: bool) -> Result<(), BuilderError> {
-        if independent || !self.typesetters.is_empty() {
+        if independent || self.saved_states() > 0 {
             return Ok(());
         }
         if self.build_page()? {
             self.init_next_frame()?;
         }
         Ok(())
-    }
-}
-
-impl AsMut<DocumentBuilder> for DocumentBuilder {
-    fn as_mut(&mut self) -> &mut DocumentBuilder {
-        self
     }
 }
 
@@ -145,7 +141,7 @@ impl DocumentBuilder {
             last_penalty: 0,
             insertion_classes: BTreeMap::new(),
             insertions: PageInsertions::default(),
-            typesetters: Vec::new(),
+            flows: Vec::new(),
             parallel: None,
             extra_frames: Vec::new(),
             header: None,
@@ -280,57 +276,13 @@ impl DocumentBuilder {
                 FrameContext { direction, ..Default::default() }
             }
         };
-        self.ts.frame = frame;
+        self.ts.set_frame_context(frame);
     }
 
     fn resolve_direction(&self, frame: &mut FrameGeometry) {
         frame.direction = self.frame_directions.get(&frame.id).copied().or(frame.direction).or(Some(self.direction));
     }
 
-    /// Set what `content` adds as Latin text lying on its side in vertical
-    /// Japanese, word by word, after a little space; elsewhere it is set as
-    /// is (SILE's `\\latin-in-tate`).
-    pub fn add_latin_in_tate<C, E>(ctx: &mut C, content: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
-    where
-        C: AsMut<DocumentBuilder>,
-        E: From<BuilderError>,
-    {
-        if ctx.as_mut().frame_direction().writing != Flow::TTB {
-            return content(ctx);
-        }
-        let doc = ctx.as_mut();
-        let saved = doc.settings.clone();
-        let indent = doc.current_indent.unwrap_or(doc.settings.paragraph_indent);
-        doc.set_language("und").update_font(|f| f.direction = Direction::LTR)?;
-        doc.start_hbox();
-        let result = content(ctx);
-        let doc = ctx.as_mut();
-        let inlines = doc.open_boxes.pop().map(|(_, content)| content).unwrap_or_default();
-        result?;
-        doc.frame_override = Some(FrameDirection::LTR);
-        let nodes = doc.shape_inlines(&inlines);
-        doc.frame_override = None;
-        doc.settings = saved;
-        let zw = doc.zenkaku_width();
-        doc.add_glue(Length::new(Measurement::pt(0.5 * zw), Measurement::pt(0.25 * zw), Measurement::pt(0.25 * zw)));
-        // The inner material is set as a paragraph of its own, indent included.
-        doc.add_glue(Length::pt(indent));
-        for mut node in nodes? {
-            if node.is_glue() || node.is_kern() {
-                doc.push_inline(Inline::Node(Box::new(node)));
-            } else if pt_of(&node.line_contribution()) > 0.0 {
-                if let Node::NNode(n) = &mut node {
-                    for g in &mut n.glyphs {
-                        (g.x_advance, g.x_offset, g.y_offset) = (g.width, 0.0, 0.0);
-                    }
-                }
-                let mut hbox = natural_hbox(vec![node]);
-                hbox.ink = Some(Ink::LatinInTate(zw));
-                doc.add_box(hbox);
-            }
-        }
-        Ok(())
-    }
 
     /// Draw the character grid of the frame being filled under the page's
     /// content (SILE's `\show-hanmen`).
@@ -360,7 +312,7 @@ impl DocumentBuilder {
     /// Set lines on a grid `spacing` apart from the top of each frame, with
     /// vertical space rounded up to fit (SILE's `\grid`).
     pub fn start_grid(&mut self, spacing: f64) -> Result<&mut Self, BuilderError> {
-        self.grid = Some(Grid { spacing, cursor: 0.0 });
+        self.ts.set_grid(spacing);
         self.ensure_page()?;
         self.grid_new_frame();
         Ok(self)
@@ -445,7 +397,7 @@ impl DocumentBuilder {
             Some(offset) => offset,
             None => {
                 self.leave_hmode(true)?;
-                let queue = std::mem::take(&mut self.vertical_queue);
+                let queue = self.ts.take_vertical_list();
                 let height = queue.iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
                 let id = self.page.as_ref().expect("page").frame.clone();
                 self.output(&id, queue);
@@ -467,7 +419,7 @@ impl DocumentBuilder {
         state.page.frames.push(rest);
         if offset.is_none() {
             state.frame = rest_id;
-            self.previous_depth = None;
+            self.ts.forget_last_line();
         }
         self.sync_frame();
         Ok(self)
@@ -609,9 +561,9 @@ impl DocumentBuilder {
     /// `chuck`).
     fn chuck(&mut self) -> Result<(), BuilderError> {
         self.leave_hmode(true)?;
-        if !self.vertical_queue.is_empty() {
+        if !self.ts.vertical_list().is_empty() {
             let id = self.page.as_ref().expect("page").frame.clone();
-            let nodes = std::mem::take(&mut self.vertical_queue);
+            let nodes = self.ts.take_vertical_list();
             self.output(&id, nodes);
         }
         Ok(())
@@ -692,7 +644,7 @@ impl DocumentBuilder {
     /// `buildPage`). Insertions met on the way are placed on this page and
     /// shrink the frames they steal from.
     fn build_page(&mut self) -> Result<bool, BuilderError> {
-        if self.vertical_queue.is_empty() {
+        if self.ts.vertical_list().is_empty() {
             return Ok(false);
         }
         self.ensure_page()?;
@@ -711,18 +663,18 @@ impl DocumentBuilder {
             insertions.process(classes, &id, queue, i, height, target)
         };
         let ts = &mut self.ts;
-        let br = if ts.grid.is_some() {
-            pagebuilder::find_grid_break(&mut ts.vertical_queue, target, &mut on_insertion)
+        let br = if ts.on_grid() {
+            pagebuilder::find_grid_break(ts.vertical_list_mut(), target, &mut on_insertion)
         } else if self.best_fit_pages {
-            pagebuilder::find_best_fit_break(&ts.vertical_queue, target, &ts.settings.linebreak_settings)
+            pagebuilder::find_best_fit_break(ts.vertical_list(), target, ts.linebreak_settings())
         } else {
-            pagebuilder::find_break(&mut ts.vertical_queue, target, false, &mut on_insertion)
+            pagebuilder::find_break(ts.vertical_list_mut(), target, false, &mut on_insertion)
         };
         let Some(br) = br else {
             return Ok(false);
         };
         self.last_penalty = br.trigger_penalty;
-        let nodes = pagebuilder::split_page(&mut self.vertical_queue, &br);
+        let nodes = pagebuilder::split_page(self.ts.vertical_list_mut(), &br);
         self.commit_shrinkage();
         let target = self.current_frame().expect("current frame").height() - self.insertions.shrinkage(&id);
         self.output(&id, pagebuilder::set_vertical_glue(nodes, target));
@@ -761,32 +713,32 @@ impl DocumentBuilder {
             return Ok(None);
         }
         let is_penalty = |n: &Node, max| matches!(n, Node::Penalty(p) if p.penalty <= max);
-        let Some(end) = self.vertical_queue.iter().position(|n| is_penalty(n, BALANCE_PENALTY)) else {
+        let Some(end) = self.ts.vertical_list().iter().position(|n| is_penalty(n, BALANCE_PENALTY)) else {
             let room: f64 = columns.iter().map(FrameGeometry::height).sum();
-            let natural: f64 = self.vertical_queue.iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
-            let forced = self.vertical_queue.iter().any(|n| is_penalty(n, -10_000));
+            let natural: f64 = self.ts.vertical_list().iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
+            let forced = self.ts.vertical_list().iter().any(|n| is_penalty(n, -10_000));
             return Ok((natural <= room && !forced).then_some(false));
         };
-        let Some(height) = self.balanced_height(&self.vertical_queue[..end], columns.len(), columns.iter().map(FrameGeometry::height).fold(f64::INFINITY, f64::min)) else {
+        let Some(height) = self.balanced_height(&self.ts.vertical_list()[..end], columns.len(), columns.iter().map(FrameGeometry::height).fold(f64::INFINITY, f64::min)) else {
             return Ok(None);
         };
         self.set_column_height(&columns, height);
-        let rest = self.vertical_queue.split_off(end);
+        let rest = self.ts.vertical_list_mut().split_off(end);
         let Some(Node::Penalty(penalty)) = rest.first() else { unreachable!() };
         let penalty = penalty.penalty;
-        self.vertical_queue.push(Node::penalty(-10_000));
+        self.ts.vertical_list_mut().push(Node::penalty(-10_000));
         for column in &columns {
             self.page.as_mut().expect("page").frame = column.id.clone();
             self.sync_frame();
-            if self.vertical_queue.iter().all(|n| n.is_discardable() || n.is_vglue()) {
+            if self.ts.vertical_list().iter().all(|n| n.is_discardable() || n.is_vglue()) {
                 break;
             }
             self.fill_frame()?;
         }
-        if self.vertical_queue.last().is_some_and(|n| is_penalty(n, -10_000)) {
-            self.vertical_queue.pop();
+        if self.ts.vertical_list().last().is_some_and(|n| is_penalty(n, -10_000)) {
+            self.ts.vertical_list_mut().pop();
         }
-        self.vertical_queue.extend(rest.into_iter().skip(1));
+        self.ts.vertical_list_mut().extend(rest.into_iter().skip(1));
         self.last_penalty = penalty;
         Ok(Some(true))
     }
@@ -882,7 +834,7 @@ impl DocumentBuilder {
             seen: false,
         });
         let migrating = node::Migrating { material: vec![Node::penalty(penalty), insertion], ..Default::default() };
-        self.push_inline(Inline::Node(Box::new(Node::Migrating(migrating))));
+        self.add_node(Node::Migrating(migrating));
         self
     }
 
@@ -894,8 +846,8 @@ impl DocumentBuilder {
 
     /// Move on to the next frame, or end the page and start a new one.
     fn init_next_frame(&mut self) -> Result<(), BuilderError> {
-        if self.vertical_queue.is_empty() {
-            self.previous_depth = None;
+        if self.ts.vertical_list().is_empty() {
+            self.ts.forget_last_line();
         }
         let old_width = self.current_frame().map(FrameGeometry::line_length);
         let next = self.current_frame().and_then(|f| f.next.clone());
@@ -910,13 +862,13 @@ impl DocumentBuilder {
             }
         }
         let new_width = self.current_frame().map(FrameGeometry::line_length);
-        if !self.vertical_queue.is_empty() && old_width.zip(new_width).is_some_and(|(a, b)| (a - b).abs() > 1e-6) {
+        if !self.ts.vertical_list().is_empty() && old_width.zip(new_width).is_some_and(|(a, b)| (a - b).abs() > 1e-6) {
             self.push_back()?;
-            if self.typesetters.is_empty() && self.build_page()? {
+            if self.saved_states() == 0 && self.build_page()? {
                 self.init_next_frame()?;
             }
-        } else if let Some(first) = self.vertical_queue.first() {
-            let lead = match self.settings.line_spacing {
+        } else if let Some(first) = self.ts.vertical_list().first() {
+            let lead = match self.line_spacing() {
                 Some(spacing) => {
                     let em = self.font_spec().map_or(10.0, |f| f.size);
                     let min = pt_of(&resolve_em(spacing.minimum_first_line, em));
@@ -925,7 +877,7 @@ impl DocumentBuilder {
                 None => Some(Node::vglue(Length::zero())),
             };
             if let Some(lead) = lead {
-                self.vertical_queue.insert(0, lead);
+                self.ts.vertical_list_mut().insert(0, lead);
             }
         }
         self.grid_new_frame();
@@ -982,7 +934,7 @@ impl DocumentBuilder {
             self.sync_flows(&mut parallel)?;
             self.output_parallel_page(&mut parallel)?;
             self.pop_typesetter()?;
-            self.vertical_queue.clear();
+            self.ts.vertical_list_mut().clear();
             return Ok(());
         }
         self.new_paragraph()?;
@@ -1045,7 +997,7 @@ impl DocumentBuilder {
             let result = self.leave_hmode(true);
             if result.is_ok() {
                 let target = self.current_frame().map_or(0.0, FrameGeometry::target_length);
-                let mut lines = self.vertical_queue.clone();
+                let mut lines = self.ts.vertical_list_mut().clone();
                 any_break |= pagebuilder::find_break(&mut lines, target, false, &mut pagebuilder::no_insertions).is_some();
             }
             p.flow = self.take_flow();
@@ -1054,14 +1006,14 @@ impl DocumentBuilder {
         if any_break {
             return self.parallel_page_break(parallel);
         }
-        let new_material = |p: &ParallelFlow| p.flow.queue[p.mark..].iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum::<f64>();
+        let new_material = |p: &ParallelFlow| p.flow.queue()[p.mark..].iter().map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum::<f64>();
         let tallest = parallel.flows.values().map(new_material).fold(0.0, f64::max);
         for p in parallel.flows.values_mut() {
             let glue = tallest - new_material(p);
             if glue > 0.0 {
-                p.flow.queue.push(Node::vglue(Length::pt(glue)));
+                p.flow.queue_mut().push(Node::vglue(Length::pt(glue)));
             }
-            p.mark = p.flow.queue.len();
+            p.mark = p.flow.queue().len();
         }
         Ok(())
     }
@@ -1077,10 +1029,10 @@ impl DocumentBuilder {
     fn output_parallel_page(&mut self, parallel: &mut Parallel) -> Result<(), BuilderError> {
         for p in parallel.flows.values_mut() {
             self.enter_flow(p);
-            let result = if !self.vertical_queue.is_empty() && p.mark == 0 {
+            let result = if !self.ts.vertical_list().is_empty() && p.mark == 0 {
                 self.build_page().map(|_| ())
             } else {
-                let queue = &mut self.ts.vertical_queue;
+                let queue = &mut self.ts.vertical_list_mut();
                 let lines = queue.drain(..p.mark.min(queue.len())).collect();
                 self.output(&p.frame, lines);
                 Ok(())
@@ -1120,18 +1072,8 @@ impl DocumentBuilder {
             Some(frame) => std::mem::replace(&mut state.frame, frame.to_string()),
             None => state.frame.clone(),
         };
-        let ts = &mut self.ts;
-        self.typesetters.push(SavedTypesetter {
-            settings: ts.settings.clone(),
-            paragraph: std::mem::take(&mut ts.paragraph),
-            open_boxes: std::mem::take(&mut ts.open_boxes),
-            current_indent: ts.current_indent.take(),
-            previous_depth: ts.previous_depth.take(),
-            queue: std::mem::take(&mut ts.vertical_queue),
-            captures: std::mem::take(&mut ts.captures),
-            lists: std::mem::take(&mut ts.lists.levels),
-            frame: flow,
-        });
+        self.flows.push(flow);
+        self.ts.save_state();
         self.sync_frame();
         Ok(self)
     }
@@ -1140,21 +1082,14 @@ impl DocumentBuilder {
     /// aside, and return the vertical material set meanwhile.
     pub fn pop_typesetter(&mut self) -> Result<Vec<Node>, BuilderError> {
         let result = self.leave_hmode(true);
-        let Some(saved) = self.typesetters.pop() else {
+        let Some(flow) = self.flows.pop() else {
             return Ok(Vec::new());
         };
-        let nodes = std::mem::replace(&mut self.vertical_queue, saved.queue);
+        let nodes = self.ts.restore_state();
         if let Some(state) = self.page.as_mut() {
-            state.frame = saved.frame;
+            state.frame = flow;
         }
         self.sync_frame();
-        self.settings = saved.settings;
-        self.paragraph = saved.paragraph;
-        self.open_boxes = saved.open_boxes;
-        self.current_indent = saved.current_indent;
-        self.previous_depth = saved.previous_depth;
-        self.captures = saved.captures;
-        self.lists.levels = saved.lists;
         result?;
         Ok(nodes)
     }
@@ -1300,23 +1235,18 @@ impl DocumentBuilder {
             let Some(running) = running else { continue };
             for page in pages.iter_mut() {
                 let Some(hsize) = page.frame(name).map(FrameGeometry::line_length) else { continue };
-                let line = running.resolved(page.number, total, &self.settings.language);
-                let skips = LineSkips::default().aligned(running.align);
-                let nodes = self.typeset_inlines(&line, hsize, running.direction, skips, &mut None)?;
+                let nodes = self.ts.typeset_running(&running, page.number, total, hsize)?;
                 page.add_frame_content(name, nodes);
             }
         }
 
-        Ok(Layout {
-            pages,
-            references: self.references,
-            consulted_references: self.consulted_references.get(),
-            paper: self.paper,
-            fonts: self.ts.fonts,
-            bookmarks: self.bookmarks,
-            metadata: self.metadata,
-            structure: self.ts.structure,
-        })
+        let paper = self.paper;
+        let mut layout = self.ts.into_layout(paper, pages);
+        layout.references = self.references;
+        layout.consulted_references = self.consulted_references.get();
+        layout.set_bookmarks(self.bookmarks);
+        layout.set_metadata(self.metadata);
+        Ok(layout)
     }
 
     // -- Page templates ------------------------------------------------------
@@ -1363,9 +1293,48 @@ impl DocumentBuilder {
     }
 }
 
+fn pt_of(l: &Length) -> f64 {
+    l.length.to_pt().unwrap_or(0.0)
+}
+
+/// `length` with any `em` parts in points for a font of size `em`.
+fn resolve_em(length: Length, em: f64) -> Length {
+    let part = |m: Measurement| match m.unit {
+        sile_core::measurement::Unit::Em => Measurement::pt(m.amount * em),
+        sile_core::measurement::Unit::En => Measurement::pt(m.amount * em / 2.0),
+        _ => m,
+    };
+    Length::new(part(length.length), part(length.stretch), part(length.shrink))
+}
+
+/// `D:` and digits, then a `HH'mm'` offset (as SILE checks it).
+fn is_pdf_date(date: &str) -> bool {
+    let Some(rest) = date.strip_prefix("D:") else { return false };
+    let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let squashed: String = rest[digits..].chars().filter(|c| !c.is_whitespace()).collect();
+    let offset = squashed.strip_prefix('-').unwrap_or("");
+    let offset = offset.strip_suffix('\'').unwrap_or(offset);
+    digits > 0
+        && offset.len() == 5
+        && offset.as_bytes()[2] == b'\''
+        && offset.bytes().enumerate().all(|(i, b)| i == 2 || b.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::class::tests_support::*;
+    use crate::class::Plain;
+    use sile_core::font::{Direction, FontSpec};
+    use sile_core::measurement::Measurement;
+
+    fn builder_with_font() -> Option<DocumentBuilder> {
+        let mut doc = DocumentBuilder::new(PaperSize::A4);
+        let spec = FontSpec { family: Some("Gentium Plus".into()), size: 12.0, ..Default::default() };
+        doc.load_font_data("body", gentium(), spec).ok()?;
+        doc.set_font("body");
+        Some(doc)
+    }
 
     #[test]
     fn new_builder() {
@@ -1385,5 +1354,198 @@ mod tests {
         let mut doc = DocumentBuilder::new(PaperSize::A4);
         doc.set_page_size(PaperSize::LETTER);
         assert!((doc.paper.width - 612.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn vertical_frames_shape_downwards_and_turn_latin_on_its_side() {
+        let mut doc = doc(Plain::japanese(true));
+        doc.update_font(|f| f.direction = Direction::Frame).unwrap();
+        doc.add_text("tate");
+        Typesetter::add_latin_in_tate(&mut doc, |d: &mut DocumentBuilder| -> Result<(), BuilderError> {
+            d.add_text("yoko");
+            Ok(())
+        })
+        .unwrap();
+        doc.new_paragraph().unwrap();
+        let trace = doc.render_debug().unwrap();
+        assert!(trace.contains(";TTB;\n"), "{trace}");
+        assert!(trace.contains(";LTR;\n"), "{trace}");
+    }
+
+    #[test]
+    fn make_columns_splits_the_frame_evenly() {
+        let mut doc = DocumentBuilder::new(PaperSize::A4);
+        doc.make_columns(3, 10.0).unwrap();
+        let pages = doc.into_pages().unwrap();
+        let frames = &pages[0].frames;
+        let width = |id: &str| frames.iter().find(|f| f.id == id).unwrap().width();
+        assert!((width("content") - width("content_col1")).abs() < 1e-9);
+        assert!((width("content") - width("content_col2")).abs() < 1e-9);
+        assert_eq!(width("content_gutter1"), 10.0);
+    }
+
+    #[test]
+    fn page_frames_apply_to_the_current_page_only() {
+        let Some(mut doc) = builder_with_font() else { return };
+        let narrow = FrameSpec::new("a").left("100pt").right("300pt").top("100pt").bottom("200pt").next("b");
+        let wide = FrameSpec::new("b").left("50pt").right("500pt").top("300pt").bottom("700pt");
+        doc.declare_page_frames(&[narrow, wide]).unwrap();
+        doc.set_content_frame("a").unwrap();
+        doc.add_text("word ".repeat(1500));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        assert!(pages.len() > 1);
+        let ids = |p: &Page| p.content.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&pages[0]), ["a", "b"]);
+        assert!(ids(&pages[1]).iter().all(|id| id == "content"));
+    }
+
+    #[test]
+    fn lines_moving_to_a_wider_frame_are_broken_again() {
+        let Some(mut doc) = builder_with_font() else { return };
+        let narrow = FrameSpec::new("a").left("100pt").right("200pt").top("100pt").bottom("150pt").next("b");
+        let wide = FrameSpec::new("b").left("100pt").right("500pt").top("300pt").bottom("700pt");
+        doc.declare_page_frames(&[narrow, wide]).unwrap();
+        doc.set_content_frame("a").unwrap();
+        doc.add_text("word ".repeat(60));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        let (_, wide_lines) = pages[0].content.iter().find(|(id, _)| id == "b").unwrap();
+        let first_line = wide_lines.iter().find_map(|n| match n {
+            Node::VBox(v) => Some(v.nodes.iter().filter(|n| n.is_nnode()).count()),
+            _ => None,
+        });
+        assert!(first_line.unwrap() > 10, "lines in b use b's width");
+    }
+
+    #[test]
+    fn best_fit_pages_keep_every_line_and_fit_their_frames() {
+        let lines_of = |best_fit: bool| {
+            let mut doc = builder_with_font()?;
+            doc.set_best_fit_pages(best_fit);
+            doc.set_paragraph_skip(Length::new(Measurement::pt(6.0), Measurement::pt(3.0), Measurement::pt(1.0)));
+            for i in 0..40 {
+                doc.add_text("word ".repeat(40 + i * 7));
+                doc.new_paragraph().unwrap();
+            }
+            let pages = doc.into_pages().unwrap();
+            let target = pages[0].frame("content").unwrap().height();
+            let mut lines = 0;
+            for page in &pages {
+                let (_, nodes) = page.content.iter().find(|(id, _)| id == "content").unwrap();
+                let natural: f64 = nodes.iter().filter(|n| matches!(n, Node::VBox(_))).map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
+                assert!(natural <= target + 1e-6, "{natural} > {target}");
+                lines += nodes.iter().filter(|n| matches!(n, Node::VBox(_))).count();
+            }
+            Some((lines, pages.len()))
+        };
+        let (Some((lines, pages)), Some((default_lines, _))) = (lines_of(true), lines_of(false)) else { return };
+        assert_eq!(lines, default_lines);
+        assert!(pages > 3);
+    }
+
+    fn balanced_frames() -> Vec<FrameSpec> {
+        vec![
+            FrameSpec::new("l").left("72pt").right("290pt").top("72pt").bottom("770pt").next("r").balanced(),
+            FrameSpec::new("r").left("305pt").right("523pt").top("72pt").bottom("770pt").next("after").balanced(),
+            FrameSpec::new("after").left("72pt").right("523pt").top("bottom(r)").bottom("770pt"),
+        ]
+    }
+
+    fn lines_in(page: &Page, frame: &str) -> usize {
+        page.content.iter().filter(|(id, _)| id == frame).flat_map(|(_, nodes)| nodes).filter(|n| matches!(n, Node::VBox(_))).count()
+    }
+
+    #[test]
+    fn balanced_columns_share_the_material_at_the_end() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.declare_page_frames(&balanced_frames()).unwrap();
+        doc.set_content_frame("l").unwrap();
+        doc.add_text("word ".repeat(300));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        assert_eq!(pages.len(), 1);
+        let (l, r) = (lines_in(&pages[0], "l"), lines_in(&pages[0], "r"));
+        assert!(l > 5 && l.abs_diff(r) <= 1, "{l} and {r} lines");
+        let frame = |id| pages[0].frame(id).unwrap();
+        assert!(frame("l").height() < 698.0);
+        assert_eq!(frame("l").height(), frame("r").height());
+    }
+
+    #[test]
+    fn balancing_moves_the_frames_placed_after_the_columns() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.declare_page_frames(&balanced_frames()).unwrap();
+        doc.set_content_frame("l").unwrap();
+        doc.add_text("word ".repeat(200));
+        doc.balance_columns().unwrap();
+        doc.add_text("after");
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        let frame = |id| pages[0].frame(id).unwrap();
+        assert_eq!(frame("after").top, frame("r").bottom);
+        assert!(frame("r").bottom < 400.0);
+        assert_eq!(lines_in(&pages[0], "after"), 1);
+        assert!(lines_in(&pages[0], "r") > 0);
+    }
+
+    #[test]
+    fn balanced_columns_fill_up_when_the_material_overflows_them() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.declare_page_frames(&balanced_frames()).unwrap();
+        doc.set_content_frame("l").unwrap();
+        doc.add_text("word ".repeat(3000));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        assert!(pages.len() > 1);
+        assert_eq!(pages[0].frame("l").unwrap().height(), 698.0);
+        assert!(lines_in(&pages[0], "r") > 40);
+    }
+
+    // -- Metadata ------------------------------------------------------------
+
+    #[test]
+    fn pdf_dates_need_an_offset() {
+        assert!(is_pdf_date("D:19990209153925 - 08 ' 00 '"));
+        assert!(is_pdf_date("D:19990209153925-08'00"));
+        assert!(!is_pdf_date("should fail"));
+        assert!(!is_pdf_date("D:19990209153925"));
+    }
+
+    /// How far down its frame the line holding `text` starts.
+    fn offset_of(page: &Page, frame: &str, text: &str) -> Option<f64> {
+        let (_, nodes) = page.content.iter().find(|(id, _)| id == frame)?;
+        let mut y = 0.0;
+        for node in nodes {
+            if let Node::VBox(b) = node
+                && b.nodes.iter().any(|n| matches!(n, Node::NNode(n) if n.text == text))
+            {
+                return Some(y);
+            }
+            y += pt_of(&node.height()) + pt_of(&node.depth());
+        }
+        None
+    }
+
+    #[test]
+    fn sync_lines_up_what_comes_next_in_each_flow() {
+        let mut d = doc(Plain::new());
+        d.declare_frames(&[
+            FrameSpec::new("left").top("top(content)").bottom("bottom(content)").left("left(content)").right("48%pw"),
+            FrameSpec::new("right").top("top(content)").bottom("bottom(content)").left("52%pw").right("right(content)"),
+        ])
+        .unwrap();
+        d.begin_parallel(&[("left", "left"), ("right", "right")]).unwrap();
+        d.select_parallel("left").unwrap().add_text("One");
+        d.new_paragraph().unwrap().add_text("Two");
+        d.select_parallel("right").unwrap().add_text("Un");
+        d.sync_parallel().unwrap();
+        d.select_parallel("left").unwrap().add_text("Three");
+        d.select_parallel("right").unwrap().add_text("Trois");
+        d.sync_parallel().unwrap();
+        let pages = d.into_pages().unwrap();
+        let left = offset_of(&pages[0], "left", "Three").unwrap();
+        assert!(left > 0.0);
+        assert!((left - offset_of(&pages[0], "right", "Trois").unwrap()).abs() < 1e-6);
     }
 }

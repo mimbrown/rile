@@ -3,8 +3,9 @@
 
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder};
-use crate::pagebuilder::Underlay;
+use sile_core::builder::BuilderError;
+use crate::DocumentBuilder;
+use sile_core::pagebuilder::Underlay;
 
 pub type CropHeader = Arc<dyn Fn(&mut DocumentBuilder, usize) -> Result<(), BuilderError> + Send + Sync>;
 
@@ -73,7 +74,7 @@ mod tests {
     use super::*;
     use crate::class::tests_support::doc;
     use crate::class::Plain;
-    use crate::frame::PaperSize;
+    use sile_core::frame::PaperSize;
 
     #[test]
     fn pages_are_marked_and_centred_on_their_sheets() {

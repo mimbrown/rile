@@ -7,30 +7,32 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
-use sile_core::bible::Bible;
-use sile_core::builder::{Arranger, BaselineSkip, BuilderError, DocumentBuilder, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
+use sile_pages::bible::Bible;
+use sile_core::builder::{Arranger, BaselineSkip, BuilderError, Context, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign, Typesetter};
+use sile_pages::DocumentBuilder;
 use sile_core::counter::format_number;
 use sile_core::color::Color;
-use sile_core::class::{
+use sile_pages::class::{
     diglot, pecha, triglot, Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain, DIGLOT_FLOWS, TRIGLOT_FLOWS,
 };
 use sile_core::chords;
 use sile_core::date::DateTime;
-use sile_core::insertion::InsertionClass;
+use sile_pages::insertion::InsertionClass;
 use sile_core::node::{HBox, Ink, LinkDest, Node, Stroke};
-use sile_core::toc::{DefaultTocStyle, TableOfContents};
+use sile_pages::toc::{DefaultTocStyle, TableOfContents};
 use sile_core::pullquote::Pullquote;
 use sile_core::dropcap::Dropcap;
 use sile_core::svg_image::SvgImage;
-use sile_core::index::{DefaultIndexStyle, Indexer};
+use sile_pages::index::{DefaultIndexStyle, Indexer};
 use sile_core::bibliography::{Bibliography, Cite};
-use sile_core::cropmarks::Cropmarks;
+use sile_pages::cropmarks::Cropmarks;
 use sile_core::features::OtFeatures;
 use sile_core::image::{Background, BackgroundFill, Image};
 use sile_core::url::{url_pieces, UrlPenalties, UrlPiece};
 use sile_core::font::{Direction, FontSpec, FontStyle, FontWeight};
 use sile_core::frame::PaperSize;
-use sile_core::framespec::{FrameDirection, FrameSpec};
+use sile_core::frame::FrameDirection;
+use sile_pages::framespec::FrameSpec;
 use sile_core::length::Length;
 use sile_core::lists::{ListKind, ListOptions};
 use sile_core::math::mathml;
@@ -660,8 +662,10 @@ pub(crate) struct Driver<'a> {
     chord_offset: Option<String>,
 }
 
-impl AsMut<DocumentBuilder> for Driver<'_> {
-    fn as_mut(&mut self) -> &mut DocumentBuilder {
+impl Context for Driver<'_> {
+    type Arranger = DocumentBuilder;
+
+    fn arranger(&mut self) -> &mut DocumentBuilder {
         &mut self.doc
     }
 }
@@ -1672,7 +1676,7 @@ impl<'a> Driver<'a> {
             "ruby" => {
                 let reading = opt("reading")?.to_string();
                 self.sync()?;
-                DocumentBuilder::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+                sile_core::ruby::add_ruby(self, &reading, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
             }
             "save-book-title" | "save-chapter-number" => {
                 let text = sil::plain_text(content);
@@ -1912,7 +1916,6 @@ impl<'a> Driver<'a> {
                         let skips = doc.line_skips();
                         doc.set_line_skips(LineSkips { left: fill, par_fill: Length::zero(), ..skips }).set_paragraph_indent(0.0);
                         doc.add_text(format!("— {author}"));
-                        doc.new_paragraph()?;
                         Ok(())
                     });
                 }
@@ -2052,7 +2055,7 @@ impl<'a> Driver<'a> {
             }
             "latin-in-tate" => {
                 self.sync()?;
-                DocumentBuilder::add_latin_in_tate(self, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
+                Typesetter::add_latin_in_tate(self, |d| d.process(content).map_err(Failed)).map_err(|Failed(e)| e)?;
             }
             "show-hanmen" => {
                 let grid = self.hanmen.ok_or("show-hanmen called on a frame with no hanmen")?;

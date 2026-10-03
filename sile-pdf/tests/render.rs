@@ -1,13 +1,15 @@
-use sile_core::builder::{Arranger, BuilderError, DocumentBuilder, Layout};
-use sile_core::class::{Book, DocumentClass, Heading, Plain};
+use sile_core::builder::{Arranger, BuilderError, Layout};
+use sile_pages::DocumentBuilder;
+use sile_pages::class::{Book, DocumentClass, Heading, Plain};
 use sile_core::color::Color;
-use sile_core::cropmarks::Cropmarks;
+use sile_pages::cropmarks::Cropmarks;
 use sile_core::font::{Direction, FontSpec, FontWeight};
 use sile_core::frame::PaperSize;
 use sile_core::lists::{ListKind, ListOptions};
 use sile_core::node::LinkDest;
-use sile_core::references::{CrossReferences, lay_out_until_settled};
-use sile_core::toc::{DefaultTocStyle, TableOfContents};
+use sile_core::references::CrossReferences;
+use sile_pages::lay_out_until_settled;
+use sile_pages::toc::{DefaultTocStyle, TableOfContents};
 use sile_pdf::PdfOptions;
 
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts/gentium-plus-5.000");
@@ -82,7 +84,7 @@ fn latin_in_vertical_frames_is_turned_on_its_side() {
     let mut d = doc(Plain::japanese(true));
     d.update_font(|f| f.direction = Direction::Frame).unwrap();
     d.add_text("tate");
-    DocumentBuilder::add_latin_in_tate(&mut d, |d: &mut DocumentBuilder| -> Result<(), BuilderError> {
+    sile_core::builder::Typesetter::add_latin_in_tate(&mut d, |d: &mut DocumentBuilder| -> Result<(), BuilderError> {
         d.add_text("yoko");
         Ok(())
     })

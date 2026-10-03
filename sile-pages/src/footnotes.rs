@@ -1,11 +1,12 @@
 //! Numbered footnotes set at the foot of the page (SILE's `footnotes`
 //! package).
 
-use crate::builder::{BuilderError, DocumentBuilder};
+use sile_core::builder::{BuilderError, Context};
+use crate::DocumentBuilder;
 use crate::insertion::InsertionClass;
-use crate::length::Length;
-use crate::node::Node;
-use crate::structure::Role;
+use sile_core::length::Length;
+use sile_core::node::Node;
+use sile_core::structure::Role;
 
 impl DocumentBuilder {
     /// Send footnotes to the `footnotes` frame, taking their room from
@@ -28,10 +29,10 @@ impl DocumentBuilder {
     /// `\footnote`).
     pub fn footnote<C, E>(ctx: &mut C, content: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
     where
-        C: AsMut<DocumentBuilder>,
+        C: Context<Arranger = DocumentBuilder>,
         E: From<BuilderError>,
     {
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         doc.use_footnotes();
         let number = doc.counter_mut("footnote").to_string();
         let saved = doc.settings().clone();
@@ -49,7 +50,7 @@ impl DocumentBuilder {
         doc.begin_structure(Role::Lbl).add_text(format!("{number}.")).end_structure();
         doc.add_glue(Length::pt(2.0 * em));
         let result = content(ctx);
-        let doc = ctx.as_mut();
+        let doc = ctx.arranger();
         let nodes = doc.pop_typesetter();
         doc.end_structure().restore_settings(saved);
         result?;
@@ -103,7 +104,7 @@ mod tests {
                 .kids
                 .iter()
                 .filter_map(|k| match k {
-                    crate::structure::StructKid::Element(c) => Some(tree.elements[*c].role),
+                    sile_core::structure::StructKid::Element(c) => Some(tree.elements[*c].role),
                     _ => None,
                 })
                 .collect()

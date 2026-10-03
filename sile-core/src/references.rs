@@ -3,12 +3,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::builder::{BuilderError, DocumentBuilder, Layout};
 use crate::counter::PageNumber;
 
-pub(crate) const TOC: &str = "toc";
-pub(crate) const LABELS: &str = "labels";
-pub(crate) const INDEX: &str = "index";
+pub const TOC: &str = "toc";
+pub const LABELS: &str = "labels";
+pub const INDEX: &str = "index";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CrossReferences {
@@ -43,7 +42,7 @@ pub struct IndexPage {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IndexMark {
+pub struct IndexMark {
     pub index: String,
     pub label: String,
     pub link: String,
@@ -54,24 +53,4 @@ pub struct Label {
     pub page: String,
     pub value: Option<String>,
     pub dest: String,
-}
-
-/// Lay a document out again until a pass finds what the one before it did,
-/// or `max_passes` have run. `build` makes each pass's document, handing
-/// what the previous pass found (`None` on the first) to
-/// `DocumentBuilder::set_references`. A document that never asks for its
-/// references is laid out once.
-pub fn lay_out_until_settled<E: From<BuilderError>>(
-    max_passes: usize,
-    mut build: impl FnMut(Option<CrossReferences>) -> Result<DocumentBuilder, E>,
-) -> Result<Layout, E> {
-    let mut previous = None;
-    for _ in 1..max_passes {
-        let layout = build(previous.clone())?.lay_out()?;
-        if !layout.consulted_references || previous.as_ref() == Some(&layout.references) {
-            return Ok(layout);
-        }
-        previous = Some(layout.references.clone());
-    }
-    Ok(build(previous)?.lay_out()?)
 }

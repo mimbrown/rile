@@ -13,7 +13,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Typesetter};
+use crate::builder::{Arranger, BuilderError, LineSkips, Typesetter};
 use crate::font::{Direction, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::length::Length;
 use crate::measurement::Measurement;
@@ -612,7 +612,7 @@ impl Default for MathSettings {
 }
 
 struct BuilderFont<'a> {
-    doc: &'a mut DocumentBuilder,
+    doc: &'a mut Typesetter,
     base: FontSpec,
 }
 
@@ -698,90 +698,85 @@ impl Typesetter {
     }
 }
 
-impl DocumentBuilder {
-    /// Typeset `formula` in the text, or displayed on its own line,
-    /// centred, with an optional number flush right (SILE's `\math` and
-    /// `\mathml`).
-    pub fn add_math(&mut self, formula: &MathNode, mode: MathMode) -> Result<&mut Self, BuilderError> {
-        let own = self.current_role() != Some(Role::Formula);
-        if own {
-            self.begin_structure(Role::Formula).set_alt_text(formula.to_string());
-        }
-        let saved = self.settings().clone();
-        let result = self.add_math_in(formula, mode);
-        self.restore_settings(saved);
-        if own {
-            self.end_structure();
-        }
-        result?;
-        Ok(self)
+pub(crate) fn add_math<A: Arranger + ?Sized>(a: &mut A, formula: &MathNode, mode: MathMode) -> Result<(), BuilderError> {
+    let own = a.current_role() != Some(Role::Formula);
+    if own {
+        a.begin_structure(Role::Formula).set_alt_text(formula.to_string());
     }
+    let saved = a.settings().clone();
+    let result = add_math_in(a, formula, mode);
+    a.restore_settings(saved);
+    if own {
+        a.end_structure();
+    }
+    result?;
+    Ok(())
+}
 
-    fn add_math_in(&mut self, formula: &MathNode, mode: MathMode) -> Result<(), BuilderError> {
-        let (text_size, text_x_height) = (self.font_spec().map_or(10.0, |f| f.size), self.x_height());
-        let (spec, face) = self.math_font()?;
-        self.set_font_spec(spec.clone())?;
-        let table = self.math_table(&spec, &face)?;
-        let x_height = self.x_height();
-        let settings = self.math_settings().clone();
-        let display = matches!(mode, MathMode::Display { .. });
-        let laid = {
-            let mut font = BuilderFont { doc: self, base: spec.clone() };
-            let mut ctx = layout::Context {
-                font: &mut font,
-                table: &table,
-                size: spec.size,
-                x_height,
-                script_feature: settings.script_feature.as_deref(),
-            };
-            layout::lay_out(formula, display, &mut ctx)
+fn add_math_in<A: Arranger + ?Sized>(a: &mut A, formula: &MathNode, mode: MathMode) -> Result<(), BuilderError> {
+    let (text_size, text_x_height) = (a.font_spec().map_or(10.0, |f| f.size), a.x_height());
+    let (spec, face) = a.math_font()?;
+    a.set_font_spec(spec.clone())?;
+    let table = a.math_table(&spec, &face)?;
+    let x_height = a.x_height();
+    let settings = a.math_settings().clone();
+    let display = matches!(mode, MathMode::Display { .. });
+    let laid = {
+        let mut font = BuilderFont { doc: &mut *a, base: spec.clone() };
+        let mut ctx = layout::Context {
+            font: &mut font,
+            table: &table,
+            size: spec.size,
+            x_height,
+            script_feature: settings.script_feature.as_deref(),
         };
-        let pt = Measurement::pt;
-        let mut hbox = HBox::new(Length::new(pt(laid.width.natural), pt(laid.width.stretch), pt(laid.width.shrink)), Length::pt(laid.height), Length::pt(laid.depth));
-        hbox.ink = Some(Ink::Math(MathInk(Arc::new(laid.items))));
-        let MathMode::Display { number } = mode else {
-            self.add_box(hbox);
-            return Ok(());
-        };
-        let resolve = |d: Dimen| match d.unit {
-            MathUnit::Ex => d.value * text_x_height,
-            MathUnit::Em => d.value * text_size,
-            MathUnit::En => d.value * text_size / 2.0,
-            MathUnit::Mu => d.value * spec.size / 18.0,
-            MathUnit::Px => d.value * 0.75,
-            MathUnit::Mm => d.value * 72.0 / 25.4,
-            MathUnit::Cm => d.value * 72.0 / 2.54,
-            MathUnit::In => d.value * 72.0,
-            MathUnit::Pt => d.value,
-        };
-        let s = settings.display_skip;
-        let skip = Length::new(pt(resolve(s.natural)), pt(resolve(s.stretch)), pt(resolve(s.shrink)));
-        self.add_vertical_penalty(settings.pre_display_penalty)?;
-        self.add_explicit_vskip(skip)?;
-        self.add_vertical_penalty(settings.pre_display_penalty)?;
-        let display_settings = self.settings().clone();
-        let skips = self.line_skips();
-        self.set_paragraph_indent(0.0);
-        self.set_current_indent(Some(0.0));
-        self.set_line_skips(LineSkips {
-            left: Length::new(skips.left.length, pt(crate::node::INFINITY), pt(0.0)),
-            right: Length::from(skips.right.length),
-            par_fill: Length::zero(),
-        });
-        let mut space = *self.space_settings();
-        space.skip = Some(Length::pt(self.space_width()));
-        self.set_space_settings(space);
-        self.add_box(hbox);
-        self.add_hfill();
-        if let Some(number) = number {
-            self.add_text("(").add_text(number).add_text(")");
-        }
-        self.add_vertical_penalty(settings.post_display_penalty)?;
-        self.restore_settings(display_settings);
-        self.add_explicit_vskip(skip)?;
-        self.add_vertical_penalty(settings.post_display_penalty)?;
-        Ok(())
+        layout::lay_out(formula, display, &mut ctx)
+    };
+    let pt = Measurement::pt;
+    let mut hbox = HBox::new(Length::new(pt(laid.width.natural), pt(laid.width.stretch), pt(laid.width.shrink)), Length::pt(laid.height), Length::pt(laid.depth));
+    hbox.ink = Some(Ink::Math(MathInk(Arc::new(laid.items))));
+    let MathMode::Display { number } = mode else {
+        a.add_box(hbox);
+        return Ok(());
+    };
+    let resolve = |d: Dimen| match d.unit {
+        MathUnit::Ex => d.value * text_x_height,
+        MathUnit::Em => d.value * text_size,
+        MathUnit::En => d.value * text_size / 2.0,
+        MathUnit::Mu => d.value * spec.size / 18.0,
+        MathUnit::Px => d.value * 0.75,
+        MathUnit::Mm => d.value * 72.0 / 25.4,
+        MathUnit::Cm => d.value * 72.0 / 2.54,
+        MathUnit::In => d.value * 72.0,
+        MathUnit::Pt => d.value,
+    };
+    let s = settings.display_skip;
+    let skip = Length::new(pt(resolve(s.natural)), pt(resolve(s.stretch)), pt(resolve(s.shrink)));
+    a.add_vertical_penalty(settings.pre_display_penalty)?;
+    a.add_explicit_vskip(skip)?;
+    a.add_vertical_penalty(settings.pre_display_penalty)?;
+    let display_settings = a.settings().clone();
+    let skips = a.line_skips();
+    a.set_paragraph_indent(0.0);
+    a.set_current_indent(Some(0.0));
+    a.set_line_skips(LineSkips {
+        left: Length::new(skips.left.length, pt(crate::node::INFINITY), pt(0.0)),
+        right: Length::from(skips.right.length),
+        par_fill: Length::zero(),
+    });
+    let mut space = *a.space_settings();
+    space.skip = Some(Length::pt(a.space_width()));
+    a.set_space_settings(space);
+    a.add_box(hbox);
+    a.add_hfill();
+    if let Some(number) = number {
+        a.add_text("(").add_text(number).add_text(")");
     }
+    a.add_vertical_penalty(settings.post_display_penalty)?;
+    a.restore_settings(display_settings);
+    a.add_explicit_vskip(skip)?;
+    a.add_vertical_penalty(settings.post_display_penalty)?;
+    Ok(())
 }
 
 #[cfg(test)]

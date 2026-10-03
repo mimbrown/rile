@@ -1,24 +1,17 @@
-pub mod bible;
 pub mod bibliography;
 pub mod builder;
 pub mod chords;
-pub mod class;
 pub mod color;
 pub mod counter;
 pub mod date;
-pub mod cropmarks;
 pub mod dropcap;
 pub mod features;
 pub mod font;
-pub mod footnotes;
 pub mod frame;
-pub mod framespec;
 pub mod hyphenation;
 pub mod image;
-pub mod index;
 mod language_data;
 pub mod messages;
-pub mod insertion;
 pub mod length;
 pub mod linebreak;
 pub mod lists;
@@ -40,9 +33,10 @@ pub mod table;
 pub mod textcase;
 pub mod url;
 mod word_shaping;
-pub mod toc;
 pub mod trace;
 pub mod transform;
+#[cfg(test)]
+mod test_support;
 
 #[cfg(feature = "harfbuzz")]
 mod harfbuzz_ffi;

@@ -4,9 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::length::Length;
-use crate::node::{Insertion, Node};
-use crate::pagebuilder::{self, SUPER_EJECT};
+use sile_core::length::Length;
+use sile_core::node::{Insertion, Node};
+use sile_core::pagebuilder::{self, SUPER_EJECT};
 
 /// How one kind of insertion is placed.
 #[derive(Debug, Clone)]
