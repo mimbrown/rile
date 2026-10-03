@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["math", "bibliography"]
+default = ["system-fonts", "math", "bibliography"]
 harfbuzz = ["dep:harfbuzz-sys"]
+# Fonts installed on the system, found through fontconfig. Without it fonts
+# come from files, directories, data or a FontSource.
+system-fonts = ["fontdb/memmap", "fontdb/fontconfig"]
 # SILE's math package: formulas from a typed tree, TeX-like syntax or MathML.
 math = []
 # Citations and bibliographies from BibTeX through CSL styles (hayagriva).
@@ -13,7 +16,7 @@ bibliography = ["dep:hayagriva"]
 
 [dependencies]
 ttf-parser = "0.25"
-fontdb = "0.22"
+fontdb = { version = "0.22", default-features = false, features = ["fs"] }
 rustybuzz = "0.20"
 self_cell = "1"
 unicode-bidi = "0.3"

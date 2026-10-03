@@ -550,19 +550,27 @@ pub struct GlyphBBox {
 // FontDatabase
 // ---------------------------------------------------------------------------
 
+/// Where fonts come from. A source finds the font file a spec names, by
+/// its family, weight and style or by its `filename`.
+pub trait FontSource {
+    /// The data of the font `spec` asks for and the index of the face in
+    /// it, or `None` when this source has no such font.
+    fn find(&self, spec: &FontSpec) -> Result<Option<(Vec<u8>, u32)>, FontError>;
+}
+
+/// Fonts by family, weight and style: those given as data or in a
+/// directory, and with the `system-fonts` feature those installed. Font
+/// files named by a spec's `filename` are read from disk.
 pub struct FontDatabase {
     db: fontdb::Database,
-    cache: HashMap<String, Arc<FontFace>>,
 }
 
 impl FontDatabase {
     pub fn new() -> Self {
-        Self {
-            db: fontdb::Database::new(),
-            cache: HashMap::new(),
-        }
+        Self { db: fontdb::Database::new() }
     }
 
+    #[cfg(feature = "system-fonts")]
     pub fn load_system_fonts(&mut self) {
         self.db.load_system_fonts();
     }
@@ -583,28 +591,6 @@ impl FontDatabase {
 
     pub fn font_count(&self) -> usize {
         self.db.faces().count()
-    }
-
-    /// Resolve a FontSpec to a loaded FontFace.
-    ///
-    /// If the spec has a `filename`, the font is loaded directly from that
-    /// path. Otherwise fontdb is queried by family/weight/style.
-    pub fn resolve(&mut self, spec: &FontSpec) -> Result<Arc<FontFace>, FontError> {
-        let key = spec.cache_key();
-        if let Some(face) = self.cache.get(&key) {
-            return Ok(Arc::clone(face));
-        }
-
-        let face = if let Some(filename) = &spec.filename {
-            let data = std::fs::read(filename).map_err(|e| FontError::Io(e.to_string()))?;
-            FontFace::from_bytes(data, 0)?
-        } else {
-            self.resolve_from_db(spec)?
-        };
-
-        let face = Arc::new(face);
-        self.cache.insert(key, Arc::clone(&face));
-        Ok(face)
     }
 
     /// The resolved family name for a fontdb face ID.
@@ -638,26 +624,18 @@ impl FontDatabase {
         };
         self.db.query(&query)
     }
+}
 
-    fn resolve_from_db(&self, spec: &FontSpec) -> Result<FontFace, FontError> {
-        let family = spec
-            .family
-            .as_deref()
-            .ok_or_else(|| FontError::NotFound("no family or filename specified".into()))?;
-
-        let id = self
-            .query(spec)
-            .ok_or_else(|| FontError::NotFound(format!("no match for family \"{family}\"")))?;
-
-        let mut data_out: Option<(Vec<u8>, u32)> = None;
-        self.db.with_face_data(id, |data, index| {
-            data_out = Some((data.to_vec(), index));
-        });
-
-        let (data, index) =
-            data_out.ok_or_else(|| FontError::NotFound("face data unavailable".into()))?;
-
-        FontFace::from_bytes(data, index)
+impl FontSource for FontDatabase {
+    fn find(&self, spec: &FontSpec) -> Result<Option<(Vec<u8>, u32)>, FontError> {
+        if let Some(filename) = &spec.filename {
+            let data = std::fs::read(filename).map_err(|e| FontError::Io(e.to_string()))?;
+            return Ok(Some((data, 0)));
+        }
+        let Some(id) = self.query(spec) else { return Ok(None) };
+        let mut found = None;
+        self.db.with_face_data(id, |data, index| found = Some((data.to_vec(), index)));
+        Ok(found)
     }
 }
 
@@ -669,10 +647,7 @@ impl Default for FontDatabase {
 
 impl fmt::Debug for FontDatabase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FontDatabase")
-            .field("faces", &self.db.faces().count())
-            .field("cached", &self.cache.len())
-            .finish()
+        f.debug_struct("FontDatabase").field("faces", &self.db.faces().count()).finish()
     }
 }
 
@@ -734,23 +709,15 @@ mod tests {
         assert_eq!(FontWeight::BLACK.0, 900);
     }
 
-    // -- FontFace via system font --------------------------------------------
+    // -- FontFace ------------------------------------------------------------
 
-    fn load_any_system_font() -> Option<FontFace> {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        let id = db.faces().next()?.id;
-        let mut data_out: Option<(Vec<u8>, u32)> = None;
-        db.with_face_data(id, |data, index| {
-            data_out = Some((data.to_vec(), index));
-        });
-        let (data, index) = data_out?;
-        FontFace::from_bytes(data, index).ok()
+    fn gentium_face() -> Option<FontFace> {
+        FontFace::from_bytes(crate::test_support::gentium(), 0).ok()
     }
 
     #[test]
     fn face_metrics() {
-        let face = match load_any_system_font() {
+        let face = match gentium_face() {
             Some(f) => f,
             None => return, // skip if no system fonts
         };
@@ -763,7 +730,7 @@ mod tests {
 
     #[test]
     fn face_glyph_id_for_ascii() {
-        let face = match load_any_system_font() {
+        let face = match gentium_face() {
             Some(f) => f,
             None => return,
         };
@@ -774,7 +741,7 @@ mod tests {
 
     #[test]
     fn face_advance_width() {
-        let face = match load_any_system_font() {
+        let face = match gentium_face() {
             Some(f) => f,
             None => return,
         };
@@ -786,7 +753,7 @@ mod tests {
 
     #[test]
     fn face_scale() {
-        let face = match load_any_system_font() {
+        let face = match gentium_face() {
             Some(f) => f,
             None => return,
         };
@@ -800,7 +767,7 @@ mod tests {
 
     #[test]
     fn face_missing_glyph_returns_none() {
-        let face = match load_any_system_font() {
+        let face = match gentium_face() {
             Some(f) => f,
             None => return,
         };
@@ -815,7 +782,7 @@ mod tests {
 
     #[test]
     fn face_glyph_bounding_box() {
-        let face = match load_any_system_font() {
+        let face = match gentium_face() {
             Some(f) => f,
             None => return,
         };
@@ -830,50 +797,12 @@ mod tests {
     // -- FontDatabase --------------------------------------------------------
 
     #[test]
-    fn database_load_system_fonts() {
+    fn the_database_finds_fonts_given_as_data_by_family() {
         let mut db = FontDatabase::new();
-        db.load_system_fonts();
-        assert!(db.font_count() > 0, "should find at least one system font");
-    }
-
-    #[test]
-    fn database_resolve_by_family() {
-        let mut db = FontDatabase::new();
-        db.load_system_fonts();
-        // Try a font that exists on macOS
-        let spec = FontSpec {
-            family: Some("Helvetica".into()),
-            ..Default::default()
-        };
-        if db.query(&spec).is_some() {
-            let face = db.resolve(&spec).unwrap();
-            assert!(face.glyph_count() > 0);
-        }
-    }
-
-    #[test]
-    fn database_resolve_caches() {
-        let mut db = FontDatabase::new();
-        db.load_system_fonts();
-        let spec = FontSpec {
-            family: Some("Helvetica".into()),
-            ..Default::default()
-        };
-        if db.query(&spec).is_some() {
-            let f1 = db.resolve(&spec).unwrap();
-            let f2 = db.resolve(&spec).unwrap();
-            assert!(Arc::ptr_eq(&f1, &f2), "second resolve should hit cache");
-        }
-    }
-
-    #[test]
-    fn database_not_found() {
-        let mut db = FontDatabase::new();
-        db.load_system_fonts();
-        let spec = FontSpec {
-            family: Some("ThisFontDoesNotExist999".into()),
-            ..Default::default()
-        };
-        assert!(db.resolve(&spec).is_err());
+        db.load_font_data(crate::test_support::gentium());
+        let spec = |family: &str| FontSpec { family: Some(family.into()), ..Default::default() };
+        let (data, index) = db.find(&spec("gentiumplus")).unwrap().unwrap();
+        assert!(FontFace::from_bytes(data, index).unwrap().glyph_count() > 0);
+        assert!(db.find(&spec("ThisFontDoesNotExist999")).unwrap().is_none());
     }
 }

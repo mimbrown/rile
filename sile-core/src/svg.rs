@@ -182,18 +182,9 @@ mod tests {
     use crate::font::{Direction, FontSpec};
     use crate::shaper::{apply_fallbacks, shape_bidi, RustyBuzzShaper, Shaper};
 
-    fn load_system_font_and_spec() -> Option<(FontFace, FontSpec)> {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        let info = db.faces().next()?;
-        let family = info.families.first()?.0.clone();
-        let id = info.id;
-        let mut data_out: Option<(Vec<u8>, u32)> = None;
-        db.with_face_data(id, |data, index| {
-            data_out = Some((data.to_vec(), index));
-        });
-        let (data, index) = data_out?;
-        let face = FontFace::from_bytes(data, index).ok()?;
+    fn gentium_and_spec() -> Option<(FontFace, FontSpec)> {
+        let face = FontFace::from_bytes(crate::test_support::gentium(), 0).ok()?;
+        let family = "Gentium Plus".to_string();
         let spec = FontSpec {
             family: Some(family),
             size: 48.0,
@@ -215,7 +206,7 @@ mod tests {
 
     #[test]
     fn render_hello_world() {
-        let (face, spec) = match load_system_font_and_spec() {
+        let (face, spec) = match gentium_and_spec() {
             Some(v) => v,
             None => return,
         };
@@ -228,7 +219,7 @@ mod tests {
 
     #[test]
     fn render_bidi_mixed() {
-        let (face, spec) = match load_system_font_and_spec() {
+        let (face, spec) = match gentium_and_spec() {
             Some(v) => v,
             None => return,
         };
@@ -242,7 +233,7 @@ mod tests {
 
     #[test]
     fn render_empty() {
-        let (face, _spec) = match load_system_font_and_spec() {
+        let (face, _spec) = match gentium_and_spec() {
             Some(v) => v,
             None => return,
         };
@@ -307,7 +298,7 @@ mod tests {
             Some(f) => f,
             None => return,
         };
-        let (latin_face, latin_spec) = match load_system_font_and_spec() {
+        let (latin_face, latin_spec) = match gentium_and_spec() {
             Some(v) => v,
             None => return,
         };

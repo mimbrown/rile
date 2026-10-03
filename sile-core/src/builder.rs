@@ -6,7 +6,7 @@ use unicode_linebreak::{BreakClass, break_property};
 
 use crate::color::Color;
 use crate::counter::MultilevelCounter;
-use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight, Variations};
+use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSource, FontSpec, FontStyle, FontWeight, Variations};
 use crate::frame::{PaperSize, Flow, FrameDirection, FrameGeometry};
 use crate::hyphenation::HyphenationDictionary;
 use crate::length::Length;
@@ -648,6 +648,9 @@ pub struct Typesetter {
     bidi: bool,
 
     font_db: FontDatabase,
+    font_sources: Vec<Box<dyn FontSource>>,
+    /// Faces found so far, by `FontSpec::cache_key`.
+    faces: BTreeMap<String, Arc<FontFace>>,
     fonts: BTreeMap<String, RegisteredFont>,
     shaper: Box<dyn Shaper>,
     hyphenation: HyphenationDictionary,
@@ -707,6 +710,8 @@ impl Typesetter {
             frame_override: None,
             bidi: true,
             font_db: FontDatabase::new(),
+            font_sources: Vec::new(),
+            faces: BTreeMap::new(),
             fonts: BTreeMap::new(),
             shaper: shaper::default_shaper(),
             hyphenation: HyphenationDictionary::new(),
@@ -821,9 +826,50 @@ impl Typesetter {
 
     // -- Fonts ---------------------------------------------------------------
 
+    #[cfg(feature = "system-fonts")]
     pub fn load_system_fonts(&mut self) -> &mut Self {
         self.font_db.load_system_fonts();
         self
+    }
+
+    /// Look fonts up in `source` before the sources added earlier and the
+    /// font database.
+    pub fn add_font_source(&mut self, source: impl FontSource + 'static) -> &mut Self {
+        self.font_sources.insert(0, Box::new(source));
+        self
+    }
+
+    /// Make the font in `data` available to `set_font_spec` by its family,
+    /// weight and style.
+    pub fn add_font(&mut self, data: Vec<u8>) -> &mut Self {
+        self.font_db.load_font_data(data);
+        self
+    }
+
+    /// The face `spec` asks for, from the sources added, then the font
+    /// database.
+    fn find_face(&mut self, spec: &FontSpec) -> Result<Arc<FontFace>, FontError> {
+        let key = spec.cache_key();
+        if let Some(face) = self.faces.get(&key) {
+            return Ok(Arc::clone(face));
+        }
+        let sources = self.font_sources.iter().map(|s| &**s).chain([&self.font_db as &dyn FontSource]);
+        let mut found = None;
+        for source in sources {
+            found = source.find(spec)?;
+            if found.is_some() {
+                break;
+            }
+        }
+        let Some((data, index)) = found else {
+            return Err(FontError::NotFound(match &spec.family {
+                Some(family) => format!("no match for family \"{family}\""),
+                None => "no family or filename specified".into(),
+            }));
+        };
+        let face = Arc::new(FontFace::from_bytes(data, index)?);
+        self.faces.insert(key, Arc::clone(&face));
+        Ok(face)
     }
 
     pub fn load_font_file(
@@ -854,7 +900,7 @@ impl Typesetter {
         name: impl Into<String>,
         spec: FontSpec,
     ) -> Result<&mut Self, BuilderError> {
-        let face = self.font_db.resolve(&spec)?;
+        let face = self.find_face(&spec)?;
         let name = name.into();
         self.fonts.insert(name, RegisteredFont { spec, face });
         Ok(self)
@@ -929,7 +975,7 @@ impl Typesetter {
             };
             let face = match self.fonts.values().find(same_face) {
                 Some(f) => Arc::clone(&f.face),
-                None => self.font_db.resolve(&spec)?,
+                None => self.find_face(&spec)?,
             };
             self.fonts.insert(key.clone(), RegisteredFont { spec, face });
         }
@@ -3454,6 +3500,26 @@ mod tests {
         };
         assert!(doc.load_font_data("body", data, spec).is_ok());
         assert!(doc.fonts.contains_key("body"));
+    }
+
+    #[test]
+    fn font_sources_come_before_the_database_and_faces_are_kept() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Counting(Arc<AtomicUsize>);
+        impl FontSource for Counting {
+            fn find(&self, spec: &FontSpec) -> Result<Option<(Vec<u8>, u32)>, FontError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok((spec.family.as_deref() == Some("Mine")).then(|| (crate::test_support::gentium(), 0)))
+            }
+        }
+        let asked = Arc::new(AtomicUsize::new(0));
+        let mut ts = Typesetter::new();
+        ts.add_font_source(Counting(Arc::clone(&asked)));
+        let spec = FontSpec { family: Some("Mine".into()), ..Default::default() };
+        ts.set_font_spec(spec.clone()).unwrap();
+        ts.set_font_spec(FontSpec { size: 20.0, ..spec }).unwrap();
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        assert!(ts.set_font_spec(FontSpec { family: Some("Nobody".into()), ..Default::default() }).is_err());
     }
 
     #[test]
