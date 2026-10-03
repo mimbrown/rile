@@ -19,6 +19,15 @@ pub enum Flow {
 }
 
 impl Flow {
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::LTR => Self::RTL,
+            Self::RTL => Self::LTR,
+            Self::TTB => Self::BTT,
+            Self::BTT => Self::TTB,
+        }
+    }
+
     fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
             "LTR" => Some(Self::LTR),

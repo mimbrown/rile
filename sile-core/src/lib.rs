@@ -1,6 +1,7 @@
 pub mod bible;
 pub mod bibliography;
 pub mod builder;
+pub mod chords;
 pub mod class;
 pub mod color;
 pub mod counter;

@@ -949,6 +949,9 @@ pub struct VBox {
     pub ratio: f64,
     pub misfit: bool,
     pub explicit: bool,
+    /// Drawn against its frame's writing direction (SILE's
+    /// `boustrophedon`).
+    pub reversed: bool,
 }
 
 impl VBox {
@@ -956,7 +959,7 @@ impl VBox {
     pub fn new(nodes: Vec<Node>, width: Length) -> Self {
         let height = max_node_dim(&nodes, Dim::Height);
         let depth = max_node_dim(&nodes, Dim::Depth);
-        Self { width, height, depth, nodes, ratio: 0.0, misfit: false, explicit: false }
+        Self { width, height, depth, nodes, ratio: 0.0, misfit: false, explicit: false, reversed: false }
     }
 
     /// Append a node (or a VBox's contents) to this VBox, updating dimensions.

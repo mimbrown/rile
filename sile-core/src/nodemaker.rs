@@ -37,6 +37,8 @@ pub enum Token {
     /// Space between Japanese characters in zenkaku widths: glue where the
     /// line may break, otherwise a kern.
     Zenkaku { breakable: bool, width: f64, stretch: f64, shrink: f64 },
+    /// Zero glue that stretches by 2pt, between letters set as words.
+    LetterGlue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +70,9 @@ pub struct NodeMakerOptions {
     pub ethiopic_centered: bool,
     /// Every character its own word, spaced and broken by JIS class.
     pub japanese: bool,
+    /// Every character its own word, lines breaking after any of them
+    /// (SILE's `boustrophedon` node maker for Ancient Greek).
+    pub letters: bool,
 }
 
 impl NodeMakerOptions {
@@ -102,6 +107,16 @@ enum Last {
 pub fn tokenize(items: &[Item], options: NodeMakerOptions) -> Vec<Token> {
     if options.japanese {
         return japanese::tokenize(items);
+    }
+    if options.letters {
+        return items
+            .iter()
+            .enumerate()
+            .flat_map(|(i, item)| match is_space(item) {
+                true => vec![Token::Space(i)],
+                false => vec![Token::Word(i..i + 1), Token::Penalty(0), Token::LetterGlue],
+            })
+            .collect();
     }
     // French drops typed spaces where it sets its own.
     let start = items.first().map_or(0, |i| i.index);
@@ -568,6 +583,7 @@ mod tests {
                 Token::Penalty(p) => format!("P{p}"),
                 Token::RepeatedHyphen => "D".into(),
                 Token::LetterSpace => "k".into(),
+                Token::LetterGlue => "+".into(),
                 Token::PunctSpace(PunctSpace::Thin) => "t".into(),
                 Token::PunctSpace(PunctSpace::Colon) => "c".into(),
                 Token::PunctSpace(PunctSpace::Guillemet) => "g".into(),

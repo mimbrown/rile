@@ -146,8 +146,9 @@ impl Plain {
 }
 
 impl Plain {
-    /// SILE's `jplain`: a content frame on a 50 by 30 character grid, set
-    /// vertically if `tate`.
+    /// SILE's `tplain` and `jplain`: a content frame on a 50 by 30
+    /// character grid, set vertically if `tate`. `jplain` also sets the
+    /// language to Japanese and the font to Noto Sans CJK JP.
     pub fn japanese(tate: bool) -> Self {
         let mut frames = Self::frameset();
         frames[0] = Hanmen::PLAIN.frame("content", "8.3%pw", "11.6%ph", tate);
@@ -338,6 +339,85 @@ pub fn triglot(doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
 }
 
 // ---------------------------------------------------------------------------
+// pecha
+// ---------------------------------------------------------------------------
+
+/// SILE's `pecha`: Tibetan loose-leaf pages with the content frame
+/// outlined and page numbers in Tibetan numerals turned down the margin to
+/// its right. `runningHead`, in the left margin, is the user's to fill.
+#[derive(Debug, Clone)]
+pub struct Pecha {
+    pub folio: Folio,
+    pub frames: Vec<FrameSpec>,
+}
+
+impl Pecha {
+    pub fn new() -> Self {
+        Self {
+            folio: Folio::default(),
+            frames: vec![
+                FrameSpec::new("content").left("5%pw").right("95%pw").top("5%ph").bottom("90%ph"),
+                FrameSpec::new("folio").left("right(content)").width("2.5%pw").top("top(content)").height("height(content)"),
+                FrameSpec::new("runningHead").right("left(content)").width("2.5%pw").top("top(content)").height("height(content)"),
+            ],
+        }
+    }
+}
+
+impl Default for Pecha {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Make `doc` a pecha (SILE's `pecha` class): in Tibetan, lines set flush
+/// right without indents.
+pub fn pecha(doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+    doc.set_class(Pecha::new()).set_language("bo");
+    let skips = doc.line_skips().aligned(TextAlign::Right);
+    doc.set_line_skips(skips).set_paragraph_indent(0.0);
+    Ok(())
+}
+
+/// `n` in Tibetan digits.
+pub fn tibetan_number(n: usize) -> String {
+    n.to_string().chars().map(|d| char::from_u32(0x0f20 + d.to_digit(10).unwrap_or(0)).unwrap_or(d)).collect()
+}
+
+impl DocumentClass for Pecha {
+    fn page_template(&self) -> PageTemplate {
+        PageTemplate { frames: self.frames.clone(), first_content_frame: "content".to_string() }
+    }
+
+    fn new_page(&mut self, _doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+        self.folio.value += 1;
+        Ok(())
+    }
+
+    fn end_page(&mut self, doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+        doc.show_frame(Some("content"))?;
+        let Some(frame) = doc.frame("folio").cloned() else { return Ok(()) };
+        let saved = doc.settings().clone();
+        doc.use_toplevel().start_hbox().add_text(tibetan_number(self.folio.value));
+        let number = doc.make_hbox();
+        doc.restore_settings(saved);
+        let number = crate::transform::rotated(number?, -90.0);
+        let pt = |l: &Length| l.length.to_pt().unwrap_or(0.0);
+        let (width, height, depth) = (pt(&number.width), pt(&number.height), pt(&number.depth));
+        let x = frame.left + (frame.width() - width) / 2.0;
+        let baseline = frame.top + (frame.height() - height - depth) / 2.0 + height;
+        let mut folio = crate::node::HBox::new(number.width.clone(), number.height.clone(), number.depth.clone());
+        folio.nodes.push(crate::node::Node::HBox(number));
+        doc.add_overlay(crate::pagebuilder::Underlay::Box(folio, [x, baseline]))?;
+        Ok(())
+    }
+
+    fn folio(&self) -> Option<PageNumber> {
+        Some(self.folio.number())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // hanmen
 // ---------------------------------------------------------------------------
 
@@ -415,8 +495,9 @@ impl Book {
         }
     }
 
-    /// SILE's `jbook`: a content frame on a 40 by 35 character grid, set
-    /// vertically if `tate`.
+    /// SILE's `tbook` and `jbook`: a content frame on a 40 by 35 character
+    /// grid, set vertically if `tate`. `jbook` also sets the language to
+    /// Japanese and the font to Noto Sans CJK JP.
     pub fn japanese(tate: bool) -> Self {
         Self::with_frames(vec![
             FrameSpec::new("runningHead")
@@ -1081,5 +1162,34 @@ mod glot_tests {
             assert!(left("a") < left("b") && left("b") < left("c"));
             assert!(text_in(page, "c").starts_with("right"));
         }
+    }
+}
+
+#[cfg(test)]
+mod pecha_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    #[test]
+    fn pecha_pages_are_numbered_in_tibetan_down_the_right_margin() {
+        assert_eq!(tibetan_number(120), "༡༢༠");
+        let mut d = doc(Plain::new());
+        pecha(&mut d).unwrap();
+        d.add_text("Text.");
+        d.supereject().unwrap();
+        d.add_text("More.");
+        let pages = d.into_pages().unwrap();
+        assert_eq!(pages.len(), 2);
+        let crate::pagebuilder::Underlay::Box(folio, [x, _]) = &pages[1].overlay[0] else { panic!("no folio") };
+        let crate::node::Node::HBox(number) = &folio.nodes[0] else { panic!("no number") };
+        let text: String = number.nodes.iter().filter_map(|n| match n {
+            crate::node::Node::NNode(n) => Some(n.text.to_string()),
+            _ => None,
+        }).collect();
+        assert_eq!(text, "༢");
+        assert!(*x > pages[1].frame("content").unwrap().right);
+        assert_eq!(pages[1].outlines.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["content"]);
+        let (content, folio) = (pages[0].frame("content").unwrap(), pages[0].frame("folio").unwrap());
+        assert_eq!((folio.left, folio.top, folio.bottom), (content.right, content.top, content.bottom));
     }
 }

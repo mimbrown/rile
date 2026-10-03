@@ -12,8 +12,9 @@ use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallba
 use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{
-    diglot, triglot, Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain, DIGLOT_FLOWS, TRIGLOT_FLOWS,
+    diglot, pecha, triglot, Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain, DIGLOT_FLOWS, TRIGLOT_FLOWS,
 };
+use sile_core::chords;
 use sile_core::date::DateTime;
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{HBox, Ink, LinkDest, Node, Stroke};
@@ -255,6 +256,14 @@ const SIMPLE_COMMANDS: &[&str] = &[
     "switch-master-one-page",
     "showframe",
     "makecolumns",
+    "ifattop",
+    "repertoire",
+    "pangrams",
+    "set-to-width",
+    "boustrophedon",
+    "ch",
+    "chordmode",
+    "ifnotattop",
     "letter",
     "sender",
     "recipient",
@@ -318,6 +327,8 @@ const SETTINGS: &[&str] = &[
     "current.parindent",
     "typesetter.parfillskip",
     "linebreak.tolerance",
+    "chordmode.offset",
+    "shaper.complexspaces",
     "linebreak.pretolerance",
     "linebreak.emergencyStretch",
     "linebreak.hyphenPenalty",
@@ -374,7 +385,7 @@ fn check(
                     _ => &[],
                 };
                 defined.extend(flows.iter().map(|(name, _)| name.to_string()));
-                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook" | "letter" | "diglot" | "triglot")) {
+                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook" | "tplain" | "tbook" | "letter" | "diglot" | "triglot" | "pecha")) {
                     missing.insert(format!("class={class}"));
                 }
                 if let Some(p) = cmd.option("papersize")
@@ -405,6 +416,12 @@ fn check(
                     | "packages.frametricks"
                     | "packages.balanced-frames"
                     | "packages.date"
+                    | "packages.ifattop"
+                    | "packages.chordmode"
+                    | "packages.boustrophedon"
+                    | "packages.complex-spaces"
+                    | "packages.specimen"
+                    | "packages.pagebuilder-bestfit"
                     | "packages.counters"
                     | "packages.color"
                     | "packages.unichar"
@@ -640,6 +657,7 @@ pub(crate) struct Driver<'a> {
     /// The diglot or triglot class's flows, each selected by a command of
     /// its name.
     parallel_flows: Vec<&'static str>,
+    chord_offset: Option<String>,
 }
 
 impl AsMut<DocumentBuilder> for Driver<'_> {
@@ -695,6 +713,7 @@ impl<'a> Driver<'a> {
             grid_spacing: None,
             letter: None,
             parallel_flows: Vec::new(),
+            chord_offset: None,
             bibliography: Bibliography::default(),
             tex: TexMath::new(),
         })
@@ -1070,6 +1089,21 @@ impl<'a> Driver<'a> {
         })
     }
 
+    /// SILE's `\\ch`: `name` set through `\\chordmode:chordfont` above `lyric`.
+    fn chord(&mut self, name: &str, lyric: &[Content]) -> Result<(), String> {
+        let offset = match self.chord_offset.clone() {
+            Some(offset) => self.dimen(&offset)?,
+            None => self.dimen("2ex")?,
+        };
+        self.sync()?;
+        let name = vec![Content::Text(name.to_string())];
+        let chord = |d: &mut Self| {
+            let font = Command { name: "chordmode:chordfont".into(), options: Vec::new(), content: Some(name), raw: None };
+            if d.defines.contains_key(&font.name) { d.command(&font) } else { d.process(font.content.as_deref().unwrap_or_default()) }.map_err(Failed)
+        };
+        chords::add_chord(self, offset, chord, |d| d.process(lyric).map_err(Failed)).map_err(|Failed(e)| e)
+    }
+
     fn command(&mut self, cmd: &Command) -> Result<(), String> {
         if let Some(port) = &self.port {
             let inc = cmd.name == "use" && cmd.option("module").is_some_and(|m| m.starts_with("inc."));
@@ -1107,14 +1141,20 @@ impl<'a> Driver<'a> {
                         self.letter = Some(Default::default());
                         self.doc.set_class(Letter::new())
                     }
-                    Some("jbook") => self.doc.set_class(Book::japanese(cmd.option("layout") == Some("tate"))),
-                    Some("jplain") => self.doc.set_class(Plain::japanese(cmd.option("layout") == Some("tate"))),
+                    Some("jbook" | "tbook") => self.doc.set_class(Book::japanese(cmd.option("layout") == Some("tate"))),
+                    Some("jplain" | "tplain") => self.doc.set_class(Plain::japanese(cmd.option("layout") == Some("tate"))),
                     _ => self.doc.set_class(Plain::new()),
                 };
                 match cmd.option("class") {
                     Some("diglot") => {
                         diglot(&mut self.doc).map_err(err)?;
                         self.parallel_flows = DIGLOT_FLOWS.iter().map(|(name, _)| *name).collect();
+                    }
+                    Some("pecha") => {
+                        pecha(&mut self.doc).map_err(err)?;
+                        self.set_default("document.language", "bo")?;
+                        self.set("document.parindent", "0pt")?;
+                        self.settings.skips = self.settings.skips.clone().aligned(TextAlign::Right);
                     }
                     Some("triglot") => {
                         triglot(&mut self.doc).map_err(err)?;
@@ -1124,15 +1164,17 @@ impl<'a> Driver<'a> {
                     }
                     _ => {}
                 }
-                if let Some(class) = cmd.option("class").filter(|c| c.starts_with('j')) {
-                    let grid = if class == "jbook" { Hanmen::BOOK } else { Hanmen::PLAIN };
+                if let Some(class) = cmd.option("class").filter(|c| matches!(*c, "jplain" | "jbook" | "tplain" | "tbook")) {
+                    let grid = if class.ends_with("book") { Hanmen::BOOK } else { Hanmen::PLAIN };
                     self.hanmen = Some(grid);
                     self.doc.set_bidi(false);
                     self.set("document.baselineskip", &format!("{}pt", grid.baseline_skip()))?;
                     self.set("document.parskip", "0pt")?;
                     self.set("document.parindent", "10pt")?;
-                    self.set_default("document.language", "ja")?;
-                    self.set_default("font.family", "Noto Sans CJK JP")?;
+                    if class.starts_with('j') {
+                        self.set_default("document.language", "ja")?;
+                        self.set_default("font.family", "Noto Sans CJK JP")?;
+                    }
                 }
                 if let Some(dir) = cmd.option("direction").and_then(direction) {
                     self.doc.set_direction(dir);
@@ -1151,6 +1193,15 @@ impl<'a> Driver<'a> {
                 }
                 Some("packages.grid") => {
                     self.grid_spacing = Some(self.dimen(cmd.option("spacing").unwrap_or("1bs"))?);
+                }
+                Some("packages.complex-spaces") => {
+                    self.doc.set_complex_spaces(true);
+                }
+                Some("packages.boustrophedon") => {
+                    self.doc.break_between_letters("grc");
+                }
+                Some("packages.pagebuilder-bestfit") => {
+                    self.doc.set_best_fit_pages(true);
                 }
                 _ => {}
             },
@@ -1403,6 +1454,49 @@ impl<'a> Driver<'a> {
                 let gutter = self.dimen(cmd.option("gutter").unwrap_or("3%pw"))?;
                 self.sync()?;
                 self.doc.make_columns(columns, gutter).map_err(err)?;
+            }
+            "ch" => self.chord(opt("name")?, content)?,
+            "repertoire" | "pangrams" => {
+                self.sync()?;
+                match cmd.name.as_str() {
+                    "repertoire" => self.doc.add_repertoire(),
+                    _ => self.doc.add_pangrams(),
+                }
+                .map_err(err)?;
+            }
+            "set-to-width" => {
+                let width = self.dimen(opt("width")?)?;
+                self.sync()?;
+                self.doc.set_to_width(width, &sil::plain_text(content)).map_err(err)?;
+            }
+            "boustrophedon" => {
+                self.sync()?;
+                self.doc.leave_hmode(false).map_err(err)?;
+                self.doc.set_boustrophedon(true);
+                let result = self.process(content).and_then(|_| self.doc.leave_hmode(false).map_err(err));
+                self.doc.set_boustrophedon(false);
+                result?;
+            }
+            "chordmode" => {
+                for c in content {
+                    let Content::Text(text) = c else {
+                        self.process(std::slice::from_ref(c))?;
+                        continue;
+                    };
+                    for (chord, text) in chords::parse(text) {
+                        let text = [Content::Text(text)];
+                        match chord {
+                            Some(chord) => self.chord(&chord, &text)?,
+                            None => self.process(&text)?,
+                        }
+                    }
+                }
+            }
+            "ifattop" | "ifnotattop" => {
+                self.sync()?;
+                if self.doc.at_top_of_frame().map_err(err)? == (cmd.name == "ifattop") {
+                    self.process(content)?;
+                }
             }
             "balancecolumns" => {
                 self.sync()?;
@@ -2293,6 +2387,10 @@ impl<'a> Driver<'a> {
             "math.postdisplaypenalty" => self.doc.math_settings_mut().post_display_penalty = num()? as i32,
             "document.language" => self.settings.language = value.to_string(),
             "document.parindent" => self.settings.parindent = value.to_string(),
+            "chordmode.offset" => self.chord_offset = Some(value.to_string()),
+            "shaper.complexspaces" => {
+                self.doc.set_complex_spaces(truthy(value));
+            }
             "document.parskip" => self.settings.parskip = value.to_string(),
             "document.baselineskip" => self.settings.baselineskip = value.to_string(),
             "document.lineskip" => self.settings.lineskip = value.to_string(),
