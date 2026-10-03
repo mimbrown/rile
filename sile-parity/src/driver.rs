@@ -11,7 +11,9 @@ use sile_core::bible::Bible;
 use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
-use sile_core::class::{Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain};
+use sile_core::class::{
+    diglot, triglot, Book, Folio, FolioState, Hanmen, Heading, Letter, LetterPart, LetterParts, PageTemplate, Plain, DIGLOT_FLOWS, TRIGLOT_FLOWS,
+};
 use sile_core::date::DateTime;
 use sile_core::insertion::InsertionClass;
 use sile_core::node::{HBox, Ink, LinkDest, Node, Stroke};
@@ -366,7 +368,13 @@ fn check(
                 }
             }
             "document" => {
-                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook" | "letter")) {
+                let flows: &[(&str, &str)] = match cmd.option("class") {
+                    Some("diglot") => &DIGLOT_FLOWS,
+                    Some("triglot") => &TRIGLOT_FLOWS,
+                    _ => &[],
+                };
+                defined.extend(flows.iter().map(|(name, _)| name.to_string()));
+                if let Some(class) = cmd.option("class").filter(|c| !matches!(*c, "plain" | "book" | "bible" | "jplain" | "jbook" | "letter" | "diglot" | "triglot")) {
                     missing.insert(format!("class={class}"));
                 }
                 if let Some(p) = cmd.option("papersize")
@@ -629,6 +637,9 @@ pub(crate) struct Driver<'a> {
     tex: TexMath,
     /// The letter class's date, sender, recipient and salutation, as given.
     letter: Option<[Option<Vec<Content>>; 4]>,
+    /// The diglot or triglot class's flows, each selected by a command of
+    /// its name.
+    parallel_flows: Vec<&'static str>,
 }
 
 impl AsMut<DocumentBuilder> for Driver<'_> {
@@ -683,6 +694,7 @@ impl<'a> Driver<'a> {
             target: (u32::MAX, 0, 0),
             grid_spacing: None,
             letter: None,
+            parallel_flows: Vec::new(),
             bibliography: Bibliography::default(),
             tex: TexMath::new(),
         })
@@ -1099,6 +1111,19 @@ impl<'a> Driver<'a> {
                     Some("jplain") => self.doc.set_class(Plain::japanese(cmd.option("layout") == Some("tate"))),
                     _ => self.doc.set_class(Plain::new()),
                 };
+                match cmd.option("class") {
+                    Some("diglot") => {
+                        diglot(&mut self.doc).map_err(err)?;
+                        self.parallel_flows = DIGLOT_FLOWS.iter().map(|(name, _)| *name).collect();
+                    }
+                    Some("triglot") => {
+                        triglot(&mut self.doc).map_err(err)?;
+                        self.set("linebreak.tolerance", "5000")?;
+                        self.set("document.parindent", "0pt")?;
+                        self.parallel_flows = TRIGLOT_FLOWS.iter().map(|(name, _)| *name).collect();
+                    }
+                    _ => {}
+                }
                 if let Some(class) = cmd.option("class").filter(|c| c.starts_with('j')) {
                     let grid = if class == "jbook" { Hanmen::BOOK } else { Hanmen::PLAIN };
                     self.hanmen = Some(grid);
@@ -1575,6 +1600,10 @@ impl<'a> Driver<'a> {
                 let offset = cmd.option("offset").map(|o| self.dimen(o)).transpose()?;
                 self.sync()?;
                 self.doc.break_frame_vertical(offset).map_err(err)?;
+            }
+            name if self.parallel_flows.contains(&name) => {
+                self.sync()?;
+                self.doc.select_parallel(name).map_err(err)?;
             }
             "sync" => {
                 self.sync()?;

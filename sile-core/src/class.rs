@@ -276,6 +276,68 @@ impl DocumentClass for Letter {
 }
 
 // ---------------------------------------------------------------------------
+// diglot and triglot
+// ---------------------------------------------------------------------------
+
+/// The parallel flows of a diglot and the frames they go to.
+pub const DIGLOT_FLOWS: [(&str, &str); 2] = [("left", "a"), ("right", "b")];
+/// The parallel flows of a triglot and the frames they go to.
+pub const TRIGLOT_FLOWS: [(&str, &str); 3] = [("left", "a"), ("middle", "b"), ("right", "c")];
+
+impl Plain {
+    /// SILE's `diglot`: frames `a` and `b` side by side, the folio below
+    /// both.
+    pub fn diglot() -> Self {
+        let mut frames: Vec<FrameSpec> = Self::frameset().into_iter().filter(|f| f.id != "folio").collect();
+        frames.extend([
+            FrameSpec::new("a").left("8.3%pw").right("48%pw").top("11.6%ph").bottom("80%ph"),
+            FrameSpec::new("b").left("52%pw").right("100%pw-left(a)").top("top(a)").bottom("bottom(a)"),
+            FrameSpec::new("folio").left("left(a)").right("right(b)").top("bottom(a)+3%ph").bottom("bottom(a)+8%ph"),
+        ]);
+        Self { folio: Folio::default(), frames }
+    }
+}
+
+impl Book {
+    /// SILE's `triglot`: frames `a`, `b` and `c` side by side, the folio
+    /// below the first two. Unlike the book's own frames they are not
+    /// mirrored on left pages, so the flows keep their order.
+    pub fn triglot() -> Self {
+        let mut book = Self::new();
+        let columns = [
+            FrameSpec::new("a").left("5%pw").right("28%pw").top("11.6%ph").bottom("80%ph"),
+            FrameSpec::new("b").left("33%pw").right("60%pw").top("top(a)").bottom("bottom(a)"),
+            FrameSpec::new("c").left("66%pw").right("95%pw").top("top(a)").bottom("bottom(a)"),
+            FrameSpec::new("folio").left("left(a)").right("right(b)").top("bottom(a)+3%pw").bottom("bottom(a)+8%ph"),
+        ];
+        for frames in [&mut book.right, &mut book.left] {
+            frames.retain(|f| f.id != "folio");
+            frames.extend(columns.iter().cloned());
+        }
+        book
+    }
+}
+
+/// Make `doc` a diglot (SILE's `diglot` class) and start its `left` and
+/// `right` flows, selected with `select_parallel` and levelled with
+/// `sync_parallel`.
+pub fn diglot(doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+    doc.set_class(Plain::diglot());
+    doc.begin_parallel(&DIGLOT_FLOWS)?;
+    Ok(())
+}
+
+/// Make `doc` a triglot (SILE's `triglot` class): unindented paragraphs
+/// broken with a tolerance of 5000, in `left`, `middle` and `right` flows.
+pub fn triglot(doc: &mut DocumentBuilder) -> Result<(), BuilderError> {
+    doc.set_class(Book::triglot());
+    doc.linebreak_settings_mut().tolerance = 5000;
+    doc.set_paragraph_indent(0.0);
+    doc.begin_parallel(&TRIGLOT_FLOWS)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // hanmen
 // ---------------------------------------------------------------------------
 
@@ -977,5 +1039,46 @@ mod letter_tests {
         Letter::letter(&mut d, LetterParts::default(), |_| Ok::<_, BuilderError>(())).unwrap();
         let today = DateTime::now_utc().format("%A,%d%B").unwrap();
         assert_eq!(text_in(&d.into_pages().unwrap()[0], "content"), today);
+    }
+}
+
+#[cfg(test)]
+mod glot_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    #[test]
+    fn diglots_set_each_flow_in_its_own_column() {
+        let mut d = doc(Plain::new());
+        diglot(&mut d).unwrap();
+        d.select_parallel("left").unwrap().add_text("Left.");
+        d.select_parallel("right").unwrap().add_text("Right.");
+        d.sync_parallel().unwrap();
+        let pages = d.into_pages().unwrap();
+        assert_eq!(text_in(&pages[0], "a"), "Left.");
+        assert_eq!(text_in(&pages[0], "b"), "Right.");
+        assert_eq!(text_in(&pages[0], "folio"), "1");
+        let frame = |id| pages[0].frame(id).unwrap();
+        assert!(frame("a").right < frame("b").left);
+        assert_eq!(frame("folio").left, frame("a").left);
+    }
+
+    #[test]
+    fn triglot_columns_keep_their_order_on_left_pages() {
+        let mut d = doc(Plain::new());
+        triglot(&mut d).unwrap();
+        for _ in 0..80 {
+            for flow in ["left", "middle", "right"] {
+                d.select_parallel(flow).unwrap().add_text(flow);
+            }
+            d.sync_parallel().unwrap();
+        }
+        let pages = d.into_pages().unwrap();
+        assert!(pages.len() > 1);
+        for page in &pages[..2] {
+            let left = |id| page.frame(id).unwrap().left;
+            assert!(left("a") < left("b") && left("b") < left("c"));
+            assert!(text_in(page, "c").starts_with("right"));
+        }
     }
 }
