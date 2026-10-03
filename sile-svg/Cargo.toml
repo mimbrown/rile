@@ -7,7 +7,7 @@ edition = "2024"
 harfbuzz = ["sile-core/harfbuzz"]
 
 [dependencies]
-sile-core = { path = "../sile-core" }
+sile-core = { path = "../sile-core", default-features = false }
 ttf-parser = "0.25"
 
 [dev-dependencies]

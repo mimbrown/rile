@@ -2,6 +2,7 @@ use std::ops::DerefMut;
 
 use super::*;
 use crate::lists::{ListKind, ListOptions};
+#[cfg(feature = "math")]
 use crate::math::{MathMode, MathNode};
 use crate::node::HBox;
 use crate::structure::Role;
@@ -212,6 +213,7 @@ pub trait Arranger: DerefMut<Target = Typesetter> {
         Ok(self)
     }
 
+    #[cfg(feature = "math")]
     /// Typeset `formula` in the text, or displayed on its own line,
     /// centred, with an optional number flush right (SILE's `\math` and
     /// `\mathml`).

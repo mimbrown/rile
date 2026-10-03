@@ -7,6 +7,7 @@ pub mod class;
 pub mod cropmarks;
 pub mod footnotes;
 pub mod framespec;
+#[cfg(feature = "index")]
 pub mod index;
 pub mod insertion;
 mod paginator;
