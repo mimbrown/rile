@@ -12,8 +12,8 @@ sile-core = { path = "../sile-core" }
 sile-pages = { path = "../sile-pages" }
 sile-pdf = { path = "../sile-pdf" }
 sile-svg = { path = "../sile-svg" }
+sile-markdown = { path = "../sile-markdown" }
 fontdb = "0.22"
-pulldown-cmark = { version = "0.13.4", default-features = false }
 clap = { version = "4.6.7", features = ["derive"] }
 
 [[bin]]

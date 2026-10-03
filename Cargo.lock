@@ -946,8 +946,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fontdb",
- "pulldown-cmark",
  "sile-core",
+ "sile-markdown",
  "sile-pages",
  "sile-pdf",
  "sile-svg",
@@ -967,6 +967,15 @@ dependencies = [
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "sile-markdown"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "sile-core",
+ "sile-pages",
 ]
 
 [[package]]

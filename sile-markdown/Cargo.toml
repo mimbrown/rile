@@ -1,0 +1,17 @@
+[package]
+name = "sile-markdown"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["pages", "math"]
+harfbuzz = ["sile-core/harfbuzz"]
+# Footnotes at the foot of the page and book headings with sile-pages.
+pages = ["dep:sile-pages"]
+# `$`/`$$` math; without it formulas are set as code.
+math = ["sile-core/math"]
+
+[dependencies]
+sile-core = { path = "../sile-core", default-features = false }
+sile-pages = { path = "../sile-pages", default-features = false, optional = true }
+pulldown-cmark = { version = "0.13.4", default-features = false }

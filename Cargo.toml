@@ -1,3 +1,3 @@
 [workspace]
-members = ["sile-cli", "sile-core", "sile-pages", "sile-parity", "sile-pdf", "sile-svg"]
+members = ["sile-cli", "sile-core", "sile-markdown", "sile-pages", "sile-parity", "sile-pdf", "sile-svg"]
 resolver = "3"
