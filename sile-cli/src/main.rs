@@ -1,21 +1,19 @@
-mod markdown;
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use sile_core::builder::{BaselineSkip, BuilderError, FontFallback};
-use sile_pages::DocumentBuilder;
-use sile_pages::class::{Book, Plain};
+use sile_core::builder::{BaselineSkip, BuilderError, FontFallback, Galley, Typesetter};
 use sile_core::font::FontSpec;
 use sile_core::frame::PaperSize;
 use sile_core::length::Length;
 use sile_core::measurement::Measurement;
+use sile_core::metadata::Metadata;
+use sile_markdown::Markdown;
+use sile_pages::DocumentBuilder;
+use sile_pages::class::{Book, Plain};
 use sile_pages::lay_out_until_settled;
 use sile_pages::toc::{DefaultTocStyle, TableOfContents};
 use sile_pdf::PdfOptions;
-
-use markdown::Markdown;
 
 /// Typeset a Markdown (CommonMark) document to PDF.
 #[derive(Parser)]
@@ -33,6 +31,10 @@ struct Args {
     /// A paper size such as a4, a5, letter or "15cm x 6cm".
     #[arg(long, default_value = "a4", value_parser = |s: &str| s.parse::<PaperSize>())]
     paper: PaperSize,
+    /// Set the text this many points wide on one page as tall as it is,
+    /// instead of on pages of the paper size.
+    #[arg(long, conflicts_with_all = ["class", "paper", "toc"])]
+    width: Option<f64>,
     /// The main font family; the first of Gentium Plus, Gentium Book Plus
     /// and a few common serif fonts that is installed by default.
     #[arg(long)]
@@ -112,46 +114,68 @@ fn run(args: &Args) -> Result<Vec<PathBuf>, String> {
     let mono = pick_family(&fonts, args.mono.as_deref(), MONO).unwrap_or_else(|| font.clone());
     let math = pick_family(&fonts, args.math_font.as_deref(), MATH);
 
-    let mut warnings = Vec::new();
-    let layout = lay_out_until_settled(5, |references| -> Result<DocumentBuilder, BuilderError> {
-        let mut doc = DocumentBuilder::new(args.paper);
-        doc.load_system_fonts();
-        for dir in &args.fonts_dirs {
-            doc.load_fonts_dir(dir);
-        }
-        match args.class {
-            Class::Plain => doc.set_class(Plain::new()),
-            Class::Book => doc.set_class(Book::new()),
-        };
-        doc.set_references(references);
-        doc.set_language(args.language.clone()).set_tagged(!args.untagged);
-        let stem = args.input.file_stem().map(|s| s.to_string_lossy().into_owned());
-        if let Some(title) = args.title.clone().or(stem) {
-            doc.set_title(title);
-        }
-        if let Some(author) = &args.author {
-            doc.set_author(author.clone());
-        }
-        doc.set_font_spec(FontSpec { family: Some(font.clone()), size: args.size, ..Default::default() })?;
+    let stem = args.input.file_stem().map(|s| s.to_string_lossy().into_owned());
+    let metadata = Metadata { title: args.title.clone().or(stem), author: args.author.clone(), ..Default::default() };
+    let setup = |ts: &mut Typesetter| -> Result<(), BuilderError> {
+        ts.set_language(args.language.clone()).set_tagged(!args.untagged);
+        ts.set_font_spec(FontSpec { family: Some(font.clone()), size: args.size, ..Default::default() })?;
         for family in &args.fallbacks {
-            doc.add_font_fallback(FontFallback { family: Some(family.clone()), ..Default::default() })?;
+            ts.add_font_fallback(FontFallback { family: Some(family.clone()), ..Default::default() })?;
         }
         let skip = Length::new(Measurement::pt(1.2 * args.size), Measurement::pt(1.0), Measurement::pt(0.0));
         if let Some(math) = &math {
-            doc.math_settings_mut().family = math.clone();
+            ts.math_settings_mut().family = math.clone();
         }
-        doc.set_baseline_skip(Some(BaselineSkip { skip, lineskip: 1.0 }));
-        doc.set_paragraph_indent(1.2 * args.size);
-        doc.set_paragraph_skip(Length::new(Measurement::pt(0.0), Measurement::pt(1.0), Measurement::pt(0.0)));
-        doc.mark_toplevel();
-        if args.toc {
-            TableOfContents::default().typeset(&mut doc, &DefaultTocStyle)?;
+        ts.set_baseline_skip(Some(BaselineSkip { skip, lineskip: 1.0 }));
+        ts.set_paragraph_indent(1.2 * args.size);
+        ts.set_paragraph_skip(Length::new(Measurement::pt(0.0), Measurement::pt(1.0), Measurement::pt(0.0)));
+        ts.mark_toplevel();
+        Ok(())
+    };
+    let load_fonts = |ts: &mut Typesetter| {
+        ts.load_system_fonts();
+        for dir in &args.fonts_dirs {
+            ts.load_fonts_dir(dir);
         }
-        let mut md = Markdown::new(doc, &base, &mono);
-        md.typeset(&src)?;
-        warnings = std::mem::take(&mut md.warnings);
-        Ok(md.finish())
-    })
+    };
+
+    let mut warnings = Vec::new();
+    let layout = match args.width {
+        Some(width) => (|| -> Result<_, BuilderError> {
+            let mut galley = Galley::new(Some(width));
+            load_fonts(&mut galley);
+            setup(&mut galley)?;
+            let mut md = Markdown::new(galley, &base, &mono);
+            md.typeset(&src)?;
+            warnings = std::mem::take(&mut md.warnings);
+            let mut layout = md.finish().lay_out()?;
+            layout.set_metadata(metadata);
+            Ok(layout)
+        })(),
+        None => lay_out_until_settled(5, |references| -> Result<DocumentBuilder, BuilderError> {
+            let mut doc = DocumentBuilder::new(args.paper);
+            load_fonts(&mut doc);
+            match args.class {
+                Class::Plain => doc.set_class(Plain::new()),
+                Class::Book => doc.set_class(Book::new()),
+            };
+            doc.set_references(references);
+            if let Some(title) = &metadata.title {
+                doc.set_title(title.clone());
+            }
+            if let Some(author) = &metadata.author {
+                doc.set_author(author.clone());
+            }
+            setup(&mut doc)?;
+            if args.toc {
+                TableOfContents::default().typeset(&mut doc, &DefaultTocStyle)?;
+            }
+            let mut md = Markdown::new(doc, &base, &mono);
+            md.typeset(&src)?;
+            warnings = std::mem::take(&mut md.warnings);
+            Ok(md.finish())
+        }),
+    }
     .map_err(|e| e.to_string())?;
     for warning in warnings {
         eprintln!("sile: warning: {warning}");
