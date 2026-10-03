@@ -2604,9 +2604,11 @@ impl DocumentBuilder {
         self.ensure_page()?;
         if let Some(mut parallel) = self.parallel.take() {
             self.deactivate(&mut parallel);
-            self.parallel_page_break(&mut parallel)?;
+            self.sync_flows(&mut parallel)?;
+            self.output_parallel_page(&mut parallel)?;
             self.pop_typesetter()?;
             self.vertical_queue.clear();
+            return Ok(());
         }
         self.new_paragraph()?;
         self.add_vfill()?;
@@ -2692,6 +2694,12 @@ impl DocumentBuilder {
     /// Output each flow's levelled material and start a new page, levelling
     /// what is left (SILE's `parallelPagebreak`).
     fn parallel_page_break(&mut self, parallel: &mut Parallel) -> Result<(), BuilderError> {
+        self.output_parallel_page(parallel)?;
+        self.new_page()?;
+        self.sync_flows(parallel)
+    }
+
+    fn output_parallel_page(&mut self, parallel: &mut Parallel) -> Result<(), BuilderError> {
         for p in parallel.flows.values_mut() {
             self.enter_flow(p);
             let result = if !self.vertical_queue.is_empty() && p.mark == 0 {
@@ -2708,8 +2716,7 @@ impl DocumentBuilder {
         for p in parallel.flows.values_mut() {
             p.mark = 0;
         }
-        self.new_page()?;
-        self.sync_flows(parallel)
+        Ok(())
     }
 
     fn enter_flow(&mut self, p: &mut ParallelFlow) {

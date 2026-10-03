@@ -1055,6 +1055,7 @@ mod glot_tests {
         d.select_parallel("right").unwrap().add_text("Right.");
         d.sync_parallel().unwrap();
         let pages = d.into_pages().unwrap();
+        assert_eq!(pages.len(), 1);
         assert_eq!(text_in(&pages[0], "a"), "Left.");
         assert_eq!(text_in(&pages[0], "b"), "Right.");
         assert_eq!(text_in(&pages[0], "folio"), "1");
