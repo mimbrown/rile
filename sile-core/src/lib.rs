@@ -4,6 +4,7 @@ pub mod builder;
 pub mod class;
 pub mod color;
 pub mod counter;
+pub mod date;
 pub mod cropmarks;
 pub mod dropcap;
 pub mod features;

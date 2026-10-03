@@ -5,6 +5,7 @@ use std::any::Any;
 
 use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
 use crate::counter::PageNumber;
+use crate::date::DateTime;
 use crate::font::{FontSpec, FontStyle, FontWeight};
 use crate::framespec::{FrameDirection, FrameSpec};
 use crate::length::Length;
@@ -176,6 +177,101 @@ impl DocumentClass for Plain {
 
     fn folio(&self) -> Option<PageNumber> {
         Some(self.folio.number())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// letter
+// ---------------------------------------------------------------------------
+
+/// SILE's `letter` class: one content frame, starting two inches down, and
+/// no folios.
+#[derive(Debug, Clone)]
+pub struct Letter {
+    pub frames: Vec<FrameSpec>,
+}
+
+/// Typesets one part of a letter.
+pub type LetterPart<'a, C, E> = Box<dyn FnOnce(&mut C) -> Result<(), E> + 'a>;
+
+/// What a letter starts with. The date is today's (`%A, %d %B`, UTC) when
+/// not given.
+pub struct LetterParts<'a, C, E> {
+    pub date: Option<LetterPart<'a, C, E>>,
+    pub sender: Option<LetterPart<'a, C, E>>,
+    pub recipient: Option<LetterPart<'a, C, E>>,
+    pub salutation: Option<LetterPart<'a, C, E>>,
+}
+
+impl<C, E> Default for LetterParts<'_, C, E> {
+    fn default() -> Self {
+        Self { date: None, sender: None, recipient: None, salutation: None }
+    }
+}
+
+impl Letter {
+    pub fn new() -> Self {
+        Self { frames: vec![FrameSpec::new("content").left("5%pw").right("95%pw").top("2in").bottom("90%ph")] }
+    }
+
+    /// Set a letter (SILE's `\letter`): its date, sender, recipient and
+    /// salutation, a big skip after each, then `body`, all ragged right.
+    /// Paragraphs are not indented from here on.
+    pub fn letter<C, E>(ctx: &mut C, parts: LetterParts<'_, C, E>, body: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: AsMut<DocumentBuilder>,
+        E: From<BuilderError>,
+    {
+        let doc = ctx.as_mut();
+        doc.set_paragraph_indent(0.0).set_current_indent(Some(0.0));
+        let saved = doc.settings().clone();
+        let skips = doc.line_skips().aligned(TextAlign::Left);
+        doc.set_line_skips(skips);
+        let result = Self::parts(ctx, parts, body);
+        ctx.as_mut().restore_settings(saved);
+        result
+    }
+
+    fn parts<C, E>(ctx: &mut C, parts: LetterParts<'_, C, E>, body: impl FnOnce(&mut C) -> Result<(), E>) -> Result<(), E>
+    where
+        C: AsMut<DocumentBuilder>,
+        E: From<BuilderError>,
+    {
+        let skip = |ctx: &mut C| ctx.as_mut().add_explicit_vskip(bigskip()).map(|_| ());
+        match parts.date {
+            Some(date) => date(ctx)?,
+            None => {
+                let today = DateTime::now_utc().format("%A, %d %B").expect("valid format");
+                ctx.as_mut().add_text(today);
+            }
+        }
+        ctx.as_mut().new_paragraph()?;
+        skip(ctx)?;
+        if let Some(sender) = parts.sender {
+            sender(ctx)?;
+            skip(ctx)?;
+        }
+        for part in [parts.recipient, parts.salutation] {
+            if let Some(part) = part {
+                part(ctx)?;
+            }
+            skip(ctx)?;
+        }
+        body(ctx)?;
+        ctx.as_mut().new_paragraph()?;
+        Ok(())
+    }
+}
+
+impl Default for Letter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DocumentClass for Letter {
+    fn page_template(&self) -> PageTemplate {
+        PageTemplate { frames: self.frames.clone(), first_content_frame: "content".to_string() }
     }
 }
 
@@ -843,5 +939,43 @@ mod heading_tests {
         Book::chapter(&mut d, Heading::default(), title("Selam")).unwrap();
         let pages = d.into_pages().unwrap();
         assert_eq!(text_in(pages.last().unwrap(), "content"), "Bölüm1Selam");
+    }
+}
+
+#[cfg(test)]
+mod letter_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    fn text(text: &'static str) -> Option<LetterPart<'static, DocumentBuilder, BuilderError>> {
+        Some(Box::new(move |d: &mut DocumentBuilder| {
+            d.add_text(text);
+            Ok(())
+        }))
+    }
+
+    #[test]
+    fn letters_set_their_parts_in_order_below_the_letterhead_space() {
+        let mut d = doc(Letter::new());
+        let parts = LetterParts { date: text("1 May"), recipient: text("Jo"), salutation: text("Dear Jo,"), ..Default::default() };
+        Letter::letter(&mut d, parts, |d| {
+            d.add_text("Hello.");
+            Ok(())
+        })
+        .unwrap();
+        d.add_text("Yours.");
+        let pages = d.into_pages().unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(text_in(&pages[0], "content"), "1MayJoDearJo,Hello.Yours.");
+        assert_eq!(pages[0].frame("content").unwrap().top, 144.0);
+        assert!(pages[0].content.iter().all(|(id, _)| id == "content"), "no folio");
+    }
+
+    #[test]
+    fn letters_are_dated_today_by_default() {
+        let mut d = doc(Letter::new());
+        Letter::letter(&mut d, LetterParts::default(), |_| Ok::<_, BuilderError>(())).unwrap();
+        let today = DateTime::now_utc().format("%A,%d%B").unwrap();
+        assert_eq!(text_in(&d.into_pages().unwrap()[0], "content"), today);
     }
 }
