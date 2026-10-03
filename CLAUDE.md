@@ -23,6 +23,7 @@ Content that needs vertical mode (lists, tables, display math, specimens) is wri
 ## Features
 
 * Default builds are pure Rust (rustybuzz). `--features harfbuzz` links system HarfBuzz, needed for Graphite fonts.
+* Heavy packages are default features, so a minimal user can turn them off: sile-core's `math` and `bibliography` (hayagriva), sile-pages' `index` (icu_collator) and sile-pdf's `images` (PNG decoding; JPEGs are embedded as they are without it). Library crates depend on sile-core with `default-features = false`. CI tests and lints each library crate without its optional features.
 
 ## Shaping cache
 
