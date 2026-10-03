@@ -895,6 +895,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rile-starter"
+version = "0.1.0"
+dependencies = [
+ "rile",
+ "rile-pages",
+ "rile-pdf",
+ "rile-svg",
+]
+
+[[package]]
 name = "rile-svg"
 version = "0.1.0"
 dependencies = [

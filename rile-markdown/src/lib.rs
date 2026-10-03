@@ -3,6 +3,25 @@
 //! lists and `$`/`$$` math in the TeX-like syntax. Arrangers say how
 //! headings and footnotes are set through [`MarkdownTarget`]; by default
 //! headings are bold and unnumbered and notes are endnotes.
+//!
+//! ```
+//! use std::path::Path;
+//! use rile::builder::{BuilderError, Galley};
+//! use rile::font::FontSpec;
+//! use rile_markdown::Markdown;
+//!
+//! # fn main() -> Result<(), BuilderError> {
+//! let mut galley = Galley::new(Some(300.0));
+//! # galley.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts"));
+//! galley.load_fonts_dir("fonts");
+//! galley.set_font_spec(FontSpec { family: Some("Gentium Plus".into()), size: 10.0, ..Default::default() })?;
+//! let mut md = Markdown::new(galley, Path::new("."), "Gentium Plus");
+//! md.typeset("# Notes\n\nSome *emphasis* and a footnote.[^1]\n\n[^1]: Set at the end.\n")?;
+//! assert!(md.warnings.is_empty());
+//! let layout = md.finish().lay_out()?;
+//! # Ok(())
+//! # }
+//! ```
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
