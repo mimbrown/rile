@@ -99,6 +99,28 @@ impl DerefMut for DocumentBuilder {
     }
 }
 
+impl Arranger for DocumentBuilder {
+    fn typesetter(&mut self) -> &mut Typesetter {
+        &mut self.ts
+    }
+
+    fn before_lines(&mut self) -> Result<(), BuilderError> {
+        self.ensure_page()?;
+        self.sync_frame();
+        Ok(())
+    }
+
+    fn after_lines(&mut self, independent: bool) -> Result<(), BuilderError> {
+        if independent || !self.typesetters.is_empty() {
+            return Ok(());
+        }
+        if self.build_page()? {
+            self.init_next_frame()?;
+        }
+        Ok(())
+    }
+}
+
 impl AsMut<DocumentBuilder> for DocumentBuilder {
     fn as_mut(&mut self) -> &mut DocumentBuilder {
         self
@@ -335,43 +357,6 @@ impl DocumentBuilder {
         Ok(self)
     }
 
-    /// End the paragraph and add the paragraph skip after it (SILE's
-    /// `\par`). The skip is left out right after vertical glue or a
-    /// penalty, so skips are not doubled.
-    pub fn new_paragraph(&mut self) -> Result<&mut Self, BuilderError> {
-        let after_skip = self.paragraph.is_empty()
-            && self.last_vertical().is_some_and(|n| n.is_vglue() || n.is_penalty());
-        if !after_skip {
-            self.current_indent = None;
-            self.leave_hmode(false)?;
-            let skip = self.settings.paragraph_skip;
-            self.push_vglue_node(Node::vglue(skip));
-        }
-        self.leave_hmode(false)?;
-        self.hanging = None;
-        Ok(self)
-    }
-
-    /// Break the pending paragraph into lines without ending it as a
-    /// paragraph (no paragraph skip), then fill the current frame if it is
-    /// full. `independent` only breaks the lines.
-    pub fn leave_hmode(&mut self, independent: bool) -> Result<(), BuilderError> {
-        if self.captures.is_empty() && !self.paragraph.is_empty() {
-            self.ensure_page()?;
-            self.sync_frame();
-        }
-        if !self.ts.end_paragraph()? {
-            return Ok(());
-        }
-        if independent || !self.typesetters.is_empty() {
-            return Ok(());
-        }
-        if self.build_page()? {
-            self.init_next_frame()?;
-        }
-        Ok(())
-    }
-
     /// Set lines on a grid `spacing` apart from the top of each frame, with
     /// vertical space rounded up to fit (SILE's `\grid`).
     pub fn start_grid(&mut self, spacing: f64) -> Result<&mut Self, BuilderError> {
@@ -406,85 +391,6 @@ impl DocumentBuilder {
     pub fn set_best_fit_pages(&mut self, on: bool) -> &mut Self {
         self.best_fit_pages = on;
         self
-    }
-
-    /// End the paragraph and say whether nothing is waiting for the current
-    /// frame, so what comes next starts at its top (SILE's `\ifattop`).
-    pub fn at_top_of_frame(&mut self) -> Result<bool, BuilderError> {
-        self.leave_hmode(false)?;
-        Ok(self.vertical_queue.is_empty())
-    }
-
-    // -- Vertical material ---------------------------------------------------
-
-    pub fn add_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode(false)?;
-        self.push_vertical(Node::vglue(amount.into()));
-        Ok(self)
-    }
-
-    /// Vertical space kept even at the top or bottom of a page (SILE's
-    /// `\skip` and `\smallskip` family).
-    pub fn add_explicit_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode(false)?;
-        let mut glue = Node::vglue(amount.into());
-        if let Node::VGlue(g) = &mut glue {
-            g.explicit = true;
-        }
-        self.push_vglue_node(glue);
-        Ok(self)
-    }
-
-    pub fn add_vfill(&mut self) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode(false)?;
-        let mut fill = Node::vfillglue(Length::zero());
-        if let Node::VFillGlue(g) = &mut fill {
-            g.explicit = true;
-        }
-        self.push_vertical(fill);
-        Ok(self)
-    }
-
-    pub fn add_page_break(&mut self) -> Result<&mut Self, BuilderError> {
-        self.add_vertical_penalty(-10_000)
-    }
-
-    /// A page break penalty, ending any pending paragraph first.
-    pub fn add_vertical_penalty(&mut self, penalty: i32) -> Result<&mut Self, BuilderError> {
-        if !self.paragraph.is_empty() {
-            self.leave_hmode(false)?;
-        }
-        self.push_vertical(Node::penalty(penalty));
-        Ok(self)
-    }
-
-    /// Fill the page and force a new one (SILE's `\supereject`).
-    pub fn supereject(&mut self) -> Result<&mut Self, BuilderError> {
-        self.add_vfill()?;
-        self.add_penalty(SUPER_EJECT);
-        Ok(self)
-    }
-
-    pub fn add_rule(&mut self, width: f64, height: f64) -> Result<&mut Self, BuilderError> {
-        self.leave_hmode(false)?;
-        let vbox = VBox {
-            width: Length::pt(width),
-            height: Length::pt(height),
-            depth: Length::zero(),
-            nodes: vec![{
-                let mut rule = Node::hbox(width, height, 0.0);
-                if let Node::HBox(b) = &mut rule {
-                    b.ink = Some(Ink::Rule);
-                }
-                rule
-            }],
-            ratio: 0.0,
-            misfit: false,
-            explicit: false,
-            reversed: false,
-        };
-        self.push_vertical(Node::VBox(vbox));
-        Ok(self)
     }
 
     /// Lay pages out with `class`: its page template, and its hooks at
@@ -1271,26 +1177,6 @@ impl DocumentBuilder {
             .unwrap_or(nodes.len());
         self.output(frame, nodes.into_iter().skip(top).collect());
         Ok(())
-    }
-
-    // -- Settings and captured material ---------------------------------------
-
-    /// Add captured material here, as it was added where it was recorded.
-    pub fn add_material(&mut self, material: &Material) -> Result<&mut Self, BuilderError> {
-        for item in &material.items {
-            match item {
-                Captured::Paragraph { inlines, settings } => {
-                    let current = std::mem::replace(&mut self.settings, (**settings).clone());
-                    self.paragraph.extend(inlines.iter().cloned());
-                    let result = self.leave_hmode(false);
-                    self.settings = current;
-                    result?;
-                }
-                Captured::Inlines(inlines) => self.paragraph.extend(inlines.iter().cloned()),
-                Captured::Vertical(node) => self.push_vertical((**node).clone()),
-            }
-        }
-        Ok(self)
     }
 
     // -- Bookmarks -----------------------------------------------------------

@@ -3,7 +3,7 @@
 
 use std::any::Any;
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Material, TextAlign};
 use crate::counter::PageNumber;
 use crate::date::DateTime;
 use crate::font::{FontSpec, FontStyle, FontWeight};

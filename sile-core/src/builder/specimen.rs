@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{BuilderError, DocumentBuilder, Inline, Typesetter};
+use super::{Arranger, BuilderError, DocumentBuilder, Inline, Typesetter};
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::{GlyphData, NNode, Node};

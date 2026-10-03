@@ -5,7 +5,7 @@ use icu_collator::options::CollatorOptions;
 use icu_collator::Collator;
 use icu_locale::Locale;
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
 use crate::class::{bigskip, smallskip};
 use crate::length::Length;
 use crate::node::LinkDest;

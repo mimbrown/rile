@@ -23,6 +23,8 @@ struct Args {
     /// The Markdown file to typeset.
     input: PathBuf,
     /// Where to write the PDF; the input with a .pdf extension by default.
+    /// A .svg name writes SVG instead, numbered per page when there are
+    /// several.
     #[arg(short, long)]
     output: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = Class::Plain)]
@@ -84,8 +86,10 @@ const MONO: &[&str] = &["Hack", "DejaVu Sans Mono", "Noto Sans Mono", "Liberatio
 fn main() -> ExitCode {
     let args = Args::parse();
     match run(&args) {
-        Ok(output) => {
-            eprintln!("Wrote {}", output.display());
+        Ok(outputs) => {
+            for output in outputs {
+                eprintln!("Wrote {}", output.display());
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -95,7 +99,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &Args) -> Result<PathBuf, String> {
+fn run(args: &Args) -> Result<Vec<PathBuf>, String> {
     let src = std::fs::read_to_string(&args.input).map_err(|e| format!("{}: {e}", args.input.display()))?;
     let base = args.input.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut fonts = fontdb::Database::new();
@@ -153,9 +157,23 @@ fn run(args: &Args) -> Result<PathBuf, String> {
     }
 
     let output = args.output.clone().unwrap_or_else(|| args.input.with_extension("pdf"));
-    let pdf = sile_pdf::render(&layout, PdfOptions::default()).map_err(|e| e.to_string())?;
-    std::fs::write(&output, pdf).map_err(|e| format!("{}: {e}", output.display()))?;
-    Ok(output)
+    if output.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+        let pages = sile_svg::render(&layout);
+        let stem = output.file_stem().unwrap_or_default().to_string_lossy();
+        let paths: Vec<PathBuf> = (1..=pages.len())
+            .map(|n| if pages.len() == 1 { output.clone() } else { output.with_file_name(format!("{stem}-{n}.svg")) })
+            .collect();
+        for (path, page) in paths.iter().zip(&pages) {
+            write(path, page.as_bytes())?;
+        }
+        return Ok(paths);
+    }
+    write(&output, &sile_pdf::render(&layout, PdfOptions::default()).map_err(|e| e.to_string())?)?;
+    Ok(vec![output])
+}
+
+fn write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
+    std::fs::write(path, data).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The family asked for when it is installed, or else the first of

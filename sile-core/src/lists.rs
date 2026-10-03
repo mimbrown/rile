@@ -1,6 +1,6 @@
 //! Numbered and bulleted lists (SILE's `lists` package).
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Typesetter};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Typesetter};
 use crate::counter::format_number;
 use crate::length::Length;
 use crate::structure::Role;

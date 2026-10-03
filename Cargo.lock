@@ -949,6 +949,7 @@ dependencies = [
  "pulldown-cmark",
  "sile-core",
  "sile-pdf",
+ "sile-svg",
 ]
 
 [[package]]
@@ -989,6 +990,14 @@ dependencies = [
  "pdf-writer",
  "sile-core",
  "subsetter",
+ "ttf-parser 0.25.1",
+]
+
+[[package]]
+name = "sile-svg"
+version = "0.1.0"
+dependencies = [
+ "sile-core",
  "ttf-parser 0.25.1",
 ]
 

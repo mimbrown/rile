@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips, TextAlign};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, TextAlign};
 use crate::color::Color;
 use crate::font::FontStyle;
 use crate::length::Length;

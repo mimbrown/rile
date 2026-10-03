@@ -1,7 +1,7 @@
 //! Tables of contents, set from the entries the previous pass found (SILE's
 //! `tableofcontents` package).
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
 use crate::class::{bigskip, medskip, smallskip, with_font};
 use crate::font::{FontSpec, FontWeight};
 use crate::length::Length;

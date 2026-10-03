@@ -8,7 +8,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use sile_core::bible::Bible;
-use sile_core::builder::{BaselineSkip, BuilderError, DocumentBuilder, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
+use sile_core::builder::{Arranger, BaselineSkip, BuilderError, DocumentBuilder, FontFallback, ItalicCorrection, LineSkips, LineSpacing, LineSpacingMethod, TextAlign};
 use sile_core::counter::format_number;
 use sile_core::color::Color;
 use sile_core::class::{

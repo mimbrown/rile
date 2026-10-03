@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use sile_core::builder::{BuilderError, DocumentBuilder, LineSkips};
+use sile_core::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
 use sile_core::class::{bigskip, medskip, smallskip, with_font, Book, Heading};
 use sile_core::font::{FontSpec, FontStyle, FontWeight};
 use sile_core::image::Image;

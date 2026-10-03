@@ -23,9 +23,13 @@ use crate::metadata::{Bookmark, Metadata};
 use crate::references::{self, CrossReferences, IndexMark, IndexPage, Label, TocEntry};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
+mod arranger;
+mod galley;
 mod paginator;
 mod specimen;
 
+pub use arranger::Arranger;
+pub use galley::Galley;
 pub use paginator::DocumentBuilder;
 
 // ---------------------------------------------------------------------------
@@ -1890,6 +1894,13 @@ impl Typesetter {
         }
         h_nodes.push(par_fill);
         h_nodes.push(Node::penalty(-10_000));
+        // With no measure, lines are as long as the paragraph, so only forced breaks break it.
+        let hsize = if hsize.is_finite() {
+            hsize
+        } else {
+            let natural: f64 = h_nodes.iter().map(|n| pt_of(&natural_width(n))).sum();
+            natural + pt_of(&skips.left) + pt_of(&skips.right) + self.hanging.map_or(0.0, |(_, indent)| indent.abs()) + 1e-6
+        };
 
         let mut lb_settings = self.settings.linebreak_settings.clone();
         lb_settings.left_skip = skips.left;

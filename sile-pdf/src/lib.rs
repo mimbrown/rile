@@ -1562,6 +1562,7 @@ fn compress_data(data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sile_core::builder::Arranger;
     use sile_core::frame::PaperSize;
     use sile_core::length::Length;
     use sile_core::node::Node;

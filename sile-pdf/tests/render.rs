@@ -1,4 +1,4 @@
-use sile_core::builder::{BuilderError, DocumentBuilder, Layout};
+use sile_core::builder::{Arranger, BuilderError, DocumentBuilder, Layout};
 use sile_core::class::{Book, DocumentClass, Heading, Plain};
 use sile_core::color::Color;
 use sile_core::cropmarks::Cropmarks;

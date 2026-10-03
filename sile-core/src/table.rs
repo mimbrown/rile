@@ -2,7 +2,7 @@
 //! the header rows.
 
 use crate::class::medskip;
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Material, Typesetter};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Material, Typesetter};
 use crate::length::Length;
 use crate::measurement::Measurement;
 use crate::node::{HBox, Node, VBox};
