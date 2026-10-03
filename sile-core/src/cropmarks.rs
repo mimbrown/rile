@@ -85,7 +85,5 @@ mod tests {
         let trace = layout.render_debug();
         assert!(trace.contains("Draw line\t-10.0000\t0.0000\t-20.0000\t0.5000"));
         assert!(trace.contains("(1)"));
-        let pdf = String::from_utf8_lossy(&layout.render().unwrap()).into_owned();
-        assert!(pdf.contains("/MediaBox [0 0 595.2756 841.8898]"), "{}", &pdf[..pdf.len().min(2000)]);
     }
 }

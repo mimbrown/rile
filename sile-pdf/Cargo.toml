@@ -1,0 +1,18 @@
+[package]
+name = "sile-pdf"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+harfbuzz = ["sile-core/harfbuzz"]
+
+[dependencies]
+sile-core = { path = "../sile-core" }
+ttf-parser = "0.25"
+pdf-writer = "0.12"
+subsetter = "0.2"
+miniz_oxide = "0.8"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[dev-dependencies]
+fontdb = "0.22"

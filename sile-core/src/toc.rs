@@ -184,13 +184,4 @@ mod tests {
         assert_eq!(text_in(&layout.pages[0], "content"), "TableofContentsOne3Start3Two5Start5");
         assert_eq!(layout.references.label("Two").map(|l| l.page.as_str()), Some("5"));
     }
-
-    #[test]
-    fn entries_link_to_their_headings_and_fill_the_outline() {
-        let pdf = lay_out_until_settled(3, book).unwrap().render().unwrap();
-        let pdf = String::from_utf8_lossy(&pdf);
-        assert_eq!(pdf.matches("/S /GoTo").count(), 4);
-        assert_eq!(pdf.matches("/Type /Outlines").count(), 1);
-        assert_eq!(pdf.matches("/Title (Start)").count(), 2);
-    }
 }

@@ -4,7 +4,8 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 
 ## Current crates
 
-* `sile-core`: contains the core types and logic
+* `sile-core`: contains the core types and logic; lays documents out into a format-neutral `Layout` (pages, fonts, outline, metadata, structure)
+* `sile-pdf`: writes a `Layout` as PDF (`sile_pdf::render`), with `PdfOptions` for how it is written
 * `sile-cli`: the `sile` command, which typesets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) to tagged, accessible PDF through the builder API
 * `sile-parity`: test-only tool that runs SILE's regression tests through `sile-core` and compares layouts with SILE's expected output
 
@@ -26,7 +27,7 @@ Patterns are SILE's own, converted to `sile-core/languages/*.pat`; localized mes
 
 ## Tagged PDF
 
-`DocumentBuilder::set_tagged` records the document's structure (`sile-core/src/structure.rs`, SILE's `pdfstructure`): every NNode and inked HBox carries the tag of the structure element it belongs to, and the PDF outputter wraps content in marked content, untagged content being artifacts. Text opens paragraphs on its own; classes, lists, links, the TOC, images and math tag themselves. Page furniture (folios, running heads) is set inside `untagged`. Check output with veraPDF's PDF/UA-1 profile (`greenfield-apps` from Maven Central; software.verapdf.org is blocked).
+`DocumentBuilder::set_tagged` records the document's structure (`sile-core/src/structure.rs`, SILE's `pdfstructure`): every NNode and inked HBox carries the tag of the structure element it belongs to, and `sile-pdf` wraps content in marked content, untagged content being artifacts. Text opens paragraphs on its own; classes, lists, links, the TOC, images and math tag themselves. Page furniture (folios, running heads) is set inside `untagged`. Check output with veraPDF's PDF/UA-1 profile (`greenfield-apps` from Maven Central; software.verapdf.org is blocked).
 
 ## SILE parity
 

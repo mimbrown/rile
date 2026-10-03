@@ -948,6 +948,7 @@ dependencies = [
  "fontdb",
  "pulldown-cmark",
  "sile-core",
+ "sile-pdf",
 ]
 
 [[package]]
@@ -961,12 +962,8 @@ dependencies = [
  "icu_collator",
  "icu_locale",
  "icu_segmenter",
- "image",
- "miniz_oxide",
- "pdf-writer",
  "rustybuzz",
  "self_cell",
- "subsetter",
  "ttf-parser 0.25.1",
  "unicode-bidi",
  "unicode-linebreak",
@@ -979,6 +976,19 @@ version = "0.1.0"
 dependencies = [
  "fontdb",
  "sile-core",
+ "ttf-parser 0.25.1",
+]
+
+[[package]]
+name = "sile-pdf"
+version = "0.1.0"
+dependencies = [
+ "fontdb",
+ "image",
+ "miniz_oxide",
+ "pdf-writer",
+ "sile-core",
+ "subsetter",
  "ttf-parser 0.25.1",
 ]
 

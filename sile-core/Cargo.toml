@@ -14,10 +14,6 @@ rustybuzz = "0.20"
 self_cell = "1"
 unicode-bidi = "0.3"
 cassowary = "0.3"
-pdf-writer = "0.12"
-subsetter = "0.2"
-miniz_oxide = "0.8"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 harfbuzz-sys = { version = "0.6", default-features = false, optional = true }
 unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.13.3"
