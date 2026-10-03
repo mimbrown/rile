@@ -560,9 +560,9 @@ pub struct NNode {
     pub text: String,
     /// The shaped sub-boxes (typically [`Node::HBox`] glyph boxes).
     pub nodes: Vec<Node>,
-    pub language: String,
+    pub language: std::sync::Arc<str>,
     /// Font registry key for PDF rendering (empty if not set).
-    pub font_key: String,
+    pub font_key: std::sync::Arc<str>,
     /// Font size in points for PDF rendering.
     pub font_size: f64,
     /// Positioned glyphs from the shaper, used for PDF output.
@@ -619,8 +619,8 @@ impl NNode {
             explicit: false,
             text: text.into(),
             nodes,
-            language: String::new(),
-            font_key: String::new(),
+            language: "".into(),
+            font_key: "".into(),
             font_size: 0.0,
             glyphs: Vec::new(),
             color: None,
@@ -636,7 +636,7 @@ impl NNode {
     pub fn with_glyphs(
         text: impl Into<String>,
         glyphs: Vec<GlyphData>,
-        font_key: impl Into<String>,
+        font_key: impl Into<std::sync::Arc<str>>,
         font_size: f64,
         width: f64,
         height: f64,
@@ -650,7 +650,7 @@ impl NNode {
             explicit: false,
             text: text.into(),
             nodes: Vec::new(),
-            language: String::new(),
+            language: "".into(),
             font_key: font_key.into(),
             font_size,
             glyphs,
@@ -1147,7 +1147,7 @@ impl Node {
     pub fn nnode_with_glyphs(
         text: impl Into<String>,
         glyphs: Vec<GlyphData>,
-        font_key: impl Into<String>,
+        font_key: impl Into<std::sync::Arc<str>>,
         font_size: f64,
         width: f64,
         height: f64,

@@ -101,7 +101,7 @@ impl Canvas for TraceCanvas {
             let _ = writeln!(self.out, "Push color\t{}", fmt_color(color));
         }
         self.move_to(x, baseline_y);
-        let key = self.fonts.get(&nnode.font_key).cloned().unwrap_or_default();
+        let key = self.fonts.get(&*nnode.font_key).cloned().unwrap_or_default();
         if self.last_font.as_ref() != Some(&key) {
             let _ = writeln!(self.out, "Set font \t{key}");
             self.last_font = Some(key);

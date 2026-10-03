@@ -550,7 +550,7 @@ impl PdfOutputter {
 
         let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(&nnode.font_key, g.gid, &g.text)).collect();
         let space = (self.structure.is_some() && nnode.space_after && !nnode.vertical && nnode.bidi_level.unwrap_or(0).is_multiple_of(2))
-            .then(|| self.fonts.get(&nnode.font_key)?.face.glyph_id(' '))
+            .then(|| self.fonts.get(&*nnode.font_key)?.face.glyph_id(' '))
             .flatten()
             .filter(|&gid| gid != 0)
             .map(|gid| self.track_glyph(&nnode.font_key, gid, " "));
@@ -558,7 +558,7 @@ impl PdfOutputter {
         // Where the font's own advances are those of the embedded font,
         // glyphs follow each other in one TJ array, adjusted where the
         // shaper moved them; otherwise each is placed on its own.
-        let entry = &self.fonts[&nnode.font_key];
+        let entry = &self.fonts[&*nnode.font_key];
         let advance = |gid: u16| entry.face.advance_width(gid).unwrap_or(0) as f64 * nnode.font_size / entry.face.units_per_em() as f64;
         let chained = !nnode.vertical && !entry.face.is_variable();
         let mut placed: Vec<(f64, f64, u16, Option<f64>)> = Vec::with_capacity(cids.len() + 1);
@@ -580,44 +580,45 @@ impl PdfOutputter {
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
-        let pdf_name = self
-            .fonts
-            .get(&nnode.font_key)
-            .map(|e| e.pdf_name.clone())
-            .unwrap_or_else(|| "F0".to_string());
+        let pdf_name = self.fonts.get(&*nnode.font_key).map_or("F0", |e| e.pdf_name.as_str());
 
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
+        let mut bytes: Vec<u8> = Vec::with_capacity(2 * placed.len());
+        let mut segments: Vec<(f32, usize)> = Vec::new();
         let mut i = 0;
         while i < placed.len() {
             let (x, y, _, _) = placed[i];
             page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, x as f32, (page_height - y) as f32]);
-            let mut run: Vec<(f32, Vec<u8>)> = vec![(0.0, Vec::new())];
+            bytes.clear();
+            segments.clear();
+            segments.push((0.0, 0));
             let mut pen = x;
             loop {
                 let (gx, _, cid, follows) = placed[i];
                 let adjust = ((pen - gx) * 1000.0 / nnode.font_size * 100.0).round() as f32 / 100.0;
                 if adjust != 0.0 {
-                    run.push((adjust, Vec::new()));
+                    segments.push((adjust, bytes.len()));
                 }
-                run.last_mut().expect("run").1.extend(cid.to_be_bytes());
+                bytes.extend(cid.to_be_bytes());
                 i += 1;
                 match follows {
                     Some(width) if placed.get(i).is_some_and(|next| next.1 == y) => pen = gx + width,
                     _ => break,
                 }
             }
-            if run.len() == 1 {
-                page.content.show(Str(&run[0].1));
+            if segments.len() == 1 {
+                page.content.show(Str(&bytes));
             } else {
                 let mut shown = page.content.show_positioned();
                 let mut items = shown.items();
-                for (adjust, glyphs) in &run {
-                    if *adjust != 0.0 {
-                        items.adjust(*adjust);
+                for (k, &(adjust, start)) in segments.iter().enumerate() {
+                    let end = segments.get(k + 1).map_or(bytes.len(), |s| s.1);
+                    if adjust != 0.0 {
+                        items.adjust(adjust);
                     }
-                    if !glyphs.is_empty() {
-                        items.show(Str(glyphs));
+                    if end > start {
+                        items.show(Str(&bytes[start..end]));
                     }
                 }
             }
