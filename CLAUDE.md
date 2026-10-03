@@ -6,12 +6,18 @@ This is a port of the `sile` typesetting system to rust. The source code for `si
 
 * `sile-core`: contains the core types and logic; lays documents out into a format-neutral `Layout` (pages, fonts, outline, metadata, structure)
 * `sile-pdf`: writes a `Layout` as PDF (`sile_pdf::render`), with `PdfOptions` for how it is written
+* `sile-svg`: writes a `Layout` as SVG, one document per page (`sile_svg::render`); the CLI uses it for `.svg` outputs
 * `sile-cli`: the `sile` command, which typesets Markdown (CommonMark plus GitHub's tables, footnotes, strikethrough and task lists, with `$`/`$$` math) to tagged, accessible PDF through the builder API
 * `sile-parity`: test-only tool that runs SILE's regression tests through `sile-core` and compares layouts with SILE's expected output
 
-## Typesetter and paginator
+## Typesetter, arrangers and galleys
 
-`sile_core::builder::Typesetter` turns text and settings into lines and a vertical list without knowing about pages: lines are set to its `FrameContext` (measure, direction, tate). `DocumentBuilder` (`builder/paginator.rs`) wraps it, derefs to it, and owns everything that knows about pages: frames, templates, classes, insertions, page breaking, parallel flows and references. It calls `sync_frame` whenever the frame being filled changes. Vertical-mode commands (`new_paragraph`, `add_vskip`, ...) are on `DocumentBuilder` because they build pages.
+`sile_core::builder::Typesetter` turns text and settings into lines and a vertical list without knowing about pages: lines are set to its `FrameContext` (measure, direction, tate). Vertical-mode commands (`new_paragraph`, `add_vskip`, `add_rule`, ...) are provided methods of the `Arranger` trait, whose implementors say where the vertical list goes:
+
+* `DocumentBuilder` (`builder/paginator.rs`) pages it. It derefs to its typesetter and owns everything that knows about pages: frames, templates, classes, insertions, page breaking, parallel flows and references. It calls `sync_frame` whenever the frame being filled changes.
+* `Galley` (`builder/galley.rs`) keeps it: no measure sets paragraphs at natural width, a measure breaks them, and `take_frame` cuts off what fits a height, leaving the overflow. `lay_out` gives one surface as tall as the material.
+
+Lists, tables, display math and footnotes are still `DocumentBuilder` methods.
 
 ## Features
 

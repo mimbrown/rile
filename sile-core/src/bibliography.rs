@@ -11,7 +11,7 @@ use hayagriva::{
     Library, LocatorPayload, Rendered, SpecificLocator,
 };
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
 use crate::font::{FontStyle as Style_, FontWeight as Weight};
 use crate::length::Length;
 use crate::node::LinkDest;

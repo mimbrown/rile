@@ -13,7 +13,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips, Typesetter};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips, Typesetter};
 use crate::font::{Direction, FontFace, FontSpec, FontStyle, FontWeight};
 use crate::length::Length;
 use crate::measurement::Measurement;

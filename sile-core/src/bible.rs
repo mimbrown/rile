@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::builder::{BuilderError, DocumentBuilder, LineSkips};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, LineSkips};
 use crate::class::{Book, DocumentClass, PageTemplate};
 use crate::length::Length;
 

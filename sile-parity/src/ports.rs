@@ -3,7 +3,7 @@
 //! the test runs without a Lua interpreter.
 
 use sile_core::bible::Bible;
-use sile_core::builder::{BuilderError, DocumentBuilder};
+use sile_core::builder::{Arranger, BuilderError, DocumentBuilder};
 use sile_core::color::Color;
 use sile_core::class::{bigskip, smallskip, with_font, Book};
 use sile_core::font::{FontStyle, FontWeight};

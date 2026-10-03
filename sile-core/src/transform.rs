@@ -1,7 +1,7 @@
 //! Boxes drawn rotated or scaled (SILE's `rotate` and `scalebox` packages),
 //! and tables of boxes in columns (SILE's `simpletable`).
 
-use crate::builder::{BuilderError, DocumentBuilder, Typesetter};
+use crate::builder::{Arranger, BuilderError, DocumentBuilder, Typesetter};
 use crate::class::smallskip;
 use crate::length::Length;
 use crate::node::{HBox, Ink};

@@ -1,0 +1,11 @@
+[package]
+name = "sile-svg"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+harfbuzz = ["sile-core/harfbuzz"]
+
+[dependencies]
+sile-core = { path = "../sile-core" }
+ttf-parser = "0.25"
