@@ -833,6 +833,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "rile"
+version = "0.1.0"
+dependencies = [
+ "fontdb",
+ "harfbuzz-sys",
+ "hayagriva",
+ "icu_segmenter",
+ "rustybuzz",
+ "self_cell",
+ "ttf-parser 0.25.1",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "rile-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fontdb",
+ "rile",
+ "rile-markdown",
+ "rile-pages",
+ "rile-pdf",
+ "rile-svg",
+]
+
+[[package]]
+name = "rile-markdown"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "rile",
+ "rile-pages",
+]
+
+[[package]]
+name = "rile-pages"
+version = "0.1.0"
+dependencies = [
+ "cassowary",
+ "icu_collator",
+ "icu_locale",
+ "rile",
+]
+
+[[package]]
+name = "rile-pdf"
+version = "0.1.0"
+dependencies = [
+ "fontdb",
+ "image",
+ "miniz_oxide",
+ "pdf-writer",
+ "rile",
+ "rile-pages",
+ "subsetter",
+ "ttf-parser 0.25.1",
+]
+
+[[package]]
+name = "rile-svg"
+version = "0.1.0"
+dependencies = [
+ "rile",
+ "rile-pages",
+ "ttf-parser 0.25.1",
+]
+
+[[package]]
 name = "roman-numerals-rs"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -941,83 +1012,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "sile-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "fontdb",
- "sile-core",
- "sile-markdown",
- "sile-pages",
- "sile-pdf",
- "sile-svg",
-]
-
-[[package]]
-name = "sile-core"
-version = "0.1.0"
-dependencies = [
- "fontdb",
- "harfbuzz-sys",
- "hayagriva",
- "icu_segmenter",
- "rustybuzz",
- "self_cell",
- "ttf-parser 0.25.1",
- "unicode-bidi",
- "unicode-linebreak",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "sile-markdown"
-version = "0.1.0"
-dependencies = [
- "pulldown-cmark",
- "sile-core",
- "sile-pages",
-]
-
-[[package]]
-name = "sile-pages"
-version = "0.1.0"
-dependencies = [
- "cassowary",
- "icu_collator",
- "icu_locale",
- "sile-core",
-]
-
-[[package]]
 name = "sile-parity"
 version = "0.1.0"
 dependencies = [
  "fontdb",
- "sile-core",
- "sile-pages",
- "ttf-parser 0.25.1",
-]
-
-[[package]]
-name = "sile-pdf"
-version = "0.1.0"
-dependencies = [
- "fontdb",
- "image",
- "miniz_oxide",
- "pdf-writer",
- "sile-core",
- "sile-pages",
- "subsetter",
- "ttf-parser 0.25.1",
-]
-
-[[package]]
-name = "sile-svg"
-version = "0.1.0"
-dependencies = [
- "sile-core",
- "sile-pages",
+ "rile",
+ "rile-pages",
  "ttf-parser 0.25.1",
 ]
 

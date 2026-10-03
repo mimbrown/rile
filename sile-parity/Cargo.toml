@@ -3,10 +3,10 @@ name = "sile-parity"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Compares sile-core layouts with SILE's regression test expectations"
+description = "Compares rile layouts with SILE's regression test expectations"
 
 [dependencies]
-sile-core = { path = "../sile-core" }
-sile-pages = { path = "../sile-pages" }
+rile = { path = "../rile" }
+rile-pages = { path = "../rile-pages" }
 fontdb = "0.22"
 ttf-parser = "0.25"

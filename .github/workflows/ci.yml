@@ -27,13 +27,13 @@ jobs:
       - if: matrix.shaper == 'harfbuzz'
         run: sudo apt-get update && sudo apt-get install -y libharfbuzz-dev
       - name: Tests
-        run: cargo test --workspace ${{ matrix.shaper == 'harfbuzz' && '--features sile-core/harfbuzz' || '' }}
+        run: cargo test --workspace ${{ matrix.shaper == 'harfbuzz' && '--features rile/harfbuzz' || '' }}
       - name: Clippy
-        run: cargo clippy --workspace --all-targets ${{ matrix.shaper == 'harfbuzz' && '--features sile-core/harfbuzz' || '' }}
+        run: cargo clippy --workspace --all-targets ${{ matrix.shaper == 'harfbuzz' && '--features rile/harfbuzz' || '' }}
       - name: Without optional features
         if: matrix.shaper == 'rustybuzz'
         run: |
-          for crate in sile-core sile-markdown sile-pages sile-pdf sile-svg; do
+          for crate in rile rile-markdown rile-pages rile-pdf rile-svg; do
             cargo test -p $crate --no-default-features
             cargo clippy -p $crate --no-default-features --all-targets
           done
@@ -57,7 +57,7 @@ jobs:
       - run: scripts/fetch-parity-corpus.sh
       - name: Parity
         run: |
-          cargo run --release -p sile-parity --features sile-core/harfbuzz | tee parity.txt
+          cargo run --release -p sile-parity --features rile/harfbuzz | tee parity.txt
           { echo '### SILE parity (HarfBuzz)'; echo '```'; cat parity.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
