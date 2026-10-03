@@ -1736,6 +1736,7 @@ mod tests {
             ratio: 0.0,
             misfit: false,
             explicit: false,
+            reversed: false,
         };
         page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
@@ -1789,6 +1790,7 @@ mod tests {
             ratio: 0.0,
             misfit: false,
             explicit: false,
+            reversed: false,
         };
 
         let mut page = test_page(1);
@@ -1845,6 +1847,7 @@ mod tests {
             ratio: 0.0,
             misfit: false,
             explicit: false,
+            reversed: false,
         };
 
         let mut page = test_page(1);
@@ -1913,6 +1916,7 @@ mod tests {
                 ratio: 0.0,
                 misfit: false,
                 explicit: false,
+                reversed: false,
             };
             let mut page = test_page(i + 1);
             page.add_frame_content("content", vec![Node::VBox(vbox)]);

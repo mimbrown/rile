@@ -1,6 +1,8 @@
 use crate::color::Color;
 use crate::frame::PaperSize;
 use crate::framespec::FrameGeometry;
+use crate::length::Length;
+use crate::linebreak::LinebreakSettings;
 use crate::measurement::Measurement;
 use crate::node::Node;
 
@@ -266,6 +268,45 @@ pub fn find_grid_break(queue: &mut Vec<Node>, target_height: f64, on_insertion: 
     None
 }
 
+/// How many frames' worth of material `find_best_fit_break` looks at.
+const BEST_FIT_FRAMES: f64 = 5.0;
+
+/// Break the queue into pages as a paragraph is broken into lines, taking
+/// the first page of the best set (SILE's `pagebuilder-bestfit`). Waits,
+/// returning `None`, until the queue holds several frames' worth or its
+/// last penalty forces a break. Insertions are not looked at.
+pub fn find_best_fit_break(queue: &[Node], target_height: f64, settings: &LinebreakSettings) -> Option<PageBreakResult> {
+    let last_penalty = queue.iter().rev().find_map(|n| match n {
+        Node::Penalty(p) => Some(p.penalty),
+        _ => None,
+    });
+    let height: f64 = queue.iter().map(|n| pt(n.height())).sum();
+    if height <= target_height * BEST_FIT_FRAMES && last_penalty.is_none_or(|p| p > EJECT_PENALTY) {
+        return None;
+    }
+    let lines: Vec<Node> = queue
+        .iter()
+        .map(|n| match n {
+            Node::VBox(_) => Node::hbox(pt(n.height()) + pt(n.depth()), 0.0, 0.0),
+            Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => Node::glue(g.height.clone()),
+            Node::VKern(k) => Node::kern(k.height.clone()),
+            Node::Penalty(p) => Node::penalty(p.penalty),
+            _ => Node::kern(Length::zero()),
+        })
+        .collect();
+    let settings = LinebreakSettings { left_skip: Length::zero(), right_skip: Length::zero(), hang_indent: 0.0, par_shape: None, ..settings.clone() };
+    let first = crate::linebreak::do_break(&lines, target_height, &settings).into_iter().next()?;
+    if first.position == 0 {
+        return find_break(&mut queue.to_vec(), target_height, false, &mut no_insertions);
+    }
+    let at = first.position.min(queue.len() - 1);
+    let penalty = match &queue[at] {
+        Node::Penalty(p) => p.penalty,
+        _ => 0,
+    };
+    Some(PageBreakResult { break_index: at, badness: 0, penalty, cost: 0, trigger_penalty: penalty })
+}
+
 pub fn split_page(queue: &mut Vec<Node>, br: &PageBreakResult) -> Vec<Node> {
     let mut content: Vec<Node> = queue.drain(..=br.break_index).collect();
     while content.len() > 1 && content.last().is_some_and(Node::is_discardable) {
@@ -362,6 +403,7 @@ mod tests {
             ratio: 0.0,
             misfit: false,
             explicit: false,
+            reversed: false,
         })
     }
 
@@ -454,5 +496,42 @@ mod tests {
         assert_eq!(penalty, 0, "the overflowing glue, not the break taken");
         assert_eq!(page.iter().filter(|n| matches!(n, Node::VBox(_))).count(), 3);
         assert!(!queue.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod best_fit_tests {
+    use super::*;
+    use crate::node::VBox;
+
+    fn line() -> Node {
+        Node::VBox(VBox { height: Length::pt(10.0), depth: Length::pt(2.0), ..VBox::new(Vec::new(), Length::pt(300.0)) })
+    }
+
+    fn material(paragraphs: usize) -> Vec<Node> {
+        let mut queue = Vec::new();
+        for p in 0..paragraphs {
+            for i in 0..3 + p % 4 {
+                if i > 0 {
+                    queue.push(Node::vglue(Length::pt(2.0)));
+                }
+                queue.push(line());
+            }
+            queue.push(Node::vglue(Length::new(crate::measurement::Measurement::pt(6.0), crate::measurement::Measurement::pt(3.0), crate::measurement::Measurement::pt(1.0))));
+        }
+        queue
+    }
+
+    #[test]
+    fn best_fit_waits_for_several_pages_or_a_forced_break() {
+        let settings = LinebreakSettings::default();
+        assert!(find_best_fit_break(&material(5), 100.0, &settings).is_none());
+        let mut queue = material(5);
+        queue.push(Node::penalty(SUPER_EJECT));
+        let br = find_best_fit_break(&queue, 100.0, &settings).unwrap();
+        assert!(br.break_index > 0 && br.break_index < queue.len());
+        let page: f64 = queue[..=br.break_index].iter().filter(|n| matches!(n, Node::VBox(_))).map(|n| pt(n.height()) + pt(n.depth())).sum();
+        assert!(page <= 100.0, "{page}");
+        assert!(find_best_fit_break(&material(40), 100.0, &settings).is_some());
     }
 }

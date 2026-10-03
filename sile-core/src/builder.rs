@@ -23,6 +23,8 @@ use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
 use crate::references::{self, CrossReferences, IndexMark, IndexPage, Label, TocEntry};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
+mod specimen;
+
 // ---------------------------------------------------------------------------
 // TextAlign
 // ---------------------------------------------------------------------------
@@ -467,6 +469,8 @@ pub struct Settings {
     fallback_fonts: Vec<String>,
     linebreak_settings: LinebreakSettings,
     math: crate::math::MathSettings,
+    boustrophedon: bool,
+    complex_spaces: bool,
 }
 
 impl Default for Settings {
@@ -496,6 +500,8 @@ impl Default for Settings {
             fallback_fonts: Vec::new(),
             linebreak_settings: LinebreakSettings::default(),
             math: Default::default(),
+            boustrophedon: false,
+            complex_spaces: false,
         }
     }
 }
@@ -678,6 +684,9 @@ pub struct DocumentBuilder {
     messages: crate::messages::Messages,
     background: Option<Background>,
     end_page_hooks: Vec<PageHook>,
+    /// Languages set a letter to a word (`break_between_letters`).
+    letter_languages: Vec<String>,
+    best_fit_pages: bool,
 
     /// What the previous pass found, if there was one.
     previous_references: Option<CrossReferences>,
@@ -739,6 +748,8 @@ impl DocumentBuilder {
             messages: Default::default(),
             background: None,
             end_page_hooks: Vec::new(),
+            letter_languages: Vec::new(),
+            best_fit_pages: false,
             previous_references: None,
             consulted_references: Default::default(),
             references: CrossReferences::default(),
@@ -1312,6 +1323,7 @@ impl DocumentBuilder {
             fixed_nbsp: self.settings.fixed_nbsp,
             letterspace: self.settings.letter_space.is_some(),
             ethiopic_centered: self.settings.ethiopic_centered,
+            letters: self.letter_languages.iter().any(|l| *l == base_language(&self.settings.language)),
             ..NodeMakerOptions::for_language(&self.settings.language)
         };
         let font_name = self.settings.font.clone().unwrap_or_default();
@@ -1863,6 +1875,43 @@ impl DocumentBuilder {
         self.paragraph.is_empty() && self.vertical_queue.is_empty()
     }
 
+    /// Draw the font's own space glyph between words, dropped at line
+    /// breaks, instead of stretchable glue (SILE's `complex-spaces`, for
+    /// fonts whose space has ink).
+    pub fn set_complex_spaces(&mut self, on: bool) -> &mut Self {
+        self.settings.complex_spaces = on;
+        self
+    }
+
+    /// Set paragraphs boustrophedon from here: their every other line runs
+    /// against the frame's writing direction (SILE's `\boustrophedon`).
+    pub fn set_boustrophedon(&mut self, on: bool) -> &mut Self {
+        self.settings.boustrophedon = on;
+        self
+    }
+
+    /// Choose page breaks as line breaks are chosen, over several pages at
+    /// once, instead of one page at a time (SILE's `pagebuilder-bestfit`).
+    pub fn set_best_fit_pages(&mut self, on: bool) -> &mut Self {
+        self.best_fit_pages = on;
+        self
+    }
+
+    /// Set text in `language` a letter at a time, each a word that lines
+    /// may break after, with a little stretchable space between (how
+    /// SILE's `boustrophedon` package sets Ancient Greek).
+    pub fn break_between_letters(&mut self, language: &str) -> &mut Self {
+        self.letter_languages.push(base_language(language).to_string());
+        self
+    }
+
+    /// End the paragraph and say whether nothing is waiting for the current
+    /// frame, so what comes next starts at its top (SILE's `\ifattop`).
+    pub fn at_top_of_frame(&mut self) -> Result<bool, BuilderError> {
+        self.leave_hmode(false)?;
+        Ok(self.vertical_queue.is_empty())
+    }
+
     // -- Vertical material ---------------------------------------------------
 
     pub fn add_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
@@ -1929,6 +1978,7 @@ impl DocumentBuilder {
             ratio: 0.0,
             misfit: false,
             explicit: false,
+            reversed: false,
         };
         self.push_vertical(Node::VBox(vbox));
         Ok(self)
@@ -2226,6 +2276,11 @@ impl DocumentBuilder {
         Ok(self)
     }
 
+    /// Frame `id` of the current page.
+    pub fn frame(&self, id: &str) -> Option<&FrameGeometry> {
+        self.page.as_ref()?.page.frame(id)
+    }
+
     fn current_frame(&self) -> Option<&FrameGeometry> {
         let state = self.page.as_ref()?;
         state.page.frame(&state.frame)
@@ -2255,6 +2310,8 @@ impl DocumentBuilder {
         };
         let br = if self.grid.is_some() {
             pagebuilder::find_grid_break(&mut self.vertical_queue, target, &mut on_insertion)
+        } else if self.best_fit_pages {
+            pagebuilder::find_best_fit_break(&self.vertical_queue, target, &self.settings.linebreak_settings)
         } else {
             pagebuilder::find_break(&mut self.vertical_queue, target, false, &mut on_insertion)
         };
@@ -3384,6 +3441,14 @@ impl DocumentBuilder {
                         nnode.tag = run.tag;
                         nodes.push(Node::NNode(nnode));
                     }
+                    Token::Space(_) if self.settings.complex_spaces => {
+                        let glyph = crate::word_shaping::shape(&*self.shaper, " ", face, spec);
+                        let mut nnode = self.build_nnode(" ", &glyph, &font_key, spec, color);
+                        nnode.language = Arc::clone(&language);
+                        nnode.bidi_level = run.bidi_level;
+                        nnode.tag = run.tag;
+                        nodes.push(Node::discretionary(vec![], vec![], vec![Node::NNode(nnode)]));
+                    }
                     Token::Space(i) => nodes.push(Node::glue(self.settings.space_settings.word_space(glyphs[i + lo].width, space))),
                     Token::NonBreakingSpace => nodes.push(Node::kern(self.settings.space_settings.measured(space))),
                     Token::Penalty(p) => nodes.push(Node::penalty(p)),
@@ -3396,6 +3461,7 @@ impl DocumentBuilder {
                         nodes.push(Node::discretionary(vec![], vec![Node::NNode(nnode)], vec![]));
                     }
                     Token::LetterSpace => nodes.push(Node::kern(run.letter_space.unwrap_or_default())),
+                    Token::LetterGlue => nodes.push(Node::glue(Length::new(Measurement::pt(0.0), Measurement::pt(2.0), Measurement::pt(0.0)))),
                     Token::Zenkaku { breakable, width, stretch, shrink } => {
                         let zw = zenkaku.get_or_insert_with(|| self.zenkaku_width());
                         let length = Length::new(Measurement::pt(width * *zw), Measurement::pt(stretch * *zw), Measurement::pt(shrink * *zw));
@@ -3542,7 +3608,7 @@ impl DocumentBuilder {
     fn word_node(&self, text: &str, like: &NNode) -> Option<Node> {
         let tokens = NodeMakerOptions::for_language(&like.language);
         let letters = |c: char| c.is_alphabetic() && matches!(break_property(c as u32), BreakClass::Alphabetic | BreakClass::HebrewLetter);
-        if text.is_empty() || tokens.japanese || tokens.ethiopic || tokens.letterspace || !((text == "-" && !tokens.repeated_hyphen) || text.chars().all(letters)) {
+        if text.is_empty() || tokens.japanese || self.letter_languages.iter().any(|l| *l == base_language(&like.language)) || tokens.ethiopic || tokens.letterspace || !((text == "-" && !tokens.repeated_hyphen) || text.chars().all(letters)) {
             return None;
         }
         let entry = self.fonts.get(&*like.font_key)?;
@@ -3727,7 +3793,7 @@ impl DocumentBuilder {
         let count = h_nodes.len();
         let mut h_nodes = h_nodes.into_iter();
 
-        for br in breaks {
+        for (i, br) in breaks.iter().enumerate() {
             if br.position == 0 || count == 0 {
                 continue;
             }
@@ -3790,6 +3856,7 @@ impl DocumentBuilder {
                 ratio,
                 misfit: false,
                 explicit: false,
+                reversed: self.settings.boustrophedon && i % 2 == 1,
             };
             lines.push((vbox, broken, migrating));
         }
@@ -4159,6 +4226,10 @@ fn natural_hbox(nodes: Vec<Node>) -> node::HBox {
 
 fn liner_mark(ink: Ink) -> Node {
     Node::HBox(node::HBox { ink: Some(ink), ..Default::default() })
+}
+
+fn base_language(language: &str) -> &str {
+    language.split(['-', '_']).next().unwrap_or(language)
 }
 
 fn pt_of(l: &Length) -> f64 {
@@ -4565,6 +4636,58 @@ mod tests {
             _ => None,
         });
         assert!(first_line.unwrap() > 10, "lines in b use b's width");
+    }
+
+    #[test]
+    fn complex_spaces_are_glyphs_dropped_at_line_breaks() {
+        let Some(mut doc) = builder_with_font() else { return };
+        doc.set_complex_spaces(true);
+        doc.add_text("word ".repeat(100));
+        doc.new_paragraph().unwrap();
+        let pages = doc.into_pages().unwrap();
+        let lines: Vec<&VBox> = pages[0].content.iter().flat_map(|(_, n)| n).filter_map(|n| match n {
+            Node::VBox(v) => Some(v),
+            _ => None,
+        }).collect();
+        assert!(lines.len() > 2);
+        let texts = |line: &VBox| line.nodes.iter().filter_map(|n| match n {
+            Node::NNode(n) => Some(n.text.to_string()),
+            Node::Discretionary(d) => d.replacement.first().and_then(|n| match n {
+                Node::NNode(n) => Some(n.text.to_string()),
+                _ => None,
+            }),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let first = texts(lines[0]);
+        assert_eq!(first[..3], ["word", " ", "word"]);
+        assert_eq!(first.last().unwrap(), "word");
+        assert!(!lines[1].nodes.iter().any(|n| matches!(n, Node::Glue(g) if pt_of(&g.width) > 0.0)));
+    }
+
+    #[test]
+    fn best_fit_pages_keep_every_line_and_fit_their_frames() {
+        let lines_of = |best_fit: bool| {
+            let mut doc = builder_with_font()?;
+            doc.set_best_fit_pages(best_fit);
+            doc.set_paragraph_skip(Length::new(Measurement::pt(6.0), Measurement::pt(3.0), Measurement::pt(1.0)));
+            for i in 0..40 {
+                doc.add_text("word ".repeat(40 + i * 7));
+                doc.new_paragraph().unwrap();
+            }
+            let pages = doc.into_pages().unwrap();
+            let target = pages[0].frame("content").unwrap().height();
+            let mut lines = 0;
+            for page in &pages {
+                let (_, nodes) = page.content.iter().find(|(id, _)| id == "content").unwrap();
+                let natural: f64 = nodes.iter().filter(|n| matches!(n, Node::VBox(_))).map(|n| pt_of(&n.height()) + pt_of(&n.depth())).sum();
+                assert!(natural <= target + 1e-6, "{natural} > {target}");
+                lines += nodes.iter().filter(|n| matches!(n, Node::VBox(_))).count();
+            }
+            Some((lines, pages.len()))
+        };
+        let (Some((lines, pages)), Some((default_lines, _))) = (lines_of(true), lines_of(false)) else { return };
+        assert_eq!(lines, default_lines);
+        assert!(pages > 3);
     }
 
     fn balanced_frames() -> Vec<FrameSpec> {

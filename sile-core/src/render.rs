@@ -88,7 +88,12 @@ fn draw_page(page: &Page, canvas: &mut dyn Canvas) {
                 Node::VBox(vbox) => {
                     let line = Line { ratio: vbox.ratio, end_edge: frame.right, height: pt(&vbox.height.length) };
                     c.advance_page(pt(&vbox.height.length));
-                    draw_hlist(&vbox.nodes, &mut c, &line, canvas);
+                    let mut pen = c;
+                    if vbox.reversed {
+                        pen.dir.writing = pen.dir.writing.reversed();
+                        pen.new_line(frame);
+                    }
+                    draw_hlist(&vbox.nodes, &mut pen, &line, canvas);
                     c.advance_page(pt(&vbox.depth.length));
                     c.new_line(frame);
                 }

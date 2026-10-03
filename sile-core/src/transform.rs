@@ -38,28 +38,33 @@ impl Transform {
     }
 }
 
+/// `hbox` turned clockwise by `degrees`, measured as the space it then
+/// covers.
+pub fn rotated(hbox: HBox, degrees: f64) -> HBox {
+    let (w, height, depth) = (pt(&hbox.width), pt(&hbox.height), pt(&hbox.depth));
+    let h = height + depth;
+    let theta = -degrees.to_radians();
+    let (st, ct) = theta.sin_cos();
+    let (width, up, down) = match (st <= 0.0, ct <= 0.0) {
+        (true, true) => (-w * ct - h * st, 0.5 * (h - h * ct - w * st), 0.5 * (h + h * ct + w * st)),
+        (true, false) => (w * ct - h * st, 0.5 * (h + h * ct - w * st), 0.5 * (h - h * ct + w * st)),
+        (false, true) => (-w * ct + h * st, 0.5 * (h - h * ct + w * st), 0.5 * (h + h * ct - w * st)),
+        (false, false) => (w * ct + h * st, 0.5 * (h + h * ct + w * st), 0.5 * (h - h * ct - w * st)),
+    };
+    let transform = Transform::Rotate { angle: degrees.to_radians(), width: w, height, depth };
+    let shift = (w - width) / 2.0;
+    HBox {
+        ink: Some(Ink::Transform(transform, shift)),
+        nodes: hbox.nodes,
+        ..HBox::new(Length::pt(width), Length::pt(up), Length::pt((-down).max(0.0)))
+    }
+}
+
 impl DocumentBuilder {
     /// Add `hbox` turned clockwise by `degrees`, taking up the space it then
     /// covers (SILE's `\rotate`).
     pub fn add_rotated(&mut self, hbox: HBox, degrees: f64) -> &mut Self {
-        let (w, height, depth) = (pt(&hbox.width), pt(&hbox.height), pt(&hbox.depth));
-        let h = height + depth;
-        let theta = -degrees.to_radians();
-        let (st, ct) = theta.sin_cos();
-        let (width, up, down) = match (st <= 0.0, ct <= 0.0) {
-            (true, true) => (-w * ct - h * st, 0.5 * (h - h * ct - w * st), 0.5 * (h + h * ct + w * st)),
-            (true, false) => (w * ct - h * st, 0.5 * (h + h * ct - w * st), 0.5 * (h - h * ct + w * st)),
-            (false, true) => (-w * ct + h * st, 0.5 * (h - h * ct + w * st), 0.5 * (h + h * ct - w * st)),
-            (false, false) => (w * ct + h * st, 0.5 * (h + h * ct + w * st), 0.5 * (h - h * ct - w * st)),
-        };
-        let transform = Transform::Rotate { angle: degrees.to_radians(), width: w, height, depth };
-        let shift = (w - width) / 2.0;
-        let rotated = HBox {
-            ink: Some(Ink::Transform(transform, shift)),
-            nodes: hbox.nodes,
-            ..HBox::new(Length::pt(width), Length::pt(up), Length::pt((-down).max(0.0)))
-        };
-        self.add_box(rotated)
+        self.add_box(rotated(hbox, degrees))
     }
 
     /// Add `hbox` scaled by `x` across and `y` up; negative ratios mirror it
