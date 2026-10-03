@@ -12,6 +12,7 @@ use sile_core::length::Length;
 use sile_core::measurement::Measurement;
 use sile_core::references::lay_out_until_settled;
 use sile_core::toc::{DefaultTocStyle, TableOfContents};
+use sile_pdf::PdfOptions;
 
 use markdown::Markdown;
 
@@ -118,7 +119,7 @@ fn run(args: &Args) -> Result<PathBuf, String> {
             Class::Book => doc.set_class(Book::new()),
         };
         doc.set_references(references);
-        doc.set_language(args.language.clone()).set_compress(true).set_tagged(!args.untagged);
+        doc.set_language(args.language.clone()).set_tagged(!args.untagged);
         let stem = args.input.file_stem().map(|s| s.to_string_lossy().into_owned());
         if let Some(title) = args.title.clone().or(stem) {
             doc.set_title(title);
@@ -152,7 +153,7 @@ fn run(args: &Args) -> Result<PathBuf, String> {
     }
 
     let output = args.output.clone().unwrap_or_else(|| args.input.with_extension("pdf"));
-    let pdf = layout.render().map_err(|e| e.to_string())?;
+    let pdf = sile_pdf::render(&layout, PdfOptions::default()).map_err(|e| e.to_string())?;
     std::fs::write(&output, pdf).map_err(|e| format!("{}: {e}", output.display()))?;
     Ok(output)
 }

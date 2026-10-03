@@ -28,7 +28,7 @@ pub mod measurement;
 pub mod node;
 pub mod nodemaker;
 pub mod pagebuilder;
-pub mod pdf;
+pub mod metadata;
 pub mod pullquote;
 pub mod references;
 pub mod render;

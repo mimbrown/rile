@@ -6,7 +6,7 @@ use unicode_linebreak::{BreakClass, break_property};
 
 use crate::color::Color;
 use crate::counter::{MultilevelCounter, PageNumber};
-use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight};
+use crate::font::{Direction, FontDatabase, FontError, FontFace, FontSpec, FontStyle, FontWeight, Variations};
 use crate::class::{DocumentClass, PageTemplate};
 use crate::frame::PaperSize;
 use crate::framespec::{self, Flow, FrameDirection, FrameGeometry, FrameSpec};
@@ -19,7 +19,7 @@ use crate::node::{self, GlyphData, Ink, Leader, LinerStyle, LinkDest, NNode, Nod
 use crate::nodemaker::{self, Item, NodeMakerOptions, PunctSpace, Token};
 use crate::pagebuilder::{self, Page, PageBreakSettings, Underlay};
 use crate::image::{Background, BackgroundFill};
-use crate::pdf::{Bookmark, PdfConfig, PdfError, PdfOutputter};
+use crate::metadata::{Bookmark, Metadata};
 use crate::references::{self, CrossReferences, IndexMark, IndexPage, Label, TocEntry};
 use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 
@@ -45,7 +45,6 @@ pub enum TextAlign {
 #[derive(Debug)]
 pub enum BuilderError {
     Font(FontError),
-    Pdf(PdfError),
     NoFont(String),
     Layout(String),
     InvalidMetadata(String),
@@ -55,7 +54,6 @@ impl std::fmt::Display for BuilderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Font(e) => write!(f, "{e}"),
-            Self::Pdf(e) => write!(f, "{e}"),
             Self::NoFont(name) => write!(f, "no font registered with name \"{name}\""),
             Self::Layout(msg) => write!(f, "layout error: {msg}"),
             Self::InvalidMetadata(msg) => write!(f, "invalid PDF metadata: {msg}"),
@@ -68,12 +66,6 @@ impl std::error::Error for BuilderError {}
 impl From<FontError> for BuilderError {
     fn from(e: FontError) -> Self {
         Self::Font(e)
-    }
-}
-
-impl From<PdfError> for BuilderError {
-    fn from(e: PdfError) -> Self {
-        Self::Pdf(e)
     }
 }
 
@@ -408,24 +400,32 @@ pub struct Layout {
     paper: PaperSize,
     fonts: BTreeMap<String, RegisteredFont>,
     bookmarks: Vec<Bookmark>,
-    pdf_config: PdfConfig,
+    metadata: Metadata,
     structure: Option<crate::structure::StructTree>,
 }
 
 impl Layout {
-    pub fn render(self) -> Result<Vec<u8>, BuilderError> {
-        let mut pdf = PdfOutputter::new(self.pdf_config);
-        for (name, entry) in &self.fonts {
-            pdf.register_font(name, Arc::clone(&entry.face), entry.face.variations(&entry.spec));
-        }
-        for bm in self.bookmarks {
-            pdf.add_bookmark(bm);
-        }
-        if let Some(structure) = self.structure {
-            pdf.set_structure(structure);
-        }
-        pdf.render_pages(&self.pages);
-        Ok(pdf.finish()?)
+    pub fn paper(&self) -> PaperSize {
+        self.paper
+    }
+
+    /// The fonts glyphs are set in, by the key `NNode::font_key` names,
+    /// with the variation axis positions to instance them at.
+    pub fn fonts(&self) -> impl Iterator<Item = (&str, &Arc<FontFace>, Variations)> {
+        self.fonts.iter().map(|(name, entry)| (name.as_str(), &entry.face, entry.face.variations(&entry.spec)))
+    }
+
+    pub fn bookmarks(&self) -> &[Bookmark] {
+        &self.bookmarks
+    }
+
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// The document's structure, when it is tagged.
+    pub fn structure(&self) -> Option<&crate::structure::StructTree> {
+        self.structure.as_ref()
     }
 
     /// Describe the layout in SILE's debug outputter format, for comparing
@@ -675,8 +675,7 @@ pub struct DocumentBuilder {
     header: Option<RunningText>,
     footer: Option<RunningText>,
 
-    // PDF config
-    pdf_config: PdfConfig,
+    metadata: Metadata,
     bookmarks: Vec<Bookmark>,
     destinations: usize,
     grid: Option<Grid>,
@@ -740,7 +739,7 @@ impl DocumentBuilder {
             extra_frames: Vec::new(),
             header: None,
             footer: None,
-            pdf_config: PdfConfig::default(),
+            metadata: Metadata::default(),
             bookmarks: Vec::new(),
             destinations: 0,
             grid: None,
@@ -3060,27 +3059,27 @@ impl DocumentBuilder {
         }
     }
 
-    // -- PDF config ----------------------------------------------------------
+    // -- Metadata ------------------------------------------------------------
 
     /// Print pages centred on sheets of `sheet`, when given (SILE's
     /// `sheetsize` class option).
     pub fn set_sheet_size(&mut self, sheet: Option<PaperSize>) -> &mut Self {
-        self.pdf_config.sheet = sheet;
+        self.metadata.sheet = sheet;
         self
     }
 
     pub fn set_title(&mut self, title: impl Into<String>) -> &mut Self {
-        self.pdf_config.title = Some(title.into());
+        self.metadata.title = Some(title.into());
         self
     }
 
     pub fn set_author(&mut self, author: impl Into<String>) -> &mut Self {
-        self.pdf_config.author = Some(author.into());
+        self.metadata.author = Some(author.into());
         self
     }
 
     pub fn set_subject(&mut self, subject: impl Into<String>) -> &mut Self {
-        self.pdf_config.subject = Some(subject.into());
+        self.metadata.subject = Some(subject.into());
         self
     }
 
@@ -3089,26 +3088,17 @@ impl DocumentBuilder {
     pub fn set_pdf_metadata(&mut self, key: &str, value: &str) -> Result<&mut Self, BuilderError> {
         let invalid = |what: String| Err(BuilderError::InvalidMetadata(what));
         match key {
-            "Title" => self.pdf_config.title = Some(value.into()),
-            "Author" => self.pdf_config.author = Some(value.into()),
-            "Subject" => self.pdf_config.subject = Some(value.into()),
+            "Title" => self.metadata.title = Some(value.into()),
+            "Author" => self.metadata.author = Some(value.into()),
+            "Subject" => self.metadata.subject = Some(value.into()),
             "Trapped" => return invalid("Trapped can't be set as text".into()),
             "CreationDate" | "ModDate" if !is_pdf_date(value) => return invalid(format!("{key} {value:?} is not a PDF date")),
-            _ => self.pdf_config.info.push((key.into(), value.into())),
+            _ => self.metadata.info.push((key.into(), value.into())),
         }
         Ok(self)
     }
 
-    pub fn set_compress(&mut self, compress: bool) -> &mut Self {
-        self.pdf_config.compress = compress;
-        self
-    }
-
     // -- Render --------------------------------------------------------------
-
-    pub fn render(self) -> Result<Vec<u8>, BuilderError> {
-        self.lay_out()?.render()
-    }
 
     /// Lay the document out and describe it in SILE's debug outputter format,
     /// for comparing layout against SILE's regression test expectations.
@@ -3146,7 +3136,7 @@ impl DocumentBuilder {
             paper: self.paper,
             fonts: self.fonts,
             bookmarks: self.bookmarks,
-            pdf_config: self.pdf_config,
+            metadata: self.metadata,
             structure: self.structure,
         })
     }
@@ -4407,13 +4397,9 @@ mod tests {
         })
         .unwrap();
         doc.new_paragraph().unwrap();
-        doc.set_compress(false);
-        let layout = doc.lay_out().unwrap();
-        let trace = layout.render_debug();
+        let trace = doc.render_debug().unwrap();
         assert!(trace.contains(";TTB;\n"), "{trace}");
         assert!(trace.contains(";LTR;\n"), "{trace}");
-        let pdf = String::from_utf8_lossy(&layout.render().unwrap()).into_owned();
-        assert_eq!(pdf.matches("0 -1 1 0 ").count(), 1);
     }
 
     // -- Robustness ----------------------------------------------------------
@@ -4425,26 +4411,7 @@ mod tests {
         doc.add_text("x".repeat(400));
         doc.new_paragraph().unwrap();
         doc.add_text(format!("a b {} c d", "y".repeat(400)));
-        assert!(doc.render().is_ok());
-    }
-
-    #[test]
-    fn output_is_deterministic_with_many_fonts() {
-        let render = || {
-            let (data, family) = load_any_system_font()?;
-            let mut doc = DocumentBuilder::new(PaperSize::A4);
-            for name in ["a", "b", "c", "d", "e"] {
-                let spec = FontSpec { family: Some(family.clone()), size: 12.0, ..Default::default() };
-                doc.load_font_data(name, data.clone(), spec).ok()?;
-                doc.set_font(name);
-                doc.add_text("Hello world ");
-            }
-            doc.render().ok()
-        };
-        let Some(first) = render() else { return };
-        for _ in 0..4 {
-            assert_eq!(render().unwrap(), first);
-        }
+        assert!(doc.lay_out().is_ok());
     }
 
     #[test]
@@ -4834,82 +4801,7 @@ mod tests {
         assert!(doc.vertical_queue[0].is_discardable());
     }
 
-    // -- Full render ---------------------------------------------------------
-
-    #[test]
-    fn render_hello_world() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_title("Hello");
-        doc.add_text("Hello, world.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-        assert!(pdf.len() > 100);
-    }
-
-    #[test]
-    fn render_multi_paragraph() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.add_text("First paragraph with some text.");
-        doc.new_paragraph().unwrap();
-        doc.add_text("Second paragraph with more text.");
-        doc.new_paragraph().unwrap();
-        doc.add_text("Third paragraph wrapping it up.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_long_text() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        let text = "To Sherlock Holmes she is always the woman. I have seldom heard \
-                    him mention her under any other name. In his eyes she eclipses \
-                    and predominates the whole of her sex. It was not that he felt \
-                    any emotion akin to love for Irene Adler. All emotions, and that \
-                    one particularly, were abhorrent to his cold, precise but \
-                    admirably balanced mind. He was, I take it, the most perfect \
-                    reasoning and observing machine that the world has seen, but as \
-                    a lover he would have placed himself in a false position.";
-        doc.add_text(text);
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_with_color() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_color(Color::Rgb { r: 1.0, g: 0.0, b: 0.0 });
-        doc.add_text("Red text.");
-        doc.clear_color();
-        doc.add_text(" Normal text.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_with_page_break() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.add_text("Page one content.");
-        doc.new_paragraph().unwrap();
-        doc.add_page_break().unwrap();
-        doc.add_text("Page two content.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
+    // -- Metadata ------------------------------------------------------------
 
     #[test]
     fn pdf_dates_need_an_offset() {
@@ -4917,123 +4809,6 @@ mod tests {
         assert!(is_pdf_date("D:19990209153925-08'00"));
         assert!(!is_pdf_date("should fail"));
         assert!(!is_pdf_date("D:19990209153925"));
-    }
-
-    #[test]
-    fn render_with_metadata() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_title("My Document")
-            .set_author("Test Author")
-            .set_subject("Testing")
-            .set_compress(false);
-        doc.add_text("Content.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_with_custom_margins() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_margins(36.0, 36.0, 36.0, 36.0);
-        doc.add_text("Narrow margins.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_with_paragraph_indent() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_paragraph_indent(40.0);
-        doc.add_text("Indented paragraph.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_with_paragraph_skip() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_paragraph_skip(12.0);
-        doc.add_text("First paragraph.");
-        doc.new_paragraph().unwrap();
-        doc.add_text("Second paragraph.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_with_bookmark() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.add_bookmark("Chapter 1", 0);
-        doc.add_text("Chapter content.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_empty_document() {
-        let doc = DocumentBuilder::new(PaperSize::A4);
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_multiple_fonts() {
-        let (data, family) = match load_any_system_font() {
-            Some(v) => v,
-            None => return,
-        };
-        let mut doc = DocumentBuilder::new(PaperSize::A4);
-
-        let spec1 = FontSpec {
-            family: Some(family.clone()),
-            size: 12.0,
-            ..Default::default()
-        };
-        doc.load_font_data("body", data.clone(), spec1).unwrap();
-
-        let spec2 = FontSpec {
-            family: Some(family),
-            size: 18.0,
-            weight: crate::font::FontWeight::BOLD,
-            ..Default::default()
-        };
-        doc.load_font_data("heading", data, spec2).unwrap();
-
-        doc.set_font("heading");
-        doc.add_text("Heading Text");
-        doc.new_paragraph().unwrap();
-
-        doc.set_font("body");
-        doc.add_text("Body text in normal size.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[test]
-    fn render_letter_size() {
-        let mut doc = match builder_with_font() {
-            Some(d) => d,
-            None => return,
-        };
-        doc.set_page_size(PaperSize::LETTER);
-        doc.add_text("US Letter content.");
-        let pdf = doc.render().unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
     }
 
     // -- Word splitting tests ------------------------------------------------

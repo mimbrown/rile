@@ -4,10 +4,12 @@ use std::sync::Arc;
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, TableHeaderScope};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 
-use crate::color::Color;
-use crate::font::FontFace;
-use crate::pagebuilder::Page;
-use crate::structure::{Role, StructKid, StructTree};
+use sile_core::builder::Layout;
+use sile_core::color::Color;
+use sile_core::font::FontFace;
+use sile_core::metadata::{Bookmark, Metadata};
+use sile_core::pagebuilder::Page;
+use sile_core::structure::{Role, StructKid, StructTree};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -36,49 +38,40 @@ impl std::error::Error for PdfError {}
 // Config
 // ---------------------------------------------------------------------------
 
+/// How a PDF is written, as opposed to what it says (`Metadata`).
 #[derive(Debug, Clone)]
-pub struct PdfConfig {
-    pub title: Option<String>,
-    pub author: Option<String>,
-    pub subject: Option<String>,
-    /// Other document info entries, such as `Keywords` or `CreationDate`.
-    pub info: Vec<(String, String)>,
+pub struct PdfOptions {
     pub creator: String,
     pub compress: bool,
-    /// The sheet pages are printed on, when bigger than the page: each
-    /// page is centred on it.
-    pub sheet: Option<crate::frame::PaperSize>,
 }
 
-impl Default for PdfConfig {
+impl Default for PdfOptions {
     fn default() -> Self {
-        Self {
-            title: None,
-            author: None,
-            subject: None,
-            info: Vec::new(),
-            creator: "sile-rust".to_string(),
-            compress: true,
-            sheet: None,
-        }
+        Self { creator: "sile-rust".to_string(), compress: true }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Image types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageFormat {
-    Jpeg,
-    Png,
+/// Write `layout` as a PDF.
+pub fn render(layout: &Layout, options: PdfOptions) -> Result<Vec<u8>, PdfError> {
+    let mut pdf = PdfOutputter::new(layout.metadata().clone(), options);
+    for (name, face, variations) in layout.fonts() {
+        pdf.register_font(name, Arc::clone(face), variations);
+    }
+    for bookmark in layout.bookmarks() {
+        pdf.add_bookmark(bookmark.clone());
+    }
+    if let Some(structure) = layout.structure() {
+        pdf.set_structure(structure.clone());
+    }
+    pdf.render_pages(&layout.pages);
+    pdf.finish()
 }
 
 // ---------------------------------------------------------------------------
-// Link / Bookmark types
+// Link types
 // ---------------------------------------------------------------------------
 
-pub use crate::node::LinkDest;
+pub use sile_core::node::LinkDest;
 
 #[derive(Debug, Clone)]
 pub struct LinkAnnotation {
@@ -88,14 +81,6 @@ pub struct LinkAnnotation {
     pub tag: Option<u32>,
 }
 
-/// An entry in the document outline, opening at a named destination.
-/// Entries nest under the closest earlier one with a lower level.
-#[derive(Debug, Clone)]
-pub struct Bookmark {
-    pub title: String,
-    pub level: u32,
-    pub dest: String,
-}
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -180,7 +165,8 @@ enum Tagged {
 // ---------------------------------------------------------------------------
 
 pub struct PdfOutputter {
-    config: PdfConfig,
+    metadata: Metadata,
+    options: PdfOptions,
     fonts: BTreeMap<String, FontEntry>,
     font_counter: usize,
     images: Vec<ImageEntry>,
@@ -196,9 +182,10 @@ pub struct PdfOutputter {
 }
 
 impl PdfOutputter {
-    pub fn new(config: PdfConfig) -> Self {
+    pub fn new(metadata: Metadata, options: PdfOptions) -> Self {
         Self {
-            config,
+            metadata,
+            options,
             fonts: BTreeMap::new(),
             font_counter: 0,
             images: Vec::new(),
@@ -372,7 +359,7 @@ impl PdfOutputter {
     pub fn end_page(&mut self) {
         self.end_mark();
         let page = self.current.take().expect("begin_page() not called");
-        let offset = self.config.sheet.map_or((0.0, 0.0), |s| ((s.width - page.width) / 2.0, (s.height - page.height) / 2.0));
+        let offset = self.metadata.sheet.map_or((0.0, 0.0), |s| ((s.width - page.width) / 2.0, (s.height - page.height) / 2.0));
         let mut content = Content::new();
         if offset != (0.0, 0.0) {
             content.transform([1.0, 0.0, 0.0, 1.0, offset.0 as f32, offset.1 as f32]);
@@ -536,10 +523,10 @@ impl PdfOutputter {
     // -- High-level: render from Page objects ---
 
     pub fn render_pages(&mut self, pages: &[Page]) {
-        crate::render::draw_pages(pages, self);
+        sile_core::render::draw_pages(pages, self);
     }
 
-    fn render_nnode(&mut self, nnode: &crate::node::NNode, x: f64, baseline_y: f64) {
+    fn render_nnode(&mut self, nnode: &sile_core::node::NNode, x: f64, baseline_y: f64) {
         if nnode.glyphs.is_empty() || nnode.font_key.is_empty() {
             return;
         }
@@ -715,33 +702,33 @@ impl PdfOutputter {
             if !tree.lang().is_empty() {
                 catalog.lang(TextStr(tree.lang()));
             }
-            if self.config.title.is_some() {
+            if self.metadata.title.is_some() {
                 catalog.viewer_preferences().display_doc_title(true);
             }
         }
         catalog.finish();
 
         // -- Write document info --
-        if self.config.title.is_some()
-            || self.config.author.is_some()
-            || self.config.subject.is_some()
-            || !self.config.info.is_empty()
+        if self.metadata.title.is_some()
+            || self.metadata.author.is_some()
+            || self.metadata.subject.is_some()
+            || !self.metadata.info.is_empty()
         {
             let info_ref = alloc.bump();
             let mut info = pdf.document_info(info_ref);
-            if let Some(ref title) = self.config.title {
+            if let Some(ref title) = self.metadata.title {
                 info.title(TextStr(title));
             }
-            if let Some(ref author) = self.config.author {
+            if let Some(ref author) = self.metadata.author {
                 info.author(TextStr(author));
             }
-            if let Some(ref subject) = self.config.subject {
+            if let Some(ref subject) = self.metadata.subject {
                 info.subject(TextStr(subject));
             }
-            for (key, value) in &self.config.info {
+            for (key, value) in &self.metadata.info {
                 info.pair(Name(key.as_bytes()), TextStr(value));
             }
-            info.creator(TextStr(&self.config.creator));
+            info.creator(TextStr(&self.options.creator));
             info.finish();
         }
 
@@ -755,7 +742,7 @@ impl PdfOutputter {
         for (i, built_page) in self.pages.iter().enumerate() {
             let (page_ref, content_ref) = page_data[i];
 
-            let content_bytes = if self.config.compress {
+            let content_bytes = if self.options.compress {
                 compress_data(&built_page.content)
             } else {
                 built_page.content.clone()
@@ -809,7 +796,7 @@ impl PdfOutputter {
 
             // Content stream
             let mut stream = pdf.stream(content_ref, &content_bytes);
-            if self.config.compress {
+            if self.options.compress {
                 stream.filter(Filter::FlateDecode);
             }
             stream.finish();
@@ -818,14 +805,14 @@ impl PdfOutputter {
         // -- Write fonts --
         for (key, entry) in &self.fonts {
             if let Some(frefs) = font_refs.get(key) {
-                write_font(&mut pdf, entry, frefs, self.config.compress)?;
+                write_font(&mut pdf, entry, frefs, self.options.compress)?;
             }
         }
 
         // -- Write images --
         for (i, img) in self.images.iter().enumerate() {
             let (img_ref, smask_ref) = image_data[i];
-            write_image(&mut pdf, img, img_ref, smask_ref, self.config.compress);
+            write_image(&mut pdf, img, img_ref, smask_ref, self.options.compress);
         }
 
         // -- Write annotations --
@@ -864,21 +851,21 @@ impl PdfOutputter {
             s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
         }
         let mut props = String::new();
-        if let Some(title) = &self.config.title {
+        if let Some(title) = &self.metadata.title {
             props += &format!("<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>", escape(title));
         }
-        if let Some(author) = &self.config.author {
+        if let Some(author) = &self.metadata.author {
             props += &format!("<dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>", escape(author));
         }
-        if let Some(subject) = &self.config.subject {
+        if let Some(subject) = &self.metadata.subject {
             props += &format!("<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:description>", escape(subject));
         }
-        props += &format!("<xmp:CreatorTool>{}</xmp:CreatorTool>", escape(&self.config.creator));
+        props += &format!("<xmp:CreatorTool>{}</xmp:CreatorTool>", escape(&self.options.creator));
         let described = self.structure.as_ref().is_some_and(|tree| {
-            use crate::structure::Role;
+            use sile_core::structure::Role;
             tree.elements.iter().all(|e| !matches!(e.role, Role::Figure | Role::Formula) || e.alt.is_some())
         });
-        if self.config.title.is_some() && described {
+        if self.metadata.title.is_some() && described {
             props += "<pdfuaid:part>1</pdfuaid:part>";
         }
         format!(
@@ -922,7 +909,7 @@ struct FontRefs {
 // Font embedding
 // ---------------------------------------------------------------------------
 
-impl crate::render::Canvas for PdfOutputter {
+impl sile_core::render::Canvas for PdfOutputter {
     fn begin_page(&mut self, width: f64, height: f64) {
         PdfOutputter::begin_page(self, width, height);
     }
@@ -931,7 +918,7 @@ impl crate::render::Canvas for PdfOutputter {
         PdfOutputter::end_page(self);
     }
 
-    fn glyphs(&mut self, nnode: &crate::node::NNode, x: f64, baseline_y: f64) {
+    fn glyphs(&mut self, nnode: &sile_core::node::NNode, x: f64, baseline_y: f64) {
         self.render_nnode(nnode, x, baseline_y);
     }
 
@@ -959,14 +946,14 @@ impl crate::render::Canvas for PdfOutputter {
         self.add_destination(name, x, y);
     }
 
-    fn image(&mut self, image: &crate::image::Image, x: f64, y: f64, width: f64, height: f64) {
+    fn image(&mut self, image: &sile_core::image::Image, x: f64, y: f64, width: f64, height: f64) {
         let key = Arc::as_ptr(&image.data) as usize;
         let index = match self.placed_images.get(&key) {
             Some(&index) => index,
             None => {
                 let added = match image.format {
-                    crate::image::ImageFormat::Png => self.add_image_png(&image.data),
-                    crate::image::ImageFormat::Jpeg => self.add_image_jpeg(image.data.to_vec()),
+                    sile_core::image::ImageFormat::Png => self.add_image_png(&image.data),
+                    sile_core::image::ImageFormat::Jpeg => self.add_image_jpeg(image.data.to_vec()),
                 };
                 let Ok(index) = added else { return };
                 self.placed_images.insert(key, index);
@@ -976,8 +963,8 @@ impl crate::render::Canvas for PdfOutputter {
         self.draw_image(index, x, y, width, height);
     }
 
-    fn svg(&mut self, figure: &crate::svg_image::SvgFigure, x: f64, y: f64, _baseline: f64, _width: f64, _height: f64) {
-        use crate::svg_image::SvgOp;
+    fn svg(&mut self, figure: &sile_core::svg_image::SvgFigure, x: f64, y: f64, _baseline: f64, _width: f64, _height: f64) {
+        use sile_core::svg_image::SvgOp;
         self.mark();
         let page = self.current.as_mut().expect("no current page");
         let s = figure.scale as f32;
@@ -1041,7 +1028,7 @@ impl crate::render::Canvas for PdfOutputter {
         c.restore_state();
     }
 
-    fn push_transform(&mut self, [a, b, c, d, e, f]: crate::transform::Matrix) {
+    fn push_transform(&mut self, [a, b, c, d, e, f]: sile_core::transform::Matrix) {
         self.end_mark();
         let page = self.current.as_mut().expect("no current page");
         let h = page.height;
@@ -1062,7 +1049,7 @@ impl crate::render::Canvas for PdfOutputter {
         self.current.as_mut().expect("no current page").tag = tag;
     }
 
-    fn frame_outline(&mut self, frame: &crate::framespec::FrameGeometry) {
+    fn frame_outline(&mut self, frame: &sile_core::framespec::FrameGeometry) {
         self.mark();
         let page = self.current.as_mut().expect("no current page");
         let y = page.height - frame.bottom;
@@ -1575,14 +1562,14 @@ fn compress_data(data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::PaperSize;
-    use crate::length::Length;
-    use crate::node::Node;
-    use crate::node::{GlyphData, NNode, VBox};
+    use sile_core::frame::PaperSize;
+    use sile_core::length::Length;
+    use sile_core::node::Node;
+    use sile_core::node::{GlyphData, NNode, VBox};
 
 
-    fn test_page(number: usize) -> crate::pagebuilder::Page {
-        let content = crate::framespec::FrameGeometry {
+    fn test_page(number: usize) -> sile_core::pagebuilder::Page {
+        let content = sile_core::framespec::FrameGeometry {
             id: "content".into(),
             left: 72.0,
             top: 72.0,
@@ -1593,11 +1580,11 @@ mod tests {
             tate: false,
             balanced: false,
         };
-        crate::pagebuilder::Page::new(number, PaperSize::A4, vec![content])
+        sile_core::pagebuilder::Page::new(number, PaperSize::A4, vec![content])
     }
     #[test]
     fn empty_document() {
-        let out = PdfOutputter::new(PdfConfig::default());
+        let out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         let bytes = out.finish().unwrap();
         assert!(!bytes.is_empty());
         assert!(bytes.starts_with(b"%PDF"));
@@ -1605,7 +1592,7 @@ mod tests {
 
     #[test]
     fn single_empty_page() {
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.begin_page(595.0, 842.0);
         out.end_page();
         let bytes = out.finish().unwrap();
@@ -1615,13 +1602,13 @@ mod tests {
 
     #[test]
     fn document_with_metadata() {
-        let config = PdfConfig {
+        let metadata = Metadata {
             title: Some("Test Document".to_string()),
             author: Some("Test Author".to_string()),
             subject: Some("Testing".to_string()),
             ..Default::default()
         };
-        let mut out = PdfOutputter::new(config);
+        let mut out = PdfOutputter::new(metadata, PdfOptions::default());
         out.begin_page(595.0, 842.0);
         out.end_page();
         let bytes = out.finish().unwrap();
@@ -1630,7 +1617,7 @@ mod tests {
 
     #[test]
     fn multiple_pages() {
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         for _ in 0..5 {
             out.begin_page(595.0, 842.0);
             out.end_page();
@@ -1641,7 +1628,7 @@ mod tests {
 
     #[test]
     fn draw_rules() {
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.begin_page(595.0, 842.0);
         out.set_color(Color::Rgb {
             r: 1.0,
@@ -1662,7 +1649,7 @@ mod tests {
 
     #[test]
     fn bookmarks() {
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         for name in ["one", "two"] {
             out.begin_page(595.0, 842.0);
             out.add_destination(name, 72.0, 72.0);
@@ -1685,7 +1672,7 @@ mod tests {
 
     #[test]
     fn link_annotation() {
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.begin_page(595.0, 842.0);
         out.add_link(
             [72.0, 72.0, 200.0, 84.0],
@@ -1698,7 +1685,7 @@ mod tests {
 
     #[test]
     fn rotation() {
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.begin_page(595.0, 842.0);
         out.push_state();
         out.rotate(45.0, 297.5, 421.0);
@@ -1711,11 +1698,8 @@ mod tests {
 
     #[test]
     fn uncompressed_output() {
-        let config = PdfConfig {
-            compress: false,
-            ..Default::default()
-        };
-        let mut out = PdfOutputter::new(config);
+        let options = PdfOptions { compress: false, ..Default::default() };
+        let mut out = PdfOutputter::new(Metadata::default(), options);
         out.begin_page(595.0, 842.0);
         out.draw_rule(72.0, 72.0, 100.0, 1.0);
         out.end_page();
@@ -1740,7 +1724,7 @@ mod tests {
         };
         page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
         assert!(bytes.starts_with(b"%PDF"));
@@ -1796,7 +1780,7 @@ mod tests {
         let mut page = test_page(1);
         page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.register_font("body", face, Vec::new());
         out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
@@ -1853,7 +1837,7 @@ mod tests {
         let mut page = test_page(1);
         page.add_frame_content("content", vec![Node::VBox(vbox)]);
 
-        let mut out = PdfOutputter::new(PdfConfig::default());
+        let mut out = PdfOutputter::new(Metadata::default(), PdfOptions::default());
         out.register_font("body", face, Vec::new());
         out.render_pages(&[page]);
         let bytes = out.finish().unwrap();
@@ -1923,10 +1907,8 @@ mod tests {
             pages.push(page);
         }
 
-        let mut out = PdfOutputter::new(PdfConfig {
-            title: Some("Multi-page Test".to_string()),
-            ..Default::default()
-        });
+        let metadata = Metadata { title: Some("Multi-page Test".to_string()), ..Default::default() };
+        let mut out = PdfOutputter::new(metadata, PdfOptions::default());
         out.register_font("body", face, Vec::new());
         out.render_pages(&pages);
 
@@ -1950,18 +1932,17 @@ mod tests {
     }
 
     fn render_with_test_fonts(fonts: &[(&str, &str)]) -> Vec<u8> {
-        use crate::builder::DocumentBuilder;
-        use crate::font::FontSpec;
-        use crate::frame::PaperSize;
+        use sile_core::builder::DocumentBuilder;
+        use sile_core::font::FontSpec;
+        use sile_core::frame::PaperSize;
         let mut doc = DocumentBuilder::new(PaperSize::A5);
         doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts"));
-        doc.set_compress(false);
         for (family, variations) in fonts {
             let spec = FontSpec { family: Some(family.to_string()), variations: variations.to_string(), ..Default::default() };
             doc.set_font_spec(spec).unwrap();
             doc.add_text("Hi").new_paragraph().unwrap();
         }
-        doc.render().unwrap()
+        render(&doc.lay_out().unwrap(), PdfOptions { compress: false, ..Default::default() }).unwrap()
     }
 
     /// The embedded font programs, found by their `/Length1`.

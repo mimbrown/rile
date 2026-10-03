@@ -178,6 +178,9 @@ self_cell::self_cell!(
 
 type RbFace<'a> = rustybuzz::Face<'a>;
 
+/// Positions on a variable font's axes, by axis tag.
+pub type Variations = Vec<([u8; 4], f32)>;
+
 pub struct FontFace {
     data: Arc<Vec<u8>>,
     index: u32,
@@ -415,7 +418,7 @@ impl FontFace {
     /// Axis positions for `spec` on a variable font, set as SILE does:
     /// optical size from the point size, weight and italic from the spec,
     /// then any explicit `variations` ("wght=150,wdth=120").
-    pub fn variations(&self, spec: &FontSpec) -> Vec<([u8; 4], f32)> {
+    pub fn variations(&self, spec: &FontSpec) -> Variations {
         if !self.is_variable {
             return vec![];
         }

@@ -9,6 +9,7 @@ harfbuzz = ["sile-core/harfbuzz"]
 
 [dependencies]
 sile-core = { path = "../sile-core" }
+sile-pdf = { path = "../sile-pdf" }
 fontdb = "0.22"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 clap = { version = "4.6.7", features = ["derive"] }
