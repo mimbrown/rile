@@ -55,3 +55,8 @@ footnote, a list and a table of contents, written to PDF.
 `cargo test --workspace` runs the tests; add `--features rile/harfbuzz` to
 shape with the system HarfBuzz. `CLAUDE.md` describes the architecture and the
 SILE parity tooling.
+
+## License
+
+MIT, as SILE is; see [LICENSE](LICENSE). The test fonts in the repository keep
+their own licenses (SIL Open Font License).
