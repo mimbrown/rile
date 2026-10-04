@@ -2,6 +2,7 @@
 name = "sile-parity"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 publish = false
 description = "Compares rile layouts with SILE's regression test expectations"
 
