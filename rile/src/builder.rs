@@ -245,8 +245,9 @@ impl RunningText {
 pub struct BaselineSkip {
     /// `em` resolves against the font in force when lines are spaced.
     pub skip: Length,
-    /// Minimum gap between one line's depth and the next line's height.
-    pub lineskip: f64,
+    /// The gap between one line's depth and the next line's height when
+    /// the skip would leave less: its stretch and shrink are the gap's.
+    pub lineskip: Length,
 }
 
 impl BaselineSkip {
@@ -261,10 +262,10 @@ impl BaselineSkip {
         };
         let skip = resolve_em(self.skip, em);
         let gap = skip.length.to_pt().unwrap_or(0.0) - height - previous_depth;
-        if gap > self.lineskip {
+        if gap > self.lineskip.length.to_pt().unwrap_or(0.0) {
             Node::vglue(Length::new(Measurement::pt(gap), skip.stretch, skip.shrink))
         } else {
-            Node::vglue(Length::pt(self.lineskip))
+            Node::vglue(self.lineskip)
         }
     }
 }
@@ -1115,8 +1116,24 @@ impl Typesetter {
     /// start a paragraph, so one added first leaves it unindented.
     // SILE: `current.parindent`.
     pub fn add_info<T: std::any::Any + Send + Sync>(&mut self, category: &str, value: T) -> &mut Self {
-        let info = node::Info { category: category.to_string(), value: std::sync::Arc::new(value) };
-        self.push_marker(liner_mark(Ink::Info(info)));
+        self.push_info(category, value, false)
+    }
+
+    /// `add_info`, but the mark is material like glue: it starts a
+    /// paragraph, and is dropped where a line would begin or the paragraph
+    /// end with it.
+    pub fn add_discardable_info<T: std::any::Any + Send + Sync>(&mut self, category: &str, value: T) -> &mut Self {
+        self.push_info(category, value, true)
+    }
+
+    fn push_info<T: std::any::Any + Send + Sync>(&mut self, category: &str, value: T, discardable: bool) -> &mut Self {
+        let info = node::Info { category: category.to_string(), value: std::sync::Arc::new(value), discardable };
+        let marker = liner_mark(Ink::Info(info));
+        if discardable {
+            self.push_inline(Inline::Node(Box::new(marker)));
+        } else {
+            self.push_marker(marker);
+        }
         self
     }
 
@@ -1464,7 +1481,23 @@ impl Typesetter {
     // SILE: `makeHbox`.
     pub fn make_hbox(&mut self) -> Result<node::HBox, BuilderError> {
         let content = self.open_boxes.pop().map(|(_, content)| content).unwrap_or_default();
-        Ok(natural_hbox(self.shape_inlines(&content)?))
+        self.set_box(&content)
+    }
+
+    /// A box of `content` at its natural width. Its text is cut into bidi
+    /// runs and put in display order like a line's, in the direction the
+    /// frame writes.
+    // SILE sets a box's text in its font's direction and, in a
+    // right-to-left frame, draws it a box width too far along.
+    fn set_box(&mut self, content: &[Inline]) -> Result<node::HBox, BuilderError> {
+        let direction = self.writing_direction();
+        if !self.bidi || direction == Direction::TTB {
+            return Ok(natural_hbox(self.shape_inlines(content)?));
+        }
+        let runs = self.split_bidi_runs(content, direction)?;
+        let mut hbox = natural_hbox(reorder_bidi(self.shape_inlines(&runs)?, direction));
+        hbox.ink = Some(Ink::Reordered);
+        Ok(hbox)
     }
 
     /// Add a ready-made box to the paragraph.
@@ -2291,7 +2324,7 @@ impl Typesetter {
                     h_nodes.push(liner_mark(Ink::LinerEnd));
                 }
                 Inline::Box(group, content) => {
-                    let mut hbox = natural_hbox(self.shape_inlines(content)?);
+                    let mut hbox = self.set_box(content)?;
                     if matches!(group, Group::Leaders(_)) {
                         node::clear_tags(&mut hbox.nodes);
                     }

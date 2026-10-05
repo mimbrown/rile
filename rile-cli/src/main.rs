@@ -126,7 +126,7 @@ fn run(args: &Args) -> Result<Vec<PathBuf>, String> {
         if let Some(math) = &math {
             ts.math_settings_mut().family = math.clone();
         }
-        ts.set_baseline_skip(Some(BaselineSkip { skip, lineskip: 1.0 }));
+        ts.set_baseline_skip(Some(BaselineSkip { skip, lineskip: Length::pt(1.0) }));
         ts.set_paragraph_indent(1.2 * args.size);
         ts.set_paragraph_skip(Length::new(Measurement::pt(0.0), Measurement::pt(1.0), Measurement::pt(0.0)));
         ts.mark_toplevel();

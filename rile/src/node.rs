@@ -242,6 +242,7 @@ impl Node {
                 !g.explicit && !g.grid_leading
             }
             Node::Penalty(_) | Node::Insertion(_) => true,
+            Node::HBox(b) => matches!(&b.ink, Some(Ink::Info(info)) if info.discardable),
             _ => false,
         }
     }
@@ -477,6 +478,9 @@ impl PartialEq for LinerPainter {
 #[derive(Clone)]
 pub struct Info {
     pub category: String,
+    /// Dropped, like glue, where a line would begin or a paragraph end
+    /// with it.
+    pub discardable: bool,
     pub value: std::sync::Arc<dyn std::any::Any + Send + Sync>,
 }
 
@@ -530,6 +534,9 @@ pub enum Ink {
     /// Takes up its space but draws nothing.
     // SILE: `\\rebox[phantom]`.
     Phantom,
+    /// Content already in display order, drawn from where the box starts
+    /// whichever way the line runs.
+    Reordered,
     /// A named place links and bookmarks can go to.
     // SILE: `\\pdf:destination`.
     Destination(String),
