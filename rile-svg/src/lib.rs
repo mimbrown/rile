@@ -157,6 +157,8 @@ impl Canvas for SvgCanvas {
         let mime = match image.format {
             ImageFormat::Png => "image/png",
             ImageFormat::Jpeg => "image/jpeg",
+            // SVG has no way to show a PDF page.
+            ImageFormat::Pdf => return,
         };
         let _ = write!(
             self.body,

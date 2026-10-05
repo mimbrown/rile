@@ -5,11 +5,13 @@ edition = "2024"
 license = "MIT"
 
 [features]
-default = ["images"]
+default = ["images", "pdf-images"]
 harfbuzz = ["rile/harfbuzz"]
 # Decodes PNG images to embed them; JPEGs are embedded as they are
 # without it, and PNGs are left out.
 images = ["dep:image"]
+# Places PDF pages as images, copying them in as form XObjects (lopdf).
+pdf-images = ["dep:lopdf", "rile/pdf-images"]
 
 [dependencies]
 rile = { path = "../rile", default-features = false }
@@ -17,8 +19,10 @@ ttf-parser = "0.25"
 pdf-writer = "0.12"
 subsetter = "0.2"
 miniz_oxide = "0.8"
+lopdf = { version = "0.45", default-features = false, optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 
 [dev-dependencies]
+lopdf = { version = "0.45", default-features = false }
 rile-pages = { path = "../rile-pages" }
 fontdb = "0.22"

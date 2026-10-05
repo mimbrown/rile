@@ -5,13 +5,15 @@ edition = "2024"
 license = "MIT"
 
 [features]
-default = ["system-fonts", "math", "bibliography"]
+default = ["system-fonts", "math", "bibliography", "pdf-images"]
 harfbuzz = ["dep:harfbuzz-sys"]
 # Fonts installed on the system, found through fontconfig. Without it fonts
 # come from files, directories, data or a FontSource.
 system-fonts = ["fontdb/memmap", "fontdb/fontconfig"]
 # Math: formulas from a typed tree, TeX-like syntax or MathML.
 math = []
+# PDF pages as images: reads a PDF to find its first page's size (lopdf).
+pdf-images = ["dep:lopdf"]
 # Citations and bibliographies from BibTeX through CSL styles (hayagriva).
 bibliography = ["dep:hayagriva"]
 
@@ -26,3 +28,4 @@ unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.13.3"
 hayagriva = { version = "0.10.1", optional = true }
 icu_segmenter = "2"
+lopdf = { version = "0.45", default-features = false, optional = true }
