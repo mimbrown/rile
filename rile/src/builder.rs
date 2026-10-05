@@ -22,9 +22,11 @@ use crate::shaper::{self, GlyphItem, Shaper, SpaceSettings};
 mod arranger;
 mod galley;
 mod specimen;
+mod style;
 
 pub use arranger::{Arranger, Context};
 pub use galley::Galley;
+pub use style::{ParagraphStyle, TextStyle, paragraph, span};
 
 // ---------------------------------------------------------------------------
 // TextAlign

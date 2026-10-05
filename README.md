@@ -33,7 +33,9 @@ cargo run --release -p rile-cli -- --width 400 notes.md -o notes.svg   # one sur
 A `Typesetter` holds settings and turns text into lines. An `Arranger` decides
 where the lines go: `Galley` keeps them on one surface as tall as the text, and
 `rile_pages::DocumentBuilder` pages them. Content written against `Arranger`
-works with both.
+works with both. Styles are values: a `ParagraphStyle` or `TextStyle` applied
+with `paragraph` or `span` sets what its closure adds and then puts the
+settings back.
 
 ```rust
 use rile::builder::{Arranger, Galley};

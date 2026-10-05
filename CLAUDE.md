@@ -22,6 +22,8 @@ The public API is described in its own terms. Where code ports SILE, a `// SILE:
 * `rile_pages::DocumentBuilder` (`rile-pages/src/paginator.rs`) pages it. It derefs to its typesetter and owns everything that knows about pages: frames, templates, classes, insertions, page breaking, parallel flows and references. It calls `sync_frame` whenever the frame being filled changes.
 * `Galley` (`builder/galley.rs`) keeps it: no measure sets paragraphs at natural width, a measure breaks them, and `take_frame` cuts off what fits a height, leaving the overflow. `lay_out` gives one surface as tall as the material.
 
+Settings are scoped (setters plus `settings`/`restore_settings`). The public styling layer is `builder/style.rs`: `TextStyle` and `ParagraphStyle` (unset fields inherit), applied by `span`/`paragraph` (free functions over `Context`, and `Arranger` methods), which save the settings, apply the style and restore them (Michael chose this hybrid over replacing the setters).
+
 Content that needs vertical mode (lists, tables, display math, specimens) is written once as `Arranger` methods, and content that takes callbacks is generic over `Context`, which an arranger or a frontend's state around one implements. Anything rile-pages needs from the typesetter goes through rile's public API; footnotes, classes, the TOC and the index stay `DocumentBuilder`-only.
 
 ## Features

@@ -42,6 +42,41 @@
 //! # }
 //! ```
 //!
+//! # Styles
+//!
+//! Settings are scoped: setters such as `set_font_spec` or `set_line_skips`
+//! change them until they are changed again, and `settings` and
+//! `restore_settings` save and put them back. On top of that,
+//! [`TextStyle`](builder::TextStyle) and
+//! [`ParagraphStyle`](builder::ParagraphStyle) are styles as values, whose
+//! unset fields inherit; `span` and `paragraph` apply one to what a closure
+//! adds and restore the settings when it returns.
+//!
+//! ```
+//! # use rile::builder::{Arranger, BuilderError, Galley, ParagraphStyle, TextStyle};
+//! # use rile::font::FontSpec;
+//! # use rile::length::Length;
+//! # fn main() -> Result<(), BuilderError> {
+//! # let mut galley = Galley::new(Some(300.0));
+//! # galley.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../sile-parity/fonts"));
+//! # galley.set_font_spec(FontSpec { family: Some("Gentium Plus".into()), size: 11.0, ..Default::default() })?;
+//! let quote = ParagraphStyle {
+//!     text: TextStyle { scale: Some(0.9), ..TextStyle::italic() },
+//!     margin_left: Some(Length::pt(20.0)),
+//!     first_line_indent: Some(0.0),
+//!     ..Default::default()
+//! };
+//! galley.paragraph(&quote, |g: &mut Galley| -> Result<(), BuilderError> {
+//!     g.add_text("Quoted, with ");
+//!     g.span(&TextStyle::bold(), |g: &mut Galley| -> Result<(), BuilderError> {
+//!         g.add_text("one bold word");
+//!         Ok(())
+//!     })
+//! })?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Fonts
 //!
 //! Fonts are found by family or filename through the
