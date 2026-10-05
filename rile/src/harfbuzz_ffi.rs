@@ -197,8 +197,13 @@ impl Drop for HbBuffer {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// The script a font option names, as SILE hands it to HarfBuzz: the tag as
+/// written. Only a tag in ISO 15924's own case (`Hebr`) is the script
+/// HarfBuzz knows; another spelling (`hebr`) still selects the font's
+/// features for that tag, but as a script of no known direction, so
+/// right-to-left text is shaped left to right and turned round.
 pub(crate) fn script_from_string(s: &str) -> hb::hb_script_t {
-    unsafe { hb::hb_script_from_string(s.as_ptr() as *const c_char, s.len() as i32) }
+    unsafe { hb::hb_tag_from_string(s.as_ptr() as *const c_char, s.len() as i32) as hb::hb_script_t }
 }
 
 pub(crate) fn parse_feature(s: &str) -> Option<hb::hb_feature_t> {
