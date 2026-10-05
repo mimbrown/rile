@@ -41,7 +41,7 @@ fn set_up(ts: &mut Typesetter, fonts: Option<&str>) -> Result<(), BuilderError> 
     }
     ts.set_language("en").set_tagged(true);
     ts.set_font_spec(FontSpec { family: Some(FAMILY.into()), size: 11.0, ..Default::default() })?;
-    ts.set_baseline_skip(Some(BaselineSkip { skip: Length::pt(14.0), lineskip: 1.0 }));
+    ts.set_baseline_skip(Some(BaselineSkip { skip: Length::pt(14.0), lineskip: Length::pt(1.0) }));
     Ok(())
 }
 

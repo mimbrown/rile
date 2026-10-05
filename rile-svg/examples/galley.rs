@@ -13,7 +13,7 @@ fn main() -> Result<(), BuilderError> {
     let heading = FontSpec { size: 16.0, ..regular.clone() };
     galley.load_font_file("body", format!("{FONTS}/GentiumPlus-R.ttf"), regular)?;
     galley.load_font_file("heading", format!("{FONTS}/GentiumPlus-R.ttf"), heading)?;
-    galley.set_baseline_skip(Some(BaselineSkip { skip: Length::pt(14.0), lineskip: 1.0 }));
+    galley.set_baseline_skip(Some(BaselineSkip { skip: Length::pt(14.0), lineskip: Length::pt(1.0) }));
     galley.set_paragraph_skip(Length::pt(6.0));
 
     galley.set_paragraph_indent(0.0);

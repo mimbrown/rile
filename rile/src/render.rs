@@ -326,6 +326,13 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     draw_hlist(&hbox.nodes, c, line, canvas);
                     *c = saved;
                 }
+                Some(Ink::Reordered) => {
+                    let saved = *c;
+                    draw_hlist(&hbox.nodes, c, line, canvas);
+                    *c = saved;
+                    c.advance_writing(line.width(node));
+                    c.advance_page(-hbox.raise);
+                }
                 _ => {
                     let width = line.width(node);
                     if c.backwards() {

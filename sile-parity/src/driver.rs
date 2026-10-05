@@ -875,7 +875,7 @@ impl<'a> Driver<'a> {
             None => None,
         };
         let now = Synced {
-            baseline_skip: BaselineSkip { skip: self.em_length(&bls)?, lineskip: self.dimen(&lineskip)? },
+            baseline_skip: BaselineSkip { skip: self.em_length(&bls)?, lineskip: Length::pt(self.dimen(&lineskip)?) },
             indent: self.dimen(&parindent)?,
             parskip: self.length(&parskip)?,
             skips: self.settings.skips,
