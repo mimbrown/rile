@@ -22,7 +22,7 @@ impl Typesetter {
     /// an em apart.
     // SILE: `\repertoire`.
     pub fn add_repertoire(&mut self) -> Result<&mut Self, BuilderError> {
-        let name = self.settings.font.clone().ok_or_else(|| BuilderError::NoFont(String::new()))?;
+        let name = self.settings.font.as_deref().map(str::to_string).ok_or_else(|| BuilderError::NoFont(String::new()))?;
         let font = self.fonts.get(&name).ok_or_else(|| BuilderError::NoFont(name.clone()))?;
         let (face, size) = (Arc::clone(&font.face), font.spec.size);
         let key: Arc<str> = name.into();
@@ -47,7 +47,7 @@ pub(crate) fn add_pangrams<A: Arranger + ?Sized>(a: &mut A) -> Result<(), Builde
 }
 
 pub(crate) fn set_to_width<A: Arranger + ?Sized>(a: &mut A, width: f64, text: &str) -> Result<(), BuilderError> {
-    let name = a.settings.font.clone().ok_or_else(|| BuilderError::NoFont(String::new()))?;
+    let name = a.settings.font.as_deref().map(str::to_string).ok_or_else(|| BuilderError::NoFont(String::new()))?;
     for line in text.split('\n').filter(|l| !l.is_empty()) {
         let font = a.fonts.get(&name).ok_or_else(|| BuilderError::NoFont(name.clone()))?;
         let natural: f64 = crate::word_shaping::shape(&*a.shaper, line, &font.face, &font.spec).iter().map(|g| g.width).sum();
