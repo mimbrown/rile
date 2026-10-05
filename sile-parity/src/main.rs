@@ -1,4 +1,3 @@
-mod compare;
 mod driver;
 mod fonts;
 mod known;
@@ -6,10 +5,11 @@ mod ports;
 mod report;
 mod sil;
 mod svg;
-mod trace;
 mod xml;
 
 use std::path::PathBuf;
+
+use sile_parity::{compare, trace};
 
 use compare::{Comparison, Status};
 use driver::{Corpus, Failure, Format};
