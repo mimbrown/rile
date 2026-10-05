@@ -12,6 +12,13 @@ harfbuzz = ["dep:harfbuzz-sys"]
 system-fonts = ["fontdb/memmap", "fontdb/fontconfig"]
 # Math: formulas from a typed tree, TeX-like syntax or MathML.
 math = []
+# Flaws of SILE's that printed work may depend on, for a port that has to
+# come out as SILE set it. Off, rile does what SILE meant to:
+# - a font's script is the tag as written, so `hebr` is not the script
+#   `Hebr`, and its right-to-left text is shaped left to right and turned;
+# - when a shaper gives a cluster's glyphs out of order, a break is found
+#   too early in the word (a number under an Arabic year sign is split).
+sile-quirks = []
 # PDF pages as images: reads a PDF to find its first page's size (lopdf).
 pdf-images = ["dep:lopdf"]
 # Citations and bibliographies from BibTeX through CSL styles (hayagriva).

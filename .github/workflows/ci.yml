@@ -30,6 +30,11 @@ jobs:
         run: cargo test --workspace ${{ matrix.shaper == 'harfbuzz' && '--features rile/harfbuzz' || '' }}
       - name: Clippy
         run: cargo clippy --workspace --all-targets ${{ matrix.shaper == 'harfbuzz' && '--features rile/harfbuzz' || '' }}
+      - name: With SILE's quirks
+        if: matrix.shaper == 'harfbuzz'
+        run: |
+          cargo test -p rile --features harfbuzz,sile-quirks
+          cargo clippy -p rile --features harfbuzz,sile-quirks --all-targets
       - name: Without optional features
         if: matrix.shaper == 'rustybuzz'
         run: |

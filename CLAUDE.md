@@ -32,6 +32,8 @@ Content that needs vertical mode (lists, tables, display math, specimens) is wri
 * Fonts come from `FontSource`s added with `Typesetter::add_font_source`, then the built-in `FontDatabase` (fonts given as data, files or directories). Finding installed fonts through fontconfig is rile's default `system-fonts` feature.
 * Heavy packages are default features, so a minimal user can turn them off: rile's `math` and `bibliography` (hayagriva), rile-pages' `index` (icu_collator) and rile-pdf's `images` (PNG decoding; JPEGs are embedded as they are without it), and `pdf-images` in rile and rile-pdf (lopdf: a PDF's first page as an image, sized by rile and copied in as a form XObject by rile-pdf). Library crates depend on rile with `default-features = false`. CI tests and lints each library crate without its optional features.
 
+* `sile-quirks` (rile, off, and enabled by nothing in this workspace) reproduces flaws of SILE's that a port may need to match SILE's output; `rile/Cargo.toml` lists them. Behaviour SILE meant goes in unconditionally; a flaw only a port could want goes behind this feature, with tests for both sides.
+
 ## Shaping cache
 
 `rile/src/word_shaping.rs` shapes runs a word at a time from a per-font cache, for fonts whose GSUB/GPOS/kern tables it proves can't reach across a space (characters a space-sensitive rule pairs with a space are kept attached to it). Graphite and AAT fonts are always shaped whole. Debug builds also shape every run whole and assert the results are identical, so the test suite and a debug parity run check the cache.
