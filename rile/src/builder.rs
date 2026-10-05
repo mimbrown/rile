@@ -450,8 +450,8 @@ impl Layout {
 // SILE: settings state.
 #[derive(Clone)]
 pub struct Settings {
-    font: Option<String>,
-    language: String,
+    font: Option<Arc<str>>,
+    language: Arc<str>,
     color: Option<Color>,
     skips: LineSkips,
     paragraph_indent: f64,
@@ -470,12 +470,12 @@ pub struct Settings {
     italic_correction: Option<ItalicCorrection>,
     replace_apostrophe_at_hyphenation: bool,
     break_width: Option<f64>,
-    fallbacks: Vec<FontFallback>,
+    fallbacks: Arc<Vec<FontFallback>>,
     /// The fallbacks applied to the current font, as registered fonts.
-    fallback_fonts: Vec<String>,
-    linebreak_settings: LinebreakSettings,
+    fallback_fonts: Arc<Vec<String>>,
+    linebreak_settings: Arc<LinebreakSettings>,
     #[cfg(feature = "math")]
-    math: crate::math::MathSettings,
+    math: Arc<crate::math::MathSettings>,
     boustrophedon: bool,
     complex_spaces: bool,
 }
@@ -484,7 +484,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             font: None,
-            language: "en".to_string(),
+            language: "en".into(),
             color: None,
             skips: LineSkips::default(),
             paragraph_indent: 20.0,
@@ -503,9 +503,9 @@ impl Default for Settings {
             italic_correction: None,
             replace_apostrophe_at_hyphenation: false,
             break_width: None,
-            fallbacks: Vec::new(),
-            fallback_fonts: Vec::new(),
-            linebreak_settings: LinebreakSettings::default(),
+            fallbacks: Default::default(),
+            fallback_fonts: Default::default(),
+            linebreak_settings: Default::default(),
             #[cfg(feature = "math")]
             math: Default::default(),
             boustrophedon: false,
@@ -919,7 +919,7 @@ impl Typesetter {
     }
 
     pub fn set_font(&mut self, name: impl Into<String>) -> &mut Self {
-        self.settings.font = Some(name.into());
+        self.settings.font = Some(name.into().into());
         self
     }
 
@@ -933,7 +933,7 @@ impl Typesetter {
     // SILE: `\font`.
     pub fn set_font_spec(&mut self, spec: FontSpec) -> Result<&mut Self, BuilderError> {
         let key = self.register_font_spec(spec)?;
-        self.settings.font = Some(key);
+        self.settings.font = Some(key.into());
         self.refresh_fallbacks()?;
         Ok(self)
     }
@@ -942,7 +942,7 @@ impl Typesetter {
     /// the fonts so far lack.
     // SILE: `\font:add-fallback`.
     pub fn add_font_fallback(&mut self, fallback: FontFallback) -> Result<&mut Self, BuilderError> {
-        self.settings.fallbacks.push(fallback);
+        Arc::make_mut(&mut self.settings.fallbacks).push(fallback);
         self.refresh_fallbacks()?;
         Ok(self)
     }
@@ -950,14 +950,14 @@ impl Typesetter {
     /// Drop the last fallback added.
     // SILE: `\font:remove-fallback`.
     pub fn remove_font_fallback(&mut self) -> &mut Self {
-        self.settings.fallbacks.pop();
-        self.settings.fallback_fonts.pop();
+        Arc::make_mut(&mut self.settings.fallbacks).pop();
+        Arc::make_mut(&mut self.settings.fallback_fonts).pop();
         self
     }
 
     pub fn clear_font_fallbacks(&mut self) -> &mut Self {
-        self.settings.fallbacks.clear();
-        self.settings.fallback_fonts.clear();
+        self.settings.fallbacks = Default::default();
+        self.settings.fallback_fonts = Default::default();
         self
     }
 
@@ -965,11 +965,8 @@ impl Typesetter {
         let Some(current) = self.font_spec().cloned() else {
             return Ok(());
         };
-        let fallbacks = self.settings.fallbacks.clone();
-        self.settings.fallback_fonts = fallbacks
-            .iter()
-            .map(|f| self.register_font_spec(f.apply(&current)))
-            .collect::<Result<_, _>>()?;
+        let fallbacks = Arc::clone(&self.settings.fallbacks);
+        self.settings.fallback_fonts = Arc::new(fallbacks.iter().map(|f| self.register_font_spec(f.apply(&current))).collect::<Result<_, _>>()?);
         Ok(())
     }
 
@@ -1010,7 +1007,7 @@ impl Typesetter {
 
     #[cfg(feature = "math")]
     pub fn math_settings_mut(&mut self) -> &mut crate::math::MathSettings {
-        &mut self.settings.math
+        Arc::make_mut(&mut self.settings.math)
     }
 
     pub fn space_settings(&self) -> &SpaceSettings {
@@ -1039,7 +1036,7 @@ impl Typesetter {
     }
 
     pub fn set_language(&mut self, lang: impl Into<String>) -> &mut Self {
-        self.settings.language = lang.into();
+        self.settings.language = lang.into().into();
         self.hyphenation.load_language(&self.settings.language);
         self
     }
@@ -1236,7 +1233,7 @@ impl Typesetter {
     }
 
     pub fn linebreak_settings_mut(&mut self) -> &mut LinebreakSettings {
-        &mut self.settings.linebreak_settings
+        Arc::make_mut(&mut self.settings.linebreak_settings)
     }
 
     pub fn page_break_settings_mut(&mut self) -> &mut PageBreakSettings {
@@ -1357,8 +1354,8 @@ impl Typesetter {
             letters: self.letter_languages.iter().any(|l| *l == base_language(&self.settings.language)),
             ..NodeMakerOptions::for_language(&self.settings.language)
         };
-        let font_name = self.settings.font.clone().unwrap_or_default();
-        let fallbacks = self.settings.fallback_fonts.clone();
+        let font_name = self.settings.font.as_deref().unwrap_or_default().to_string();
+        let fallbacks = (*self.settings.fallback_fonts).clone();
         let (font_name, fallbacks) = match self.fonts.get(&font_name).map(|f| f.spec.direction) {
             Some(Direction::Frame) => {
                 let direction = self.writing_direction();
@@ -1372,7 +1369,7 @@ impl Typesetter {
             text,
             font_name,
             color: self.settings.color,
-            language: self.settings.language.clone(),
+            language: self.settings.language.to_string(),
             tokens,
             letter_space: self.settings.letter_space,
             tracking: self.settings.tracking,
@@ -1613,7 +1610,7 @@ impl Typesetter {
     /// font size if it has none.
     // SILE: `zw` unit.
     pub fn zenkaku_width(&self) -> f64 {
-        let Some(font) = self.settings.font.as_ref().and_then(|name| self.fonts.get(name)) else {
+        let Some(font) = self.settings.font.as_deref().and_then(|name| self.fonts.get(name)) else {
             return 10.0;
         };
         let glyphs = self.shaper.shape("あ", &font.face, &font.spec);
@@ -2195,7 +2192,7 @@ impl Typesetter {
             natural + pt_of(&skips.left) + pt_of(&skips.right) + self.hanging.map_or(0.0, |(_, indent)| indent.abs()) + 1e-6
         };
 
-        let mut lb_settings = self.settings.linebreak_settings.clone();
+        let mut lb_settings = (*self.settings.linebreak_settings).clone();
         lb_settings.left_skip = skips.left;
         lb_settings.right_skip = skips.right;
         if let Some((after, indent)) = self.hanging {
@@ -2537,7 +2534,7 @@ impl Typesetter {
                 out.push(node);
                 continue;
             };
-            let lang = if word.language.is_empty() { self.settings.language.clone() } else { word.language.to_string() };
+            let lang = if word.language.is_empty() { self.settings.language.to_string() } else { word.language.to_string() };
             let mut segments = self.hyphenation.hyphenate_word(&word.text, &lang);
             if segments.len() <= 1 || !self.fonts.contains_key(&*word.font_key) {
                 out.push(Node::NNode(word));
