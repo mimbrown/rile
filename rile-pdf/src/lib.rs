@@ -183,6 +183,9 @@ pub struct PdfOutputter {
     metadata: Metadata,
     options: PdfOptions,
     fonts: BTreeMap<String, FontEntry>,
+    /// Fonts registered under one name that are the face and variations
+    /// already registered under another, which is the one embedded.
+    font_aliases: HashMap<String, String>,
     font_counter: usize,
     images: Vec<ImageEntry>,
     #[cfg(feature = "pdf-images")]
@@ -207,6 +210,7 @@ impl PdfOutputter {
             metadata,
             options,
             fonts: BTreeMap::new(),
+            font_aliases: HashMap::new(),
             font_counter: 0,
             images: Vec::new(),
             #[cfg(feature = "pdf-images")]
@@ -271,8 +275,20 @@ impl PdfOutputter {
 
     // -- Font management ---------------------------------------------------
 
+    /// Registers a font under the name its text refers to it by. A layout
+    /// names a font once for each size, direction and set of features it
+    /// is used with; names for one face at one set of variations share one
+    /// embedded font.
     pub fn register_font(&mut self, key: &str, face: Arc<FontFace>, variations: Vec<([u8; 4], f32)>) {
-        if self.fonts.contains_key(key) {
+        if self.fonts.contains_key(key) || self.font_aliases.contains_key(key) {
+            return;
+        }
+        let same_face = |entry: &FontEntry| {
+            let ((data, index), (other, other_index)) = (face.raw_data(), entry.face.raw_data());
+            index == other_index && (std::ptr::eq(data, other) || data == other) && entry.variations == variations
+        };
+        if let Some(embedded) = self.fonts.iter().find(|(_, entry)| same_face(entry)).map(|(name, _)| name.clone()) {
+            self.font_aliases.insert(key.to_string(), embedded);
             return;
         }
         let pdf_name = format!("F{}", self.font_counter);
@@ -287,6 +303,11 @@ impl PdfOutputter {
                 pdf_name,
             },
         );
+    }
+
+    /// The name of the embedded font that a layout's font name stands for.
+    fn embedded_font<'a>(&'a self, key: &'a str) -> &'a str {
+        self.font_aliases.get(key).map_or(key, String::as_str)
     }
 
     /// The code that shows `gid` in the content stream.
@@ -410,6 +431,7 @@ impl PdfOutputter {
     }
 
     pub fn set_font(&mut self, font_key: &str, size: f64) {
+        let font_key = &self.embedded_font(font_key).to_string();
         let page = self.current.as_mut().expect("no current page");
         if page.current_font.as_ref().is_some_and(|(k, s)| k == font_key && *s == size) {
             return;
@@ -450,6 +472,7 @@ impl PdfOutputter {
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
+        let font_key = &self.embedded_font(font_key).to_string();
         let cids: Vec<u16> = glyphs.iter().map(|g| self.track_glyph(font_key, g.0, "")).collect();
         self.mark();
         let page = self.current.as_mut().expect("no current page");
@@ -579,17 +602,18 @@ impl PdfOutputter {
         // earlier on the page would bleed into everything after it.
         self.set_color(nnode.color.unwrap_or(Color::Grayscale { l: 0.0 }));
 
-        let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(&nnode.font_key, g.gid, &g.text)).collect();
+        let font_key = self.embedded_font(&nnode.font_key).to_string();
+        let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(&font_key, g.gid, &g.text)).collect();
         let space = (self.structure.is_some() && nnode.space_after && !nnode.vertical && nnode.bidi_level.unwrap_or(0).is_multiple_of(2))
-            .then(|| self.fonts.get(&*nnode.font_key)?.face.glyph_id(' '))
+            .then(|| self.fonts.get(&font_key)?.face.glyph_id(' '))
             .flatten()
             .filter(|&gid| gid != 0)
-            .map(|gid| self.track_glyph(&nnode.font_key, gid, " "));
+            .map(|gid| self.track_glyph(&font_key, gid, " "));
 
         // Where the font's own advances are those of the embedded font,
         // glyphs follow each other in one TJ array, adjusted where the
         // shaper moved them; otherwise each is placed on its own.
-        let entry = &self.fonts[&*nnode.font_key];
+        let entry = &self.fonts[&font_key];
         let advance = |gid: u16| entry.face.advance_width(gid).unwrap_or(0) as f64 * nnode.font_size / entry.face.units_per_em() as f64;
         let chained = !nnode.vertical && !entry.face.is_variable();
         let mut placed: Vec<(f64, f64, u16, Option<f64>)> = Vec::with_capacity(cids.len() + 1);
@@ -611,7 +635,7 @@ impl PdfOutputter {
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
-        let pdf_name = self.fonts.get(&*nnode.font_key).map_or("F0", |e| e.pdf_name.as_str());
+        let pdf_name = self.fonts.get(&font_key).map_or("F0", |e| e.pdf_name.as_str());
 
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
