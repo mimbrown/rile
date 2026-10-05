@@ -3,7 +3,7 @@
 
 use std::error::Error;
 
-use rile::builder::{Arranger, BaselineSkip, BuilderError, Galley, Typesetter};
+use rile::builder::{Arranger, BaselineSkip, BuilderError, Galley, ParagraphStyle, TextStyle, Typesetter};
 use rile::font::FontSpec;
 use rile::frame::PaperSize;
 use rile::length::Length;
@@ -71,6 +71,23 @@ fn book(fonts: Option<&str>) -> Result<rile::builder::Layout, BuilderError> {
             Ok(())
         })?;
         key_points(&mut doc)?;
+
+        let aside = ParagraphStyle {
+            text: TextStyle { scale: Some(0.9), ..TextStyle::italic() },
+            margin_left: Some(Length::pt(24.0)),
+            first_line_indent: Some(0.0),
+            space_before: Some(Length::pt(8.0)),
+            ..Default::default()
+        };
+        doc.paragraph(&aside, |doc: &mut DocumentBuilder| -> Result<(), BuilderError> {
+            doc.add_text("Styles are values: this aside is set in italic, smaller and indented, and the ");
+            doc.span(&TextStyle::bold(), |doc: &mut DocumentBuilder| -> Result<(), BuilderError> {
+                doc.add_text("settings");
+                Ok(())
+            })?;
+            doc.add_text(" go back to the book's own when it ends.");
+            Ok(())
+        })?;
         Ok(doc)
     })
 }

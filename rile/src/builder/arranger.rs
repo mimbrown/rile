@@ -84,6 +84,23 @@ pub trait Arranger: DerefMut<Target = Typesetter> {
         Ok(self.vertical_queue.is_empty())
     }
 
+    /// End the paragraph in progress, then set what `body` adds as
+    /// paragraphs in `style`, and put the settings back.
+    fn paragraph<E: From<BuilderError>>(&mut self, style: &ParagraphStyle, body: impl FnOnce(&mut Self) -> Result<(), E>) -> Result<(), E>
+    where
+        Self: Sized,
+    {
+        super::style::paragraph(self, style, body)
+    }
+
+    /// Set what `body` adds in `style`, then put the settings back.
+    fn span<E: From<BuilderError>>(&mut self, style: &TextStyle, body: impl FnOnce(&mut Self) -> Result<(), E>) -> Result<(), E>
+    where
+        Self: Sized,
+    {
+        super::style::span(self, style, body)
+    }
+
     fn add_vskip(&mut self, amount: impl Into<Length>) -> Result<&mut Self, BuilderError> {
         self.leave_hmode(false)?;
         self.push_vertical(Node::vglue(amount.into()));
