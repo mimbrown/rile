@@ -10,6 +10,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#[cfg(feature = "pdf-images")]
+mod pdf_image;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -182,6 +185,11 @@ pub struct PdfOutputter {
     fonts: BTreeMap<String, FontEntry>,
     font_counter: usize,
     images: Vec<ImageEntry>,
+    #[cfg(feature = "pdf-images")]
+    forms: Vec<pdf_image::Form>,
+    /// Indexes of PDF pages already added, by their data's address.
+    #[cfg(feature = "pdf-images")]
+    placed_forms: HashMap<usize, usize>,
     bookmarks: Vec<Bookmark>,
     /// Page index and top-left position of each named destination.
     destinations: HashMap<String, (usize, f64, f64)>,
@@ -201,6 +209,10 @@ impl PdfOutputter {
             fonts: BTreeMap::new(),
             font_counter: 0,
             images: Vec::new(),
+            #[cfg(feature = "pdf-images")]
+            forms: Vec::new(),
+            #[cfg(feature = "pdf-images")]
+            placed_forms: HashMap::new(),
             bookmarks: Vec::new(),
             destinations: HashMap::new(),
             placed_images: HashMap::new(),
@@ -503,6 +515,20 @@ impl PdfOutputter {
         page.content.restore_state();
     }
 
+    /// Draws a placed PDF page so that its `page_box` fills the rectangle.
+    #[cfg(feature = "pdf-images")]
+    fn draw_form(&mut self, index: usize, page_box: [f64; 4], x: f64, y: f64, width: f64, height: f64) {
+        self.mark();
+        let page = self.current.as_mut().expect("no current page");
+        let pdf_y = page.height - y - height;
+        let [left, bottom, right, top] = page_box;
+        let (sx, sy) = (width / (right - left), height / (top - bottom));
+        page.content.save_state();
+        page.content.transform([sx as f32, 0.0, 0.0, sy as f32, (x - left * sx) as f32, (pdf_y - bottom * sy) as f32]);
+        page.content.x_object(Name(format!("Fm{index}").as_bytes()));
+        page.content.restore_state();
+    }
+
     pub fn push_state(&mut self) {
         self.end_mark();
         let page = self.current.as_mut().expect("no current page");
@@ -681,6 +707,11 @@ impl PdfOutputter {
             })
             .collect();
 
+        #[cfg(feature = "pdf-images")]
+        let form_refs: Vec<Ref> = self.forms.iter().map(|_| alloc.bump()).collect();
+        #[cfg(not(feature = "pdf-images"))]
+        let form_refs: Vec<Ref> = Vec::new();
+
         // Allocate bookmark refs
         let outline_ref = if !self.bookmarks.is_empty() {
             Some(alloc.bump())
@@ -789,11 +820,14 @@ impl PdfOutputter {
                 font_dict.finish();
             }
 
-            if !self.images.is_empty() {
+            if !self.images.is_empty() || !form_refs.is_empty() {
                 let mut xobjects = resources.x_objects();
                 for (j, (img_ref, _)) in image_data.iter().enumerate() {
                     let name = format!("Im{j}");
                     xobjects.pair(Name(name.as_bytes()), *img_ref);
+                }
+                for (j, form_ref) in form_refs.iter().enumerate() {
+                    xobjects.pair(Name(format!("Fm{j}").as_bytes()), *form_ref);
                 }
                 xobjects.finish();
             }
@@ -831,6 +865,12 @@ impl PdfOutputter {
         for (i, img) in self.images.iter().enumerate() {
             let (img_ref, smask_ref) = image_data[i];
             write_image(&mut pdf, img, img_ref, smask_ref, self.options.compress);
+        }
+
+        // PDF pages bring objects of their own, numbered after ours.
+        #[cfg(feature = "pdf-images")]
+        for (form, form_ref) in self.forms.iter().zip(&form_refs) {
+            form.write(&mut pdf, *form_ref, &mut || alloc.bump(), self.options.compress);
         }
 
         // -- Write annotations --
@@ -966,6 +1006,22 @@ impl rile::render::Canvas for PdfOutputter {
 
     fn image(&mut self, image: &rile::image::Image, x: f64, y: f64, width: f64, height: f64) {
         let key = Arc::as_ptr(&image.data) as usize;
+        if image.format == rile::image::ImageFormat::Pdf {
+            #[cfg(feature = "pdf-images")]
+            if let Some(page_box) = image.page_box {
+                let index = match self.placed_forms.get(&key) {
+                    Some(&index) => index,
+                    None => {
+                        let Ok(form) = pdf_image::Form::open(&image.data, page_box) else { return };
+                        self.forms.push(form);
+                        self.placed_forms.insert(key, self.forms.len() - 1);
+                        self.forms.len() - 1
+                    }
+                };
+                self.draw_form(index, page_box, x, y, width, height);
+            }
+            return;
+        }
         let index = match self.placed_images.get(&key) {
             Some(&index) => index,
             None => {
@@ -978,6 +1034,7 @@ impl rile::render::Canvas for PdfOutputter {
                     #[cfg(not(feature = "images"))]
                     rile::image::ImageFormat::Png => return,
                     rile::image::ImageFormat::Jpeg => self.push_jpeg(image.data.to_vec(), image.pixels),
+                    rile::image::ImageFormat::Pdf => return,
                 };
                 self.placed_images.insert(key, index);
                 index

@@ -30,7 +30,7 @@ Content that needs vertical mode (lists, tables, display math, specimens) is wri
 
 * Default builds are pure Rust (rustybuzz). `--features harfbuzz` links system HarfBuzz, needed for Graphite fonts.
 * Fonts come from `FontSource`s added with `Typesetter::add_font_source`, then the built-in `FontDatabase` (fonts given as data, files or directories). Finding installed fonts through fontconfig is rile's default `system-fonts` feature.
-* Heavy packages are default features, so a minimal user can turn them off: rile's `math` and `bibliography` (hayagriva), rile-pages' `index` (icu_collator) and rile-pdf's `images` (PNG decoding; JPEGs are embedded as they are without it). Library crates depend on rile with `default-features = false`. CI tests and lints each library crate without its optional features.
+* Heavy packages are default features, so a minimal user can turn them off: rile's `math` and `bibliography` (hayagriva), rile-pages' `index` (icu_collator) and rile-pdf's `images` (PNG decoding; JPEGs are embedded as they are without it), and `pdf-images` in rile and rile-pdf (lopdf: a PDF's first page as an image, sized by rile and copied in as a form XObject by rile-pdf). Library crates depend on rile with `default-features = false`. CI tests and lints each library crate without its optional features.
 
 ## Shaping cache
 
