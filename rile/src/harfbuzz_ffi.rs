@@ -197,13 +197,42 @@ impl Drop for HbBuffer {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// The script a font option names, in whatever case it is written.
+#[cfg(not(feature = "sile-quirks"))]
+pub(crate) fn script_from_string(s: &str) -> hb::hb_script_t {
+    unsafe { hb::hb_script_from_string(s.as_ptr() as *const c_char, s.len() as i32) }
+}
+
 /// The script a font option names, as SILE hands it to HarfBuzz: the tag as
 /// written. Only a tag in ISO 15924's own case (`Hebr`) is the script
 /// HarfBuzz knows; another spelling (`hebr`) still selects the font's
 /// features for that tag, but as a script of no known direction, so
 /// right-to-left text is shaped left to right and turned round.
+#[cfg(feature = "sile-quirks")]
 pub(crate) fn script_from_string(s: &str) -> hb::hb_script_t {
     unsafe { hb::hb_tag_from_string(s.as_ptr() as *const c_char, s.len() as i32) as hb::hb_script_t }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::script_from_string;
+
+    #[test]
+    fn a_script_is_known_in_its_own_case() {
+        assert_eq!(script_from_string("Hebr"), harfbuzz_sys::HB_SCRIPT_HEBREW);
+    }
+
+    #[test]
+    #[cfg(not(feature = "sile-quirks"))]
+    fn a_script_is_known_in_any_case() {
+        assert_eq!(script_from_string("hebr"), harfbuzz_sys::HB_SCRIPT_HEBREW);
+    }
+
+    #[test]
+    #[cfg(feature = "sile-quirks")]
+    fn sile_takes_a_script_in_another_case_for_another_script() {
+        assert_ne!(script_from_string("hebr"), harfbuzz_sys::HB_SCRIPT_HEBREW);
+    }
 }
 
 pub(crate) fn parse_feature(s: &str) -> Option<hb::hb_feature_t> {

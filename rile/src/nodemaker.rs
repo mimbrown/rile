@@ -105,6 +105,18 @@ enum Last {
 }
 
 pub fn tokenize(items: &[Item], options: NodeMakerOptions) -> Vec<Token> {
+    tokenize_from(items, items.first().map_or(0, |i| i.index), options)
+}
+
+/// `tokenize` with the items' offsets counted from byte `start` instead of
+/// from the first item. The two differ when a shaper gives a cluster's
+/// glyphs out of order (Graphite sets a digit before the Arabic year sign
+/// it follows): the text of the glyphs it puts first is lost, boundaries
+/// are found in the text that is left, and counted from `start` the last of
+/// them falls that much early, inside the word.
+// SILE: the Unicode node maker does this, and breaks a year's digits in
+// two. The builder asks for it only with the `sile-quirks` feature.
+pub fn tokenize_from(items: &[Item], start: usize, options: NodeMakerOptions) -> Vec<Token> {
     if options.japanese {
         return japanese::tokenize(items);
     }
@@ -119,7 +131,6 @@ pub fn tokenize(items: &[Item], options: NodeMakerOptions) -> Vec<Token> {
             .collect();
     }
     // French drops typed spaces where it sets its own.
-    let start = items.first().map_or(0, |i| i.index);
     let (mut kept, mut clean, mut text, mut removed) = (Vec::new(), Vec::new(), String::new(), start);
     for (i, item) in items.iter().enumerate() {
         if options.french && french::must_remove(items, i) {
@@ -185,7 +196,9 @@ fn boundaries(text: &str) -> Vec<(usize, Boundary)> {
         .filter(|(i, _)| *i > 0)
         .collect();
     out.extend(
-        linebreaks(text).map(|(i, op)| (i, Boundary::Line { hard: op == BreakOpportunity::Mandatory })),
+        // The end of the text is where a line may end, not where one must.
+        linebreaks(text)
+            .map(|(i, op)| (i, Boundary::Line { hard: op == BreakOpportunity::Mandatory && i < text.len() })),
     );
     let inside = complex_context(text);
     if !inside.is_empty() {
@@ -572,6 +585,22 @@ mod tests {
         text.char_indices()
             .map(|(i, c)| Item { text: &text[i..i + c.len_utf8()], index: i })
             .collect()
+    }
+
+    /// The year sign's glyph comes after its first digit's, at that digit's
+    /// offset and with no text of its own; the sign's two bytes are lost.
+    #[test]
+    fn a_year_breaks_where_the_end_of_its_shortened_text_falls() {
+        let text = "\u{601}195";
+        let glyph = |range: std::ops::Range<usize>| Item { text: &text[range.clone()], index: range.start };
+        let items = [glyph(2..2), glyph(2..3), glyph(3..4), glyph(4..5)];
+        let words = |tokens: Vec<Token>| -> Vec<Token> { tokens };
+        assert_eq!(
+            words(tokenize_from(&items, 0, Default::default())),
+            [Token::Word(0..2), Token::Penalty(0), Token::Word(2..4)]
+        );
+        // Counted from its first glyph, the text is whole and stays together.
+        assert_eq!(words(tokenize(&items, Default::default())), [Token::Word(0..4)]);
     }
 
     fn render(text: &str, options: NodeMakerOptions) -> String {

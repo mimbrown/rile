@@ -2435,7 +2435,11 @@ impl Typesetter {
             let (face, spec) = (&entry.face, &entry.spec);
             let mut zenkaku = None;
             let space = || crate::word_shaping::shape(&*self.shaper, " ", face, spec).iter().map(|g| g.width).sum::<f64>() * tracking;
-            for token in nodemaker::tokenize(&items[lo..hi], run.tokens) {
+            // SILE counts offsets from the start of the run's text even when
+            // the shaper put the glyphs of a later offset first (see
+            // `tokenize_from`).
+            let start = if cfg!(feature = "sile-quirks") && lo == 0 { 0 } else { items[lo].index };
+            for token in nodemaker::tokenize_from(&items[lo..hi], start, run.tokens) {
                 match token {
                     Token::Word(range) => {
                         let range = range.start + lo..range.end + lo;
