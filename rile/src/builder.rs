@@ -1681,6 +1681,11 @@ impl Typesetter {
         self.paragraph.push(item);
     }
 
+    /// Whether anything has been added to the paragraph being built.
+    pub fn in_paragraph(&self) -> bool {
+        !self.paragraph.is_empty()
+    }
+
     /// Set the paragraph being built as lines on the vertical list, or
     /// keep it for a capture. False when a capture took it.
     pub fn end_paragraph(&mut self) -> Result<bool, BuilderError> {
@@ -1996,7 +2001,9 @@ impl Typesetter {
         let skips = LineSkips { left, right, ..self.settings.skips };
         let mut previous_depth = self.previous_depth;
         let direction = self.writing_direction();
-        let lines = self.break_nodes(std::mem::take(nodes), hsize, direction, false, skips, &mut previous_depth);
+        let mut h_nodes = std::mem::take(nodes);
+        drop_trailing_discardables(&mut h_nodes);
+        let lines = self.break_nodes(h_nodes, hsize, direction, false, skips, &mut previous_depth);
         self.previous_depth = previous_depth;
         self.vertical_queue.extend(lines);
         Ok(())
@@ -2170,6 +2177,29 @@ impl Typesetter {
         previous_depth: &mut Option<f64>,
     ) -> Result<Vec<Node>, BuilderError> {
         let bidi = self.bidi && direction != Direction::TTB;
+        // SILE drops what a paragraph ends with that is discardable before
+        // it shapes the text, when the text's own spaces are not glue yet:
+        // a paragraph whose text ends in a space keeps that space at the
+        // end of its last line.
+        let kept;
+        let inlines = if cfg!(feature = "sile-quirks") {
+            let mut all = inlines.to_vec();
+            let mut j = all.len();
+            while j > 0 {
+                j -= 1;
+                match &all[j] {
+                    Inline::Node(node) if node.is_migrating() => continue,
+                    Inline::Node(node) if node.is_discardable() => {
+                        all.remove(j);
+                    }
+                    _ => break,
+                }
+            }
+            kept = all;
+            &kept[..]
+        } else {
+            inlines
+        };
         let mut h_nodes = if bidi {
             let inlines = self.split_bidi_runs(inlines, direction)?;
             self.shape_inlines(&inlines)?
@@ -2180,6 +2210,9 @@ impl Typesetter {
             node::clear_tags(&mut h_nodes);
         }
         mark_word_spaces(&mut h_nodes);
+        if !cfg!(feature = "sile-quirks") {
+            drop_trailing_discardables(&mut h_nodes);
+        }
         Ok(self.break_nodes(h_nodes, hsize, direction, bidi, skips, previous_depth))
     }
 
@@ -2194,17 +2227,6 @@ impl Typesetter {
         skips: LineSkips,
         previous_depth: &mut Option<f64>,
     ) -> Vec<Node> {
-        let mut j = h_nodes.len();
-        while j > 0 {
-            j -= 1;
-            if h_nodes[j].is_migrating() {
-                continue;
-            }
-            if !h_nodes[j].is_discardable() {
-                break;
-            }
-            h_nodes.remove(j);
-        }
         while h_nodes.first().is_some_and(Node::is_penalty) {
             h_nodes.remove(0);
         }
@@ -3172,6 +3194,21 @@ fn resolve_em(length: Length, em: f64) -> Length {
         _ => m,
     };
     Length::new(part(length.length), part(length.stretch), part(length.shrink))
+}
+
+/// Drops the glue and penalties a paragraph ends with.
+fn drop_trailing_discardables(h_nodes: &mut Vec<Node>) {
+    let mut j = h_nodes.len();
+    while j > 0 {
+        j -= 1;
+        if h_nodes[j].is_migrating() {
+            continue;
+        }
+        if !h_nodes[j].is_discardable() {
+            break;
+        }
+        h_nodes.remove(j);
+    }
 }
 
 fn natural_hbox(nodes: Vec<Node>) -> node::HBox {

@@ -519,6 +519,13 @@ impl<'a> LineBreaker<'a> {
         let is_disc = self.nodes[place].is_discretionary();
         let is_penalty = self.nodes[place].is_penalty();
 
+        // A penalty of 10000 or more forbids a break, as in TeX (§866).
+        // SILE tries it and charges it heavily instead, so where no other
+        // break is feasible a line still ends there.
+        if matches!(&self.nodes[place], Node::Penalty(p) if i64::from(p.penalty) >= INF_BAD) {
+            return;
+        }
+
         if is_box {
             let w = self.nodes[place].line_contribution();
             self.active_width += w;
@@ -1214,6 +1221,21 @@ mod tests {
         ];
         let result = do_break(&nodes, 200.0, &LinebreakSettings::default());
         assert_eq!(result.len(), 1, "inf_bad penalty should prevent break");
+    }
+
+    /// Two words that only fit a line each, held together: the line may
+    /// not end between them, though nowhere else is any better.
+    #[test]
+    fn a_penalty_of_ten_thousand_forbids_a_break() {
+        let nodes = vec![
+            nnode("Word1", 95.0, 7.0, 0.0),
+            Node::penalty(INF_BAD as i32),
+            nnode("Word2", 95.0, 7.0, 0.0),
+            glue(5.0, 0.0, 0.0),
+            nnode("Word3", 95.0, 7.0, 0.0),
+        ];
+        let result = do_break(&nodes, 100.0, &LinebreakSettings::default());
+        assert!(result.iter().all(|br| br.position != 1), "broke at the penalty: {result:?}");
     }
 
     #[test]
