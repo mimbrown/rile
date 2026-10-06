@@ -18,6 +18,8 @@ math = []
 #   `Hebr`, and its right-to-left text is shaped left to right and turned;
 # - when a shaper gives a cluster's glyphs out of order, a break is found
 #   too early in the word (a number under an Arabic year sign is split).
+# - a paragraph whose text ends in a space keeps the space at the end of its
+#   last line, where it shows when that line is set tight.
 sile-quirks = []
 # PDF pages as images: reads a PDF to find its first page's size (lopdf).
 pdf-images = ["dep:lopdf"]
