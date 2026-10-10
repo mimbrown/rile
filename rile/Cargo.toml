@@ -20,6 +20,8 @@ math = []
 #   too early in the word (a number under an Arabic year sign is split).
 # - a paragraph whose text ends in a space keeps the space at the end of its
 #   last line, where it shows when that line is set tight.
+# - `looseness` does not choose a line count: it only passes over the first
+#   pass, so the paragraph comes out as the final pass sets it.
 sile-quirks = []
 # PDF pages as images: reads a PDF to find its first page's size (lopdf).
 pdf-images = ["dep:lopdf"]

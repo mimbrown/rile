@@ -890,12 +890,49 @@ impl<'a> LineBreaker<'a> {
             }
         }
 
-        if self.settings.looseness == 0 {
+        let looseness = self.settings.looseness;
+        if looseness == 0 {
             return true;
         }
 
-        // looseness != 0: not fully implemented (matches Lua XXX)
-        true
+        if cfg!(feature = "sile-quirks") {
+            // SILE leaves TeX's choice of the active node nearest the wanted
+            // line count (§875) unimplemented, and never sets its
+            // `actualLooseness`, so a looseness there does nothing but
+            // refuse every pass before the final one: the paragraph comes
+            // out as the final pass sets it, hyphenated, and with the
+            // emergency stretch when there is any.
+            return self.final_pass;
+        }
+
+        // §875: find the best active way to break into `best_line +
+        // looseness` lines, or as near to it as the active list allows,
+        // and keep that count if it is the one wanted, or this pass is
+        // the last that could reach it.
+        let best_line = self.active(self.best_bet).line_number;
+        let mut actual_looseness = 0;
+        let mut r = self.next_of(self.head);
+        loop {
+            if !self.is_delta(r) {
+                let node = self.active(r);
+                let (line_diff, demerits) = (node.line_number - best_line, node.total_demerits);
+                if (line_diff < actual_looseness && looseness <= line_diff)
+                    || (line_diff > actual_looseness && looseness >= line_diff)
+                {
+                    self.best_bet = r;
+                    actual_looseness = line_diff;
+                    fewest_demerits = demerits;
+                } else if line_diff == actual_looseness && demerits < fewest_demerits {
+                    self.best_bet = r;
+                    fewest_demerits = demerits;
+                }
+            }
+            r = self.next_of(r);
+            if r == self.head {
+                break;
+            }
+        }
+        actual_looseness == looseness || self.final_pass
     }
 
     fn post_line_break(&self) -> Vec<BreakResult> {
@@ -1236,6 +1273,66 @@ mod tests {
         ];
         let result = do_break(&nodes, 100.0, &LinebreakSettings::default());
         assert!(result.iter().all(|br| br.position != 1), "broke at the penalty: {result:?}");
+    }
+
+    // -- looseness ------------------------------------------------------------
+
+    /// Six words of 30pt with 10pt of glue that stretches 30 and shrinks 5,
+    /// on 100pt lines: three to a line shrinks the glue all the way, two to
+    /// a line stretches it all the way, both with a badness of 100.
+    fn six_words() -> Vec<Node> {
+        let mut nodes = Vec::new();
+        for n in 0..6 {
+            if n > 0 {
+                nodes.push(glue(10.0, 30.0, 5.0));
+            }
+            nodes.push(nnode("Word", 30.0, 7.0, 0.0));
+        }
+        nodes
+    }
+
+    fn with_looseness(looseness: i32) -> LinebreakSettings {
+        LinebreakSettings { looseness, ..LinebreakSettings::default() }
+    }
+
+    /// Two lines of three cost less than three lines of two.
+    #[test]
+    fn fewest_demerits_without_a_looseness() {
+        assert_eq!(do_break(&six_words(), 100.0, &with_looseness(0)).len(), 2);
+    }
+
+    /// A looseness asks for a line more or fewer than that, and gets it when
+    /// the paragraph can be set that way.
+    #[cfg(not(feature = "sile-quirks"))]
+    #[test]
+    fn a_looseness_sets_a_line_more() {
+        assert_eq!(do_break(&six_words(), 100.0, &with_looseness(1)).len(), 3);
+        // Asked for more lines than there are ways to set, as many as can be.
+        assert_eq!(do_break(&six_words(), 100.0, &with_looseness(2)).len(), 3);
+        // Fewer than two lines is not a way to set it either.
+        assert_eq!(do_break(&six_words(), 100.0, &with_looseness(-1)).len(), 2);
+    }
+
+    /// Nine words set naturally three to a line, and a looseness of -1 asks
+    /// for two lines, which four words to a line cannot give.
+    #[cfg(not(feature = "sile-quirks"))]
+    #[test]
+    fn a_looseness_cannot_overfill_a_line() {
+        let mut nodes = six_words();
+        for _ in 0..3 {
+            nodes.push(glue(10.0, 30.0, 5.0));
+            nodes.push(nnode("Word", 30.0, 7.0, 0.0));
+        }
+        assert_eq!(do_break(&nodes, 100.0, &with_looseness(0)).len(), 3);
+        assert_eq!(do_break(&nodes, 100.0, &with_looseness(-1)).len(), 3);
+    }
+
+    /// As SILE: a looseness changes nothing about which lines are chosen,
+    /// only that the first pass is passed over.
+    #[cfg(feature = "sile-quirks")]
+    #[test]
+    fn a_looseness_is_passed_over() {
+        assert_eq!(do_break(&six_words(), 100.0, &with_looseness(1)).len(), 2);
     }
 
     #[test]
