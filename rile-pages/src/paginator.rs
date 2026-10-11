@@ -849,6 +849,7 @@ impl DocumentBuilder {
             content_height: stack.height,
             content_depth: stack.depth,
             seen: false,
+            split: false,
         });
         let migrating = node::Migrating { material: vec![Node::penalty(penalty), insertion], ..Default::default() };
         self.add_node(Node::Migrating(migrating));

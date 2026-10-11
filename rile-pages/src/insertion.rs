@@ -140,13 +140,25 @@ impl PageInsertions {
         }
 
         let max_size = (target - total_height).min(class.max_height) - top_height;
+        // SILE's insertion node is a vbox, so it has the height and depth of
+        // its tallest and deepest nodes though they are meant to be zero,
+        // and its `split` appends the remainder to those: the first time an
+        // insertion is split, the remainder claims that much more room on
+        // the next page than it takes, and the page is left short by it.
+        let overclaim = if cfg!(feature = "sile-quirks") && !ins.split {
+            let max = |dim: fn(&Node) -> Length| ins.nodes.iter().map(|n| pt(dim(n))).fold(0.0, f64::max);
+            max(Node::height) + max(Node::depth)
+        } else {
+            0.0
+        };
         let mut material = unbox(ins);
         if let Some(br) = pagebuilder::find_break(&mut material, max_size, true, &mut pagebuilder::no_insertions) {
             let first = Stack::of(pagebuilder::split_page(&mut material, &br));
             let rest = Stack::of(material);
             ins.nodes = rest.nodes;
-            ins.content_height = rest.height;
+            ins.content_height = rest.height + overclaim;
             ins.content_depth = rest.depth;
+            ins.split = true;
             let stack = self.stack(&class_name(queue, index));
             stack.append(top.nodes);
             let amount = top_height + first.height + first.depth;
@@ -183,4 +195,76 @@ fn unbox(ins: &Insertion) -> Vec<Node> {
 
 fn pt(l: Length) -> f64 {
     l.length.to_pt().unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rile::measurement::Measurement;
+    use rile::node::VBox;
+
+    /// A line of a footnote: 10pt high, 2pt deep.
+    fn line() -> Node {
+        Node::VBox(VBox { height: Length::pt(10.0), depth: Length::pt(2.0), ..Default::default() })
+    }
+
+    fn classes() -> BTreeMap<String, InsertionClass> {
+        BTreeMap::from([("footnote".to_string(), InsertionClass::new("footnotes", "content", 1000.0))])
+    }
+
+    /// The skip between a footnote's lines, with some stretch so that a page
+    /// may end after any of them.
+    fn skip() -> Node {
+        Node::vglue(Length::new(Measurement::pt(0.0), Measurement::pt(10.0), Measurement::pt(0.0)))
+    }
+
+    /// A three-line footnote hanging from a 12pt line of the page, with
+    /// room on the page for one line of it. `process` places that line
+    /// and keeps the rest for the next page.
+    fn split_once() -> Insertion {
+        let content = Stack::of(vec![line(), skip(), line(), skip(), line()]);
+        let note = Insertion {
+            class: "footnote".into(),
+            nodes: content.nodes,
+            content_height: content.height,
+            content_depth: content.depth,
+            ..Default::default()
+        };
+        let mut queue = vec![line(), Node::Insertion(note)];
+        let mut page = PageInsertions::default();
+        let target = page.process(&classes(), "content", &mut queue, 1, 12.0, 30.0);
+        assert_eq!(target, 30.0, "a split insertion takes nothing off the page it was met on");
+        assert_eq!(page.shrinkage("content"), 12.0, "the line placed is paid for");
+        assert!(matches!(queue[1], Node::Penalty(_)), "a break is forced before the rest");
+        let Node::Insertion(rest) = queue.remove(2) else { panic!("the rest stays in the queue") };
+        assert!(rest.split);
+        assert_eq!(rest.nodes.len(), 3);
+        rest
+    }
+
+    #[cfg(not(feature = "sile-quirks"))]
+    #[test]
+    fn the_rest_of_a_split_insertion_claims_what_it_takes() {
+        let rest = split_once();
+        assert_eq!(rest.content_height, 22.0);
+        assert_eq!(rest.content_depth, 2.0);
+    }
+
+    /// As SILE: the rest claims the tallest line's height and the deepest
+    /// line's depth over again, the first time only.
+    #[cfg(feature = "sile-quirks")]
+    #[test]
+    fn the_rest_of_a_split_insertion_claims_a_line_too_much() {
+        let rest = split_once();
+        assert_eq!(rest.content_height, 22.0 + 12.0);
+        assert_eq!(rest.content_depth, 2.0);
+
+        // Split again on the next page, where one line fits: no more is claimed.
+        let mut queue = vec![Node::Insertion(rest)];
+        let mut page = PageInsertions::default();
+        page.process(&classes(), "content", &mut queue, 0, 0.0, 18.0);
+        let Node::Insertion(rest) = &queue[1] else { panic!("the rest stays in the queue") };
+        assert_eq!(rest.content_height, 10.0);
+        assert_eq!(rest.content_depth, 2.0);
+    }
 }
