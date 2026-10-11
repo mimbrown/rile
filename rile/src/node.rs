@@ -1062,6 +1062,8 @@ pub struct Insertion {
     pub content_depth: f64,
     /// Already accounted for on the page being built.
     pub seen: bool,
+    /// What is left of an insertion that did not fit a page whole.
+    pub split: bool,
 }
 
 // ─── Constructor helpers (mirrors SILE.types.node.xxx({...})) ────────────────

@@ -7,6 +7,10 @@ license = "MIT"
 [features]
 default = ["index"]
 harfbuzz = ["rile/harfbuzz"]
+# rile's `sile-quirks`, and one of this crate's own: after a footnote is
+# split across pages, the next page's text frame is shrunk by more than the
+# remainder takes (see `insertion.rs`).
+sile-quirks = ["rile/sile-quirks"]
 # Indexes sorted by locale (icu_collator).
 index = ["dep:icu_collator", "dep:icu_locale"]
 
