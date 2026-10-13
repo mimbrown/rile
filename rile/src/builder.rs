@@ -783,7 +783,7 @@ impl Typesetter {
             } else if pt_of(&node.line_contribution()) > 0.0 {
                 if let Node::NNode(n) = &mut node {
                     for g in &mut n.glyphs {
-                        (g.x_advance, g.x_offset, g.y_offset) = (g.width, 0.0, 0.0);
+                        (g.font_advance, g.x_offset, g.y_offset) = (g.width, 0.0, 0.0);
                     }
                 }
                 let mut hbox = natural_hbox(vec![node]);
@@ -2713,7 +2713,7 @@ impl Typesetter {
             glyph_data.push(GlyphData {
                 gid: g.gid,
                 width: g.width,
-                x_advance: g.x_advance,
+                font_advance: g.font_advance,
                 y_advance: g.y_advance,
                 x_offset: g.x_offset,
                 y_offset: g.y_offset,

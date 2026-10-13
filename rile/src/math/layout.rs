@@ -1183,7 +1183,7 @@ impl MBox {
             .map(|g| Glyph {
                 gid: g.gid,
                 width: g.width,
-                advance: g.x_advance,
+                advance: g.font_advance,
                 height: g.height,
                 depth: g.depth,
                 x_offset: g.x_offset,
@@ -1512,7 +1512,7 @@ impl MBox {
                     .map(|g| GlyphData {
                         gid: g.gid,
                         width: g.width,
-                        x_advance: g.advance,
+                        font_advance: g.advance,
                         y_advance: 0.0,
                         x_offset: g.x_offset,
                         y_offset: g.y_offset,
