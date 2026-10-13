@@ -110,7 +110,7 @@ impl Canvas for TraceCanvas {
         let complex = nnode
             .glyphs
             .iter()
-            .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0 || g.width != g.x_advance);
+            .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0 || g.width != g.font_advance);
         let mut buf = String::new();
         if complex {
             for g in &nnode.glyphs {
@@ -120,8 +120,8 @@ impl Canvas for TraceCanvas {
                 }
                 self.cursor.0 = x;
                 let _ = write!(buf, "{} ", g.gid);
-                if g.x_advance != 0.0 {
-                    let _ = write!(buf, "a={} ", round(g.x_advance));
+                if g.font_advance != 0.0 {
+                    let _ = write!(buf, "a={} ", round(g.font_advance));
                 }
                 if g.x_offset != 0.0 {
                     let _ = write!(buf, "x={} ", round(g.x_offset));

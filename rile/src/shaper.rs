@@ -13,12 +13,18 @@ pub struct GlyphItem {
     pub gid: u16,
     pub cluster: u32,
     pub text: std::sync::Arc<str>,
+    /// How far the glyph moves the pen, as shaped (kerning and other
+    /// positioning included). Lay glyphs out by this.
     pub width: f64,
     pub height: f64,
     pub depth: f64,
     pub x_offset: f64,
     pub y_offset: f64,
-    pub x_advance: f64,
+    /// The advance the font gives the glyph on its own, before shaping
+    /// positioned it; zero-width marks and kerned pairs differ from
+    /// `width` here. Upright in vertical text, the vertical advance.
+    pub font_advance: f64,
+    /// The vertical advance, as shaped.
     pub y_advance: f64,
     /// Which font this glyph belongs to: 0 = primary, 1+ = fallback index + 1.
     /// Set by `apply_fallbacks`; renderers use this to pick the correct face.
@@ -240,7 +246,7 @@ impl Shaper for RustyBuzzShaper {
                 depth,
                 x_offset: positions[i].x_offset as f64 * scale,
                 y_offset: positions[i].y_offset as f64 * scale,
-                x_advance: rb_face.glyph_hor_advance(rustybuzz::ttf_parser::GlyphId(gid)).map_or(0.0, |a| a as f64 * scale),
+                font_advance: rb_face.glyph_hor_advance(rustybuzz::ttf_parser::GlyphId(gid)).map_or(0.0, |a| a as f64 * scale),
                 y_advance: positions[i].y_advance as f64 * scale,
                 font_index: 0,
             });
@@ -257,8 +263,8 @@ impl Shaper for RustyBuzzShaper {
 /// offsets are dropped.
 pub(crate) fn set_upright(item: &mut GlyphItem) {
     let advance = -item.y_advance;
-    item.width = item.x_advance;
-    item.x_advance = advance;
+    item.width = item.font_advance;
+    item.font_advance = advance;
     item.height = advance;
     item.depth = 0.0;
     item.x_offset = 0.0;
@@ -319,7 +325,7 @@ fn extract_glyph_texts(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<std::s
 }
 
 /// Apply tracking (letter-spacing) to shaped glyphs. Modifies `width` but
-/// preserves `x_advance` / `y_advance` as the original shaper values.
+/// preserves `font_advance` / `y_advance` as the original shaper values.
 pub fn apply_tracking(items: &mut [GlyphItem], factor: f64) {
     for item in items.iter_mut() {
         item.width *= factor;
@@ -648,12 +654,12 @@ mod tests {
         let shaper = RustyBuzzShaper::new();
         let mut items = shaper.shape("A", &face, &spec);
         let original = items[0].width;
-        let original_advance = items[0].x_advance;
+        let original_advance = items[0].font_advance;
         apply_tracking(&mut items, 1.5);
         let expected = original * 1.5;
         assert!((items[0].width - expected).abs() < 1e-10);
-        // x_advance should be unchanged
-        assert_eq!(items[0].x_advance, original_advance);
+        // font_advance should be unchanged
+        assert_eq!(items[0].font_advance, original_advance);
     }
 
     // -- Direction -----------------------------------------------------------
