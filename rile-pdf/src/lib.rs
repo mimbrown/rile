@@ -1859,13 +1859,13 @@ mod tests {
             GlyphData {
                 gid: gid_h,
                 width: w_h,
-                x_advance: w_h,
+                font_advance: w_h,
                 ..Default::default()
             },
             GlyphData {
                 gid: gid_i,
                 width: w_i,
-                x_advance: w_i,
+                font_advance: w_i,
                 ..Default::default()
             },
         ];
@@ -1913,7 +1913,7 @@ mod tests {
             vec![GlyphData {
                 gid,
                 width: w,
-                    x_advance: w,
+                    font_advance: w,
                 ..Default::default()
             }],
             "body",
@@ -1988,7 +1988,7 @@ mod tests {
                 vec![GlyphData {
                     gid,
                     width: w,
-                    x_advance: w,
+                    font_advance: w,
                     ..Default::default()
                 }],
                 "body",
