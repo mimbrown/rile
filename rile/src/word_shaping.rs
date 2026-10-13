@@ -30,7 +30,7 @@ pub(crate) fn shape(shaper: &dyn Shaper, text: &str, face: &FontFace, spec: &Fon
     #[cfg(debug_assertions)]
     if let Some(shaped) = &shaped {
         let whole = shaper.shape(text, face, spec);
-        let key = |g: &GlyphItem| (g.gid, g.cluster, g.text.clone(), g.width, g.x_offset, g.y_offset, g.x_advance, g.y_advance);
+        let key = |g: &GlyphItem| (g.gid, g.cluster, g.text.clone(), g.width, g.x_offset, g.y_offset, g.font_advance, g.y_advance);
         debug_assert!(
             shaped.iter().map(key).eq(whole.iter().map(key)),
             "{text:?} shaped by words differs from shaping it whole:\n{shaped:?}\n{whole:?}"

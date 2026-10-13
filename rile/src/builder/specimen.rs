@@ -28,7 +28,7 @@ impl Typesetter {
         let key: Arc<str> = name.into();
         for gid in 1..face.glyph_count() {
             let advance = face.advance_width(gid).map_or(0.0, |a| face.scale_u(a, size));
-            let glyph = GlyphData { gid, width: advance, x_advance: advance, ..Default::default() };
+            let glyph = GlyphData { gid, width: advance, font_advance: advance, ..Default::default() };
             let nnode = NNode::with_glyphs("", vec![glyph], Arc::clone(&key), size, advance, 1.2 * size, 0.0);
             self.push_inline(Inline::Node(Box::new(Node::NNode(nnode))));
             let space = Length::new(Measurement::pt(size - advance), Measurement::pt(1.0), Measurement::pt(1.0));
