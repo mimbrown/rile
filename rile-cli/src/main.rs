@@ -74,6 +74,10 @@ struct Args {
     /// screen readers.
     #[arg(long)]
     untagged: bool,
+    /// Write positions in the PDF exactly as computed rather than rounded
+    /// to a thousandth of a point, which makes larger files.
+    #[arg(long)]
+    exact_positions: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -193,7 +197,7 @@ fn run(args: &Args) -> Result<Vec<PathBuf>, String> {
         }
         return Ok(paths);
     }
-    write(&output, &rile_pdf::render(&layout, PdfOptions::default()).map_err(|e| e.to_string())?)?;
+    write(&output, &rile_pdf::render(&layout, PdfOptions { precision: PdfOptions::default().precision.filter(|_| !args.exact_positions), ..PdfOptions::default() }).map_err(|e| e.to_string())?)?;
     Ok(vec![output])
 }
 

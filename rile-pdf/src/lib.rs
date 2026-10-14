@@ -58,11 +58,33 @@ impl std::error::Error for PdfError {}
 pub struct PdfOptions {
     pub creator: String,
     pub compress: bool,
+    /// Decimal places kept in the positions written to page content, or
+    /// `None` to write them as computed. Scales and rotations keep their
+    /// precision. Rounded positions compress far better: three places
+    /// (a thousandth of a point) is the default.
+    pub precision: Option<u8>,
 }
 
 impl Default for PdfOptions {
     fn default() -> Self {
-        Self { creator: "rile".to_string(), compress: true }
+        Self { creator: "rile".to_string(), compress: true, precision: Some(3) }
+    }
+}
+
+/// Rounds positions to `PdfOptions::precision`.
+#[derive(Debug, Clone, Copy)]
+struct Round(Option<f64>);
+
+impl Round {
+    fn new(precision: Option<u8>) -> Self {
+        Self(precision.map(|places| 10f64.powi(places.into())))
+    }
+
+    fn at(self, v: f64) -> f32 {
+        match self.0 {
+            Some(scale) => ((v * scale).round() / scale) as f32,
+            None => v as f32,
+        }
     }
 }
 
@@ -182,6 +204,7 @@ enum Tagged {
 pub struct PdfOutputter {
     metadata: Metadata,
     options: PdfOptions,
+    round: Round,
     fonts: BTreeMap<String, FontEntry>,
     /// Fonts registered under one name that are the face and variations
     /// already registered under another, which is the one embedded.
@@ -208,6 +231,7 @@ impl PdfOutputter {
     pub fn new(metadata: Metadata, options: PdfOptions) -> Self {
         Self {
             metadata,
+            round: Round::new(options.precision),
             options,
             fonts: BTreeMap::new(),
             font_aliases: HashMap::new(),
@@ -413,7 +437,7 @@ impl PdfOutputter {
         let offset = self.metadata.sheet.map_or((0.0, 0.0), |s| ((s.width - page.width) / 2.0, (s.height - page.height) / 2.0));
         let mut content = Content::new();
         if offset != (0.0, 0.0) {
-            content.transform([1.0, 0.0, 0.0, 1.0, offset.0 as f32, offset.1 as f32]);
+            content.transform([1.0, 0.0, 0.0, 1.0, self.round.at(offset.0), self.round.at(offset.1)]);
         }
         let mut content = content.finish();
         if !content.is_empty() {
@@ -485,12 +509,13 @@ impl PdfOutputter {
             .unwrap_or_else(|| "F0".to_string());
         page.content.set_font(Name(pdf_name.as_bytes()), font_size as f32);
 
+        let round = self.round;
         let mut cur_x = x;
         let mut cur_y = y;
         for (&(_, x_advance, y_advance, x_offset, y_offset), cid) in glyphs.iter().zip(cids) {
             let px = cur_x + x_offset;
             let py = page_height - (cur_y - y_offset);
-            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, px as f32, py as f32]);
+            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, round.at(px), round.at(py)]);
             page.content.show(Str(&cid.to_be_bytes()));
             cur_x += x_advance;
             cur_y += y_advance;
@@ -501,12 +526,12 @@ impl PdfOutputter {
 
     pub fn draw_rule(&mut self, x: f64, y: f64, width: f64, height: f64) {
         self.mark();
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
         let pdf_y = page_height - y - height;
         page.content.save_state();
-        page.content
-            .rect(x as f32, pdf_y as f32, width as f32, height as f32);
+        page.content.rect(round.at(x), round.at(pdf_y), round.at(width), round.at(height));
         page.content.fill_nonzero();
         page.content.restore_state();
     }
@@ -520,19 +545,14 @@ impl PdfOutputter {
         height: f64,
     ) {
         self.mark();
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
         let pdf_y = page_height - y - height;
 
+        // The image is a unit square, so its scales are its size in points.
         page.content.save_state();
-        page.content.transform([
-            width as f32,
-            0.0,
-            0.0,
-            height as f32,
-            x as f32,
-            pdf_y as f32,
-        ]);
+        page.content.transform([round.at(width), 0.0, 0.0, round.at(height), round.at(x), round.at(pdf_y)]);
         let img_name = format!("Im{image_idx}");
         page.content.x_object(Name(img_name.as_bytes()));
         page.content.restore_state();
@@ -542,12 +562,13 @@ impl PdfOutputter {
     #[cfg(feature = "pdf-images")]
     fn draw_form(&mut self, index: usize, page_box: [f64; 4], x: f64, y: f64, width: f64, height: f64) {
         self.mark();
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let pdf_y = page.height - y - height;
         let [left, bottom, right, top] = page_box;
         let (sx, sy) = (width / (right - left), height / (top - bottom));
         page.content.save_state();
-        page.content.transform([sx as f32, 0.0, 0.0, sy as f32, (x - left * sx) as f32, (pdf_y - bottom * sy) as f32]);
+        page.content.transform([sx as f32, 0.0, 0.0, sy as f32, round.at(x - left * sx), round.at(pdf_y - bottom * sy)]);
         page.content.x_object(Name(format!("Fm{index}").as_bytes()));
         page.content.restore_state();
     }
@@ -565,14 +586,15 @@ impl PdfOutputter {
     }
 
     pub fn rotate(&mut self, angle_deg: f64, cx: f64, cy: f64) {
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
         let pdf_cy = page_height - cy;
         let rad = angle_deg.to_radians();
         let cos = rad.cos() as f32;
         let sin = rad.sin() as f32;
-        let tx = (cx * (1.0 - rad.cos()) + cy * rad.sin()) as f32;
-        let ty = (pdf_cy * (1.0 - rad.cos()) - cx * rad.sin()) as f32;
+        let tx = round.at(cx * (1.0 - rad.cos()) + cy * rad.sin());
+        let ty = round.at(pdf_cy * (1.0 - rad.cos()) - cx * rad.sin());
         page.content.transform([cos, sin, -sin, cos, tx, ty]);
     }
 
@@ -632,6 +654,7 @@ impl PdfOutputter {
         }
 
         self.mark();
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
@@ -644,7 +667,7 @@ impl PdfOutputter {
         let mut i = 0;
         while i < placed.len() {
             let (x, y, _, _) = placed[i];
-            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, x as f32, (page_height - y) as f32]);
+            page.content.set_text_matrix([1.0, 0.0, 0.0, 1.0, round.at(x), round.at(page_height - y)]);
             bytes.clear();
             segments.clear();
             segments.push((0.0, 0));
@@ -1070,11 +1093,12 @@ impl rile::render::Canvas for PdfOutputter {
     fn svg(&mut self, figure: &rile::svg_image::SvgFigure, x: f64, y: f64, _baseline: f64, _width: f64, _height: f64) {
         use rile::svg_image::SvgOp;
         self.mark();
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let s = figure.scale as f32;
         let c = &mut page.content;
         c.save_state();
-        c.transform([s, 0.0, 0.0, -s, x as f32, (page.height - y) as f32]);
+        c.transform([s, 0.0, 0.0, -s, round.at(x), round.at(page.height - y)]);
         for op in &figure.image.ops {
             match *op {
                 SvgOp::Move(x, y) => {
@@ -1134,10 +1158,11 @@ impl rile::render::Canvas for PdfOutputter {
 
     fn push_transform(&mut self, [a, b, c, d, e, f]: rile::transform::Matrix) {
         self.end_mark();
+        let round = self.round;
         let page = self.current.as_mut().expect("no current page");
         let h = page.height;
         page.content.save_state();
-        page.content.transform([a, -b, -c, d, c * h + e, h * (1.0 - d) - f].map(|v| v as f32));
+        page.content.transform([a as f32, -b as f32, -c as f32, d as f32, round.at(c * h + e), round.at(h * (1.0 - d) - f)]);
     }
 
     fn pop_transform(&mut self) {
