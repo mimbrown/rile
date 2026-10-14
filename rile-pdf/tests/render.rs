@@ -192,3 +192,26 @@ fn toc_entries_link_to_their_headings_and_fill_the_outline() {
     assert_eq!(text.matches("/Type /Outlines").count(), 1);
     assert_eq!(text.matches("/Title (Start)").count(), 2);
 }
+
+#[test]
+fn positions_are_rounded_to_the_precision() {
+    let layout = || {
+        let mut d = doc(Plain::new());
+        d.set_margins(36.123_456_7, 36.0, 36.0, 36.0);
+        d.add_text("Rounded text, set across a line or two so that its words fall at many positions.");
+        d.new_paragraph().unwrap();
+        d.add_rule(100.0 / 3.0, 0.4).unwrap();
+        d.lay_out().unwrap()
+    };
+    let text_matrices = |precision| {
+        let bytes = rile_pdf::render(&layout(), PdfOptions { compress: false, precision, ..Default::default() }).unwrap();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        text.lines().filter(|line| line.ends_with(" Tm") || line.ends_with(" re")).map(String::from).collect::<Vec<_>>()
+    };
+    let places = |line: &str| line.split(' ').filter_map(|n| n.split_once('.')).map(|(_, f)| f.len()).max().unwrap_or(0);
+    let rounded = text_matrices(Some(3));
+    assert!(!rounded.is_empty());
+    assert!(rounded.iter().all(|line| places(line) <= 3), "{rounded:?}");
+    let exact = text_matrices(None);
+    assert!(exact.iter().any(|line| places(line) > 3), "{exact:?}");
+}
