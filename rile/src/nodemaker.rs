@@ -221,7 +221,8 @@ fn boundaries(text: &str, colon_joins_letters: bool) -> Vec<(usize, Boundary)> {
 fn colons(text: &str) -> impl Iterator<Item = usize> + '_ {
     text.char_indices()
         .filter(|&(_, c)| matches!(c, ':' | '\u{FE55}' | '\u{FF1A}'))
-        .flat_map(|(i, c)| [i, i + c.len_utf8()])
+        // The marks and format characters after a colon stay with it.
+        .flat_map(|(i, _)| [i, i + text[i..].split_word_bounds().next().map_or(0, str::len)])
 }
 
 /// Offsets between two characters of scripts written without spaces
@@ -663,6 +664,7 @@ mod tests {
         assert_eq!(render("a:b", Default::default()), "[a][:][b]");
         assert_eq!(render("بات:بات", Default::default()), "[بات][:][بات]");
         assert_eq!(render("a\u{FF1A}b", Default::default()), "[a][\u{FF1A}]P0[b]");
+        assert_eq!(render("a:\u{200F}b", Default::default()), "[a][:\u{200F}][b]");
         assert_eq!(render("a's", Default::default()), "[a's]");
         assert_eq!(render("k:a", NodeMakerOptions::for_language("sv")), "[k:a]");
     }
