@@ -3,6 +3,9 @@ name = "rile-markdown"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Sets Markdown (CommonMark and GitHub's extensions, with math) with rile"
+repository.workspace = true
+readme = "../README.md"
 
 [features]
 default = ["pages", "math"]
@@ -13,6 +16,6 @@ pages = ["dep:rile-pages"]
 math = ["rile/math"]
 
 [dependencies]
-rile = { path = "../rile", default-features = false }
-rile-pages = { path = "../rile-pages", default-features = false, optional = true }
+rile = { version = "0.1.0", path = "../rile", default-features = false }
+rile-pages = { version = "0.1.0", path = "../rile-pages", default-features = false, optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false }

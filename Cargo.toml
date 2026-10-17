@@ -1,3 +1,6 @@
 [workspace]
 members = ["rile", "rile-cli", "rile-markdown", "rile-pages", "rile-pdf", "rile-svg", "sile-parity", "starter"]
 resolver = "3"
+
+[workspace.package]
+repository = "https://github.com/mimbrown/rile"
