@@ -3,6 +3,9 @@ name = "rile-pdf"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Writes a rile layout as PDF, tagged for PDF/UA when the document is"
+repository.workspace = true
+readme = "../README.md"
 # The test fonts are under the SIL Open Font License; they stay out of the
 # published crate.
 exclude = ["tests/fonts"]
@@ -17,7 +20,7 @@ images = ["dep:image"]
 pdf-images = ["dep:lopdf", "rile/pdf-images"]
 
 [dependencies]
-rile = { path = "../rile", default-features = false }
+rile = { version = "0.1.0", path = "../rile", default-features = false }
 ttf-parser = "0.25"
 pdf-writer = "0.12"
 subsetter = "0.2"

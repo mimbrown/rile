@@ -3,6 +3,9 @@ name = "rile-pages"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Pages for rile: frames, templates, classes, footnotes, page breaking, tables of contents and indexes"
+repository.workspace = true
+readme = "../README.md"
 
 [features]
 default = ["index"]
@@ -15,7 +18,7 @@ sile-quirks = ["rile/sile-quirks"]
 index = ["dep:icu_collator", "dep:icu_locale"]
 
 [dependencies]
-rile = { path = "../rile", default-features = false }
+rile = { version = "0.1.0", path = "../rile", default-features = false }
 cassowary = "0.3"
 icu_collator = { version = "2.3.1", optional = true }
 icu_locale = { version = "2.3.1", optional = true }
