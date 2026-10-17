@@ -31,6 +31,9 @@ pub fn divergence(test: &str) -> Option<&'static str> {
         "alignment" => {
             "SILE's test fonts include Libertinus Serif Regular but not the Italic, so the expected italics come from an older Libertinus installed where it was recorded (other advances, other ligature glyph ids). Roman text matches."
         }
+        "bug-79" | "bug-162" => {
+            "Czech text: hyph-utf8's Czech patterns are GPL only, so rile leaves them out (rile/languages/NOTICE.md) and sets Czech without hyphenation, where SILE hyphenates it."
+        }
         "content-detection-sil" | "content-detection-xml" => {
             "The expected output still uses Gentium Plus, SILE's default font before 0.15.14; current SILE and rile use Gentium Book. Glyphs and breaks match."
         }

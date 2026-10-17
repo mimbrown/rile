@@ -40,7 +40,7 @@ Content that needs vertical mode (lists, tables, display math, specimens) is wri
 
 ## Language data
 
-Patterns are SILE's own, converted to `rile/languages/*.pat`; localized messages are SILE's Fluent files (`*.ftl`). Both are embedded via `rile/src/language_data.rs`; regenerate with `scripts/import-sile-languages.py <sile checkout>`.
+Patterns are SILE's copies of hyph-utf8's (and a few others), converted to `rile/languages/*.pat`; localized messages are SILE's Fluent files (`*.ftl`). Both are embedded via `rile/src/language_data.rs`; regenerate with `scripts/import-sile-languages.py <sile checkout> <tex-hyphen checkout>`. Each language's patterns keep their own licence: the script's `SOURCES` names the original and the licence taken, `rile/languages/NOTICE.md` is written from the originals' headers, and languages whose only licences are copyleft (or none) are in `EXCLUDED` and get no patterns. A new language needs an entry in one of the two. `rile`'s `license` field lists the licences the data adds to MIT.
 
 ## Math
 
