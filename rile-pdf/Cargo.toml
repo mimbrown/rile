@@ -3,6 +3,9 @@ name = "rile-pdf"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+# The test fonts are under the SIL Open Font License; they stay out of the
+# published crate.
+exclude = ["tests/fonts"]
 
 [features]
 default = ["images", "pdf-images"]
