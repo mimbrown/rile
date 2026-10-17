@@ -73,6 +73,9 @@ pub struct NodeMakerOptions {
     /// them.
     // SILE: `boustrophedon` node maker for Ancient Greek.
     pub letters: bool,
+    /// A colon between letters keeps them one word (Swedish and Finnish
+    /// abbreviations such as `k:a`, as CLDR tailors them).
+    pub colon_joins_letters: bool,
 }
 
 impl NodeMakerOptions {
@@ -84,6 +87,7 @@ impl NodeMakerOptions {
             french: base == "fr",
             ethiopic: base == "am",
             japanese: base == "ja",
+            colon_joins_letters: matches!(base, "sv" | "fi"),
             ..Self::default()
         }
     }
@@ -154,7 +158,7 @@ pub fn tokenize_from(items: &[Item], start: usize, options: NodeMakerOptions) ->
         maker.ethiopic();
         return maker.out;
     }
-    let boundaries = boundaries(&text);
+    let boundaries = boundaries(&text, options.colon_joins_letters);
     let mut next = 0;
     let first = clean.iter().take_while(|i| is_space(i)).count();
     for i in 0..first {
@@ -188,11 +192,11 @@ pub fn tokenize_from(items: &[Item], start: usize, options: NodeMakerOptions) ->
 
 /// Every boundary after the start of `text`, line boundaries winning over
 /// word boundaries at the same offset.
-fn boundaries(text: &str) -> Vec<(usize, Boundary)> {
+fn boundaries(text: &str, colon_joins_letters: bool) -> Vec<(usize, Boundary)> {
     let mut out: Vec<(usize, Boundary)> = text
         .split_word_bound_indices()
         .map(|(i, _)| (i, Boundary::Word))
-        .chain(colons(text).map(|i| (i, Boundary::Word)))
+        .chain(colons(text).filter(|_| !colon_joins_letters).map(|i| (i, Boundary::Word)))
         .chain(std::iter::once((text.len(), Boundary::Word)))
         .filter(|(i, _)| *i > 0)
         .collect();
@@ -660,6 +664,7 @@ mod tests {
         assert_eq!(render("بات:بات", Default::default()), "[بات][:][بات]");
         assert_eq!(render("a\u{FF1A}b", Default::default()), "[a][\u{FF1A}]P0[b]");
         assert_eq!(render("a's", Default::default()), "[a's]");
+        assert_eq!(render("k:a", NodeMakerOptions::for_language("sv")), "[k:a]");
     }
 
     #[test]
