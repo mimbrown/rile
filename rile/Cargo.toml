@@ -2,7 +2,7 @@
 name = "rile"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "MIT AND LPPL-1.3c AND MPL-1.1 AND BSD-3-Clause AND Unlicense AND W3C AND Knuth-CTAN AND FSFAP"
 
 [features]
 default = ["system-fonts", "math", "bibliography", "pdf-images"]
