@@ -147,10 +147,14 @@ struct FontEntry {
     /// Text for ToUnicode, by subset glyph id.
     cid_to_unicode: BTreeMap<u16, String>,
     pdf_name: String,
+    /// Whether any page draws from it; a font the layout loaded and never
+    /// drew is left out.
+    used: bool,
 }
 
 impl FontEntry {
     fn cid(&mut self, gid: u16) -> u16 {
+        self.used = true;
         self.remapper.remap(gid)
     }
 }
@@ -325,6 +329,7 @@ impl PdfOutputter {
                 remapper: subsetter::GlyphRemapper::new(),
                 cid_to_unicode: BTreeMap::new(),
                 pdf_name,
+                used: false,
             },
         );
     }
@@ -724,8 +729,9 @@ impl PdfOutputter {
         // Allocate font refs
         let font_refs: BTreeMap<String, FontRefs> = self
             .fonts
-            .keys()
-            .map(|key| {
+            .iter()
+            .filter(|(_, entry)| entry.used)
+            .map(|(key, _)| {
                 (
                     key.clone(),
                     FontRefs {
@@ -2088,6 +2094,30 @@ mod tests {
             from = start;
         }
         programs
+    }
+
+    #[test]
+    fn a_font_nothing_is_drawn_in_is_not_embedded() {
+        use rile_pages::DocumentBuilder;
+        use rile::font::FontSpec;
+        use rile::frame::PaperSize;
+        let mut doc = DocumentBuilder::new(PaperSize::A5);
+        doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts"));
+        let spec = FontSpec { family: Some("Tourney".into()), ..Default::default() };
+        doc.set_font_spec(spec).unwrap();
+        doc.add_text("Hi");
+        doc.new_paragraph().unwrap();
+        let layout = doc.lay_out().unwrap();
+        let mut out = PdfOutputter::new(layout.metadata().clone(), PdfOptions { compress: false, ..Default::default() });
+        for (name, face, variations) in layout.fonts() {
+            out.register_font(name, Arc::clone(face), variations);
+        }
+        let unused = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/LibertinusMono-Regular.otf")).unwrap();
+        out.register_font("unused", Arc::new(FontFace::from_bytes(unused, 0).unwrap()), Vec::new());
+        out.render_pages(&layout.pages);
+        let text = String::from_utf8_lossy(&out.finish().unwrap()).into_owned();
+        assert!(text.contains("+Tourney"));
+        assert!(!text.contains("LibertinusMono"));
     }
 
     #[test]

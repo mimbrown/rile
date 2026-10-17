@@ -192,6 +192,7 @@ fn boundaries(text: &str) -> Vec<(usize, Boundary)> {
     let mut out: Vec<(usize, Boundary)> = text
         .split_word_bound_indices()
         .map(|(i, _)| (i, Boundary::Word))
+        .chain(colons(text).map(|i| (i, Boundary::Word)))
         .chain(std::iter::once((text.len(), Boundary::Word)))
         .filter(|(i, _)| *i > 0)
         .collect();
@@ -209,6 +210,14 @@ fn boundaries(text: &str) -> Vec<(usize, Boundary)> {
     out.sort_by_key(|&(i, b)| (i, b == Boundary::Word));
     out.dedup_by_key(|(i, _)| *i);
     out
+}
+
+/// Either side of each colon. UAX #29 keeps `a:b` one word; ICU, as CLDR's
+/// root locale has it, does not count colons among the letters' joiners.
+fn colons(text: &str) -> impl Iterator<Item = usize> + '_ {
+    text.char_indices()
+        .filter(|&(_, c)| matches!(c, ':' | '\u{FE55}' | '\u{FF1A}'))
+        .flat_map(|(i, c)| [i, i + c.len_utf8()])
 }
 
 /// Offsets between two characters of scripts written without spaces
@@ -643,6 +652,14 @@ mod tests {
     #[test]
     fn punctuation_is_its_own_token() {
         assert_eq!(render("Hello, world.", Default::default()), "[Hello][,]_[world][.]");
+    }
+
+    #[test]
+    fn a_colon_between_letters_is_a_word_of_its_own() {
+        assert_eq!(render("a:b", Default::default()), "[a][:][b]");
+        assert_eq!(render("بات:بات", Default::default()), "[بات][:][بات]");
+        assert_eq!(render("a\u{FF1A}b", Default::default()), "[a][\u{FF1A}]P0[b]");
+        assert_eq!(render("a's", Default::default()), "[a's]");
     }
 
     #[test]
