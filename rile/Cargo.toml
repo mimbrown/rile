@@ -3,6 +3,9 @@ name = "rile"
 version = "0.1.0"
 edition = "2024"
 license = "MIT AND LPPL-1.3c AND MPL-1.1 AND BSD-3-Clause AND Unlicense AND W3C AND Knuth-CTAN AND FSFAP"
+description = "A typesetting engine: shaping, hyphenation, Knuth-Plass line breaking, bidi and vertical text, math and tagged PDF structure, laid out into a format-neutral layout"
+repository.workspace = true
+readme = "../README.md"
 
 [features]
 default = ["system-fonts", "math", "bibliography", "pdf-images"]

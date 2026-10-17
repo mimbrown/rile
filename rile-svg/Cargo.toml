@@ -3,12 +3,15 @@ name = "rile-svg"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Writes a rile layout as SVG, one document per page"
+repository.workspace = true
+readme = "../README.md"
 
 [features]
 harfbuzz = ["rile/harfbuzz"]
 
 [dependencies]
-rile = { path = "../rile", default-features = false }
+rile = { version = "0.1.0", path = "../rile", default-features = false }
 ttf-parser = "0.25"
 
 [dev-dependencies]
