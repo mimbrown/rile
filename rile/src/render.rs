@@ -37,6 +37,9 @@ pub trait Canvas {
     /// What follows belongs to the structure element owning `tag`, or is
     /// page furniture when `None`.
     fn set_tag(&mut self, _tag: Option<u32>) {}
+    /// An unfilled deferred box named `key`, whose baseline starts at
+    /// `(x, y)`.
+    fn deferred(&mut self, _key: &str, _x: f64, _y: f64, _width: f64, _height: f64, _depth: f64) {}
 }
 
 /// Walk every page and draw its frames' content onto `canvas`.
@@ -84,27 +87,56 @@ fn draw_decoration(decoration: &Underlay, canvas: &mut impl Canvas) {
 fn draw_page(page: &Page, canvas: &mut dyn Canvas) {
     for (frame_id, nodes) in &page.content {
         let Some(frame) = page.frame(frame_id) else { continue };
-        let mut c = Cursor::start(frame);
-        for node in nodes {
-            match node {
-                Node::VBox(vbox) => {
-                    let line = Line { ratio: vbox.ratio, end_edge: frame.right, height: pt(&vbox.height.length) };
-                    c.advance_page(pt(&vbox.height.length));
-                    let mut pen = c;
-                    if vbox.reversed {
-                        pen.dir.writing = pen.dir.writing.reversed();
-                        pen.new_line(frame);
-                    }
-                    draw_hlist(&vbox.nodes, &mut pen, &line, canvas);
-                    c.advance_page(pt(&vbox.depth.length));
-                    c.new_line(frame);
+        draw_frame(frame, nodes, canvas);
+    }
+}
+
+/// Draw `fill`, a vertical list such as `Fill::nodes`, in a deferred box
+/// `width` wide whose baseline starts at `(x, y)`: from the box's left,
+/// with the first line's baseline on the box's.
+pub fn draw_fill(fill: &[Node], x: f64, y: f64, width: f64, canvas: &mut dyn Canvas) {
+    let first = fill.iter().find_map(|n| match n {
+        Node::VBox(line) => Some(pt(&line.height.length)),
+        _ => None,
+    });
+    let top = y - first.unwrap_or(0.0);
+    let frame = FrameGeometry {
+        id: "fill".into(),
+        left: x,
+        top,
+        right: x + width,
+        bottom: f64::INFINITY,
+        next: None,
+        direction: Some(FrameDirection::LTR),
+        tate: false,
+        balanced: false,
+    };
+    canvas.set_tag(None);
+    draw_frame(&frame, fill, canvas);
+    canvas.set_tag(None);
+}
+
+fn draw_frame(frame: &FrameGeometry, nodes: &[Node], canvas: &mut dyn Canvas) {
+    let mut c = Cursor::start(frame);
+    for node in nodes {
+        match node {
+            Node::VBox(vbox) => {
+                let line = Line { ratio: vbox.ratio, end_edge: frame.right, height: pt(&vbox.height.length) };
+                c.advance_page(pt(&vbox.height.length));
+                let mut pen = c;
+                if vbox.reversed {
+                    pen.dir.writing = pen.dir.writing.reversed();
+                    pen.new_line(frame);
                 }
-                Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
-                    c.advance_page(pt(&g.height.length) + g.adjustment.to_pt().unwrap_or(0.0));
-                }
-                Node::VKern(k) => c.advance_page(pt(&k.height.length)),
-                _ => {}
+                draw_hlist(&vbox.nodes, &mut pen, &line, canvas);
+                c.advance_page(pt(&vbox.depth.length));
+                c.new_line(frame);
             }
+            Node::VGlue(g) | Node::VFillGlue(g) | Node::VssGlue(g) | Node::ZeroVGlue(g) => {
+                c.advance_page(pt(&g.height.length) + g.adjustment.to_pt().unwrap_or(0.0));
+            }
+            Node::VKern(k) => c.advance_page(pt(&k.height.length)),
+            _ => {}
         }
     }
 }
@@ -297,6 +329,21 @@ fn draw_hlist(nodes: &[Node], c: &mut Cursor, line: &Line, canvas: &mut dyn Canv
                     c.advance_writing(width);
                 }
                 Some(Ink::Phantom) => c.advance_writing(line.width(node)),
+                Some(Ink::Deferred(key)) => {
+                    let width = line.width(node);
+                    if c.backwards() {
+                        c.advance_writing(width);
+                    }
+                    if hbox.nodes.is_empty() {
+                        canvas.set_tag(None);
+                        canvas.deferred(key, c.x, c.y, width, pt(&hbox.height.length), pt(&hbox.depth.length));
+                    } else {
+                        draw_fill(&hbox.nodes, c.x, c.y, width, canvas);
+                    }
+                    if !c.backwards() {
+                        c.advance_writing(width);
+                    }
+                }
                 #[cfg(feature = "math")]
                 Some(Ink::Math(items)) => {
                     canvas.set_tag(hbox.tag);

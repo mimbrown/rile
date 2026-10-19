@@ -48,6 +48,31 @@ impl Galley {
         self
     }
 
+    /// Break lines to `measure`, or set them at their natural width when
+    /// `None`.
+    pub fn set_measure(&mut self, measure: Option<f64>) -> &mut Self {
+        self.ts.frame.line_length = measure.unwrap_or(f64::INFINITY);
+        self
+    }
+
+    /// What has been added since the last fill, as one line to fill a
+    /// deferred box as wide as the measure, set with the paragraph's
+    /// alignment. It is an error for it to need more than one line or
+    /// more than the measure.
+    pub fn take_fill(&mut self) -> Result<Fill, BuilderError> {
+        self.leave_hmode(false)?;
+        let nodes = trim_top(std::mem::take(&mut self.ts.vertical_queue));
+        let measure = self.ts.frame.line_length;
+        let lines: Vec<&VBox> = nodes.iter().filter_map(|n| if let Node::VBox(b) = n { Some(b) } else { None }).collect();
+        let narrowest = |line: &VBox| line.nodes.iter().map(|n| pt_of(&n.width()) - n.width().shrink.to_pt().unwrap_or(0.0)).sum::<f64>();
+        match lines[..] {
+            [line] if narrowest(line) <= measure + 1e-6 => {}
+            [line] => return Err(BuilderError::Layout(format!("a fill {:.2}pt wide is wider than its {measure:.2}pt box", narrowest(line)))),
+            _ => return Err(BuilderError::Layout(format!("a fill takes {} lines, not one", lines.len()))),
+        }
+        Ok(Fill { nodes, fonts: self.ts.fonts.clone() })
+    }
+
     pub fn into_typesetter(self) -> Typesetter {
         self.ts
     }
@@ -196,6 +221,66 @@ mod tests {
         g.end_table().unwrap();
         let text = crate::test_support::text_in(&g.lay_out().unwrap().pages[0], "content");
         assert!(text.contains("Anitem") && text.contains("cell"), "{text}");
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        deferred: Vec<(String, f64, f64)>,
+        glyphs: Vec<(String, f64, f64)>,
+    }
+
+    impl crate::render::Canvas for Recorder {
+        fn begin_page(&mut self, _: f64, _: f64) {}
+        fn end_page(&mut self) {}
+        fn glyphs(&mut self, nnode: &crate::node::NNode, x: f64, y: f64) {
+            self.glyphs.push((nnode.text.clone(), x, y));
+        }
+        fn rule(&mut self, _: f64, _: f64, _: f64, _: f64) {}
+        fn deferred(&mut self, key: &str, x: f64, y: f64, width: f64, height: f64, depth: f64) {
+            assert_eq!((width, height, depth), (40.0, 7.0, 2.0));
+            self.deferred.push((key.to_string(), x, y));
+        }
+    }
+
+    #[test]
+    fn deferred_boxes_hold_their_place_until_filled() {
+        let mut g = galley(Some(120.0));
+        g.add_text("Page");
+        g.add_deferred("page", 40.0, 7.0, 2.0);
+        g.add_text("of the book.");
+        let mut layout = g.lay_out().unwrap();
+        let mut canvas = Recorder::default();
+        crate::render::draw_pages(&layout.pages, &mut canvas);
+        let [(key, x, y)] = &canvas.deferred[..] else { panic!("{:?}", canvas.deferred) };
+        assert_eq!(key, "page");
+        let after = canvas.glyphs.iter().find(|g| g.0 == "of").unwrap();
+        assert!((after.1 - x - 40.0).abs() < 5.0 && after.2 == *y, "{after:?} after {x}");
+
+        let mut number = galley(Some(40.0));
+        number.paragraph(&ParagraphStyle { align: Some(TextAlign::Right), first_line_indent: Some(0.0), ..Default::default() }, |n| {
+            n.add_text("12");
+            Ok::<_, BuilderError>(())
+        }).unwrap();
+        let fill = number.take_fill().unwrap();
+        assert_eq!(layout.fill("page", &fill), 1);
+        assert_eq!(layout.fill("elsewhere", &fill), 0);
+        let mut canvas = Recorder::default();
+        crate::render::draw_pages(&layout.pages, &mut canvas);
+        assert!(canvas.deferred.is_empty());
+        let filled = canvas.glyphs.iter().find(|g| g.0 == "12").unwrap();
+        assert!(filled.1 > x + 20.0 && filled.1 < x + 40.0 && filled.2 == *y, "{filled:?} in the box at {x}");
+    }
+
+    #[test]
+    fn a_fill_is_one_line_that_fits() {
+        let mut g = galley(Some(10.0));
+        g.add_text("1234");
+        assert!(g.take_fill().is_err());
+        g.set_measure(Some(30.0));
+        g.add_text("Rather more than one line of text");
+        assert!(g.take_fill().is_err());
+        g.add_text("12");
+        assert_eq!(lines(&g.take_fill().unwrap().nodes).len(), 1);
     }
 
     fn galley_nodes(text: &str) -> Vec<Node> {

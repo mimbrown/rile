@@ -552,6 +552,10 @@ pub enum Ink {
     Svg(crate::svg_image::SvgFigure),
     /// Content drawn transformed, starting this far back from the pen.
     Transform(crate::transform::Transform, f64),
+    /// Space kept for content known only once the document is laid out,
+    /// such as a page number, named by this key. It is drawn empty until
+    /// `Layout::fill` gives it content; renderers are told where it is.
+    Deferred(String),
     /// A formula's glyphs, rules and drawings.
     // SILE: `math` package.
     #[cfg(feature = "math")]
@@ -574,6 +578,12 @@ impl Ink {
 impl HBox {
     pub fn new(width: Length, height: Length, depth: Length) -> Self {
         Self { width, height, depth, ..Default::default() }
+    }
+
+    /// An empty box of this size kept for content set once the document is
+    /// laid out, named `key` (`Ink::Deferred`).
+    pub fn deferred(key: impl Into<String>, width: f64, height: f64, depth: f64) -> Self {
+        Self { ink: Some(Ink::Deferred(key.into())), ..Self::new(Length::pt(width), Length::pt(height), Length::pt(depth)) }
     }
 }
 
