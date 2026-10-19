@@ -4,7 +4,7 @@ use rile::frame::PaperSize;
 use rile::metadata::Metadata;
 use rile_pages::DocumentBuilder;
 use rile_pages::class::{Book, Heading};
-use rile_pdf::{Assembler, PdfOptions};
+use rile_pdf::{Assembler, Chunk, PdfOptions, RenderedLayout};
 
 const FONTS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -128,19 +128,30 @@ fn folios(pdf: &[u8]) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn chapters_laid_out_apart_are_numbered_once_put_together() {
+enum Part {
+    Layout(Box<Layout>),
+    Rendered(RenderedLayout),
+}
+
+/// Chapters laid out on threads and put together, each rendered either on
+/// its thread or by the assembler, with their folios filled.
+fn assemble(rendered_apart: bool) -> (Vec<Chunk>, usize, Vec<u8>) {
     let lengths = [6, 14, 9, 7];
-    let layouts: Vec<Layout> = std::thread::scope(|scope| {
+    let parts: Vec<Part> = std::thread::scope(|scope| {
         let handles: Vec<_> = lengths
             .iter()
             .enumerate()
-            .map(|(i, &n)| scope.spawn(move || chapter(i + 1, n)))
+            .map(|(i, &n)| {
+                scope.spawn(move || {
+                    let layout = chapter(i + 1, n).unwrap();
+                    match rendered_apart {
+                        true => Part::Rendered(RenderedLayout::new(&layout, PdfOptions::default())),
+                        false => Part::Layout(Box::new(layout)),
+                    }
+                })
+            })
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().unwrap().unwrap())
-            .collect()
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
 
     let metadata = Metadata {
@@ -148,27 +159,13 @@ fn chapters_laid_out_apart_are_numbered_once_put_together() {
         ..Default::default()
     };
     let mut book = Assembler::new(metadata, PdfOptions::default());
-    for layout in layouts {
-        book.add(layout);
+    for part in parts {
+        match part {
+            Part::Layout(layout) => book.add(*layout),
+            Part::Rendered(rendered) => book.add_rendered(rendered),
+        };
     }
     let chunks = book.chunks().to_vec();
-    let blanks = chunks[..chunks.len() - 1]
-        .iter()
-        .filter(|c| c.pages % 2 == 1)
-        .count();
-    assert!(
-        blanks > 0 && chunks.iter().any(|c| c.pages % 2 == 0),
-        "{chunks:?}"
-    );
-    assert_eq!(
-        book.page_count(),
-        chunks.iter().map(|c| c.pages).sum::<usize>() + blanks
-    );
-    assert!(
-        chunks.iter().all(|c| c.first_page % 2 == 0),
-        "each chapter starts on an odd page"
-    );
-
     let mut galley = Galley::new(None);
     galley.load_fonts_dir(FONTS);
     galley.set_font_spec(font()).unwrap();
@@ -179,7 +176,28 @@ fn chapters_laid_out_apart_are_numbered_once_put_together() {
         }
     }
     let pages = book.page_count();
-    let pdf = book.finish().unwrap();
+    (chunks, pages, book.finish().unwrap())
+}
+
+#[test]
+fn chapters_laid_out_apart_are_numbered_once_put_together() {
+    let (chunks, pages, pdf) = assemble(false);
+    let blanks = chunks[..chunks.len() - 1]
+        .iter()
+        .filter(|c| c.pages % 2 == 1)
+        .count();
+    assert!(
+        blanks > 0 && chunks.iter().any(|c| c.pages % 2 == 0),
+        "{chunks:?}"
+    );
+    assert_eq!(
+        pages,
+        chunks.iter().map(|c| c.pages).sum::<usize>() + blanks
+    );
+    assert!(
+        chunks.iter().all(|c| c.first_page % 2 == 0),
+        "each chapter starts on an odd page"
+    );
 
     let expected: Vec<String> = (0..pages)
         .map(|page| {
@@ -196,6 +214,10 @@ fn chapters_laid_out_apart_are_numbered_once_put_together() {
         .collect();
     assert_eq!(folios(&pdf), expected);
     assert!(String::from_utf8_lossy(&pdf).contains("/StructTreeRoot"));
+
+    let (apart, apart_pages, apart_pdf) = assemble(true);
+    assert_eq!((apart, apart_pages), (chunks, pages));
+    assert_eq!(folios(&apart_pdf), expected);
 }
 
 #[test]

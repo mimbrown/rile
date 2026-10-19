@@ -130,6 +130,22 @@ pub struct Chunk {
     pub deferred: Vec<DeferredBox>,
 }
 
+/// A layout's pages rendered and compressed, and the layout no longer
+/// needed, for [`Assembler::add_rendered`] to put in its place. Rendering
+/// is most of the work of adding a layout, so making this on the thread
+/// that laid the layout out leaves little for the one putting them
+/// together.
+pub struct RenderedLayout(Box<PdfOutputter>);
+
+impl RenderedLayout {
+    /// `options` should be the assembler's.
+    pub fn new(layout: &Layout, options: PdfOptions) -> Self {
+        let mut pdf = PdfOutputter::new(layout.metadata().clone(), options);
+        pdf.add_layout(layout);
+        Self(Box::new(pdf))
+    }
+}
+
 /// Puts documents laid out apart, such as a book's chapters laid out on
 /// several threads, into one PDF in order, each starting on an odd page,
 /// and fills their deferred boxes once every page is known.
@@ -168,14 +184,27 @@ impl Assembler {
     /// Render `layout`'s pages after those added before, with a blank
     /// page first if they end on an odd page.
     pub fn add(&mut self, layout: Layout) -> &Chunk {
+        self.start_on_odd_page();
+        let chunk = self.pdf.add_layout(&layout);
+        self.chunks.push(chunk);
+        self.chunks.last().expect("just added")
+    }
+
+    /// Add a layout rendered apart, such as on the thread that laid it
+    /// out, as `add` would.
+    pub fn add_rendered(&mut self, rendered: RenderedLayout) -> &Chunk {
+        self.start_on_odd_page();
+        let chunk = self.pdf.append(*rendered.0);
+        self.chunks.push(chunk);
+        self.chunks.last().expect("just added")
+    }
+
+    fn start_on_odd_page(&mut self) {
         if let Some(last) = self.pdf.pages.last().filter(|_| self.pdf.pages.len() % 2 == 1) {
             let (width, height) = (last.width, last.height);
             self.pdf.begin_page(width, height);
             self.pdf.end_page();
         }
-        let chunk = self.pdf.add_layout(&layout);
-        self.chunks.push(chunk);
-        self.chunks.last().expect("just added")
     }
 
     /// The layouts added, in order.
@@ -255,7 +284,45 @@ struct ImageEntry {
     alpha: Option<Vec<u8>>,
 }
 
+/// What the numbers in a page's resource names (`F3`, `Im0`, `Fm1`) stand
+/// for, when the page was rendered apart and they aren't the PDF's own.
+#[derive(Debug, Clone, Default)]
+struct Resources {
+    fonts: Vec<usize>,
+    images: Vec<usize>,
+    forms: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum Resource {
+    Font,
+    Image,
+    #[cfg_attr(not(feature = "pdf-images"), allow(dead_code))]
+    Form,
+}
+
+impl Resources {
+    fn list(&mut self, kind: Resource) -> &mut Vec<usize> {
+        match kind {
+            Resource::Font => &mut self.fonts,
+            Resource::Image => &mut self.images,
+            Resource::Form => &mut self.forms,
+        }
+    }
+
+    /// The number a page with these resources names `index` by, adding it
+    /// if the page doesn't use it yet.
+    fn local(&mut self, kind: Resource, index: usize) -> usize {
+        let list = self.list(kind);
+        list.iter().position(|&i| i == index).unwrap_or_else(|| {
+            list.push(index);
+            list.len() - 1
+        })
+    }
+}
+
 struct BuiltPage {
+    resources: Option<Resources>,
     width: f64,
     height: f64,
     /// Where the page's origin is on its sheet.
@@ -281,6 +348,8 @@ struct CurrentPage {
     marks: Vec<u32>,
     /// Whether this is a fill, all of it page furniture.
     fill: bool,
+    /// The page's own resource names, for a fill of a page rendered apart.
+    resources: Option<Resources>,
 }
 
 /// Where a deferred box is, and what fills it once it is filled.
@@ -404,6 +473,86 @@ impl PdfOutputter {
         chunk
     }
 
+    /// Add the pages `part` rendered after those already rendered, with
+    /// everything they need, as `add_layout` would have rendered them. The
+    /// part's own metadata is not used, and its options should be these.
+    pub fn append(&mut self, part: PdfOutputter) -> Chunk {
+        assert!(part.current.is_none(), "a page of the part is unfinished");
+        let first_page = self.pages.len();
+        let fonts: Vec<usize> = part
+            .fonts
+            .into_iter()
+            .map(|entry| {
+                let font = self.embed(entry.face, entry.variations);
+                let embedded = &mut self.fonts[font];
+                embedded.glyphs.extend(entry.glyphs);
+                for (gid, text) in entry.cid_to_unicode {
+                    embedded.cid_to_unicode.entry(gid).or_insert(text);
+                }
+                font
+            })
+            .collect();
+        let images: Vec<usize> = (self.images.len()..).take(part.images.len()).collect();
+        self.images.extend(part.images);
+        #[cfg(feature = "pdf-images")]
+        let forms: Vec<usize> = (self.forms.len()..).take(part.forms.len()).collect();
+        #[cfg(feature = "pdf-images")]
+        self.forms.extend(part.forms);
+        #[cfg(not(feature = "pdf-images"))]
+        let forms = Vec::new();
+
+        let tag_offset = match (&mut self.structure, part.structure) {
+            (Some(structure), Some(tree)) => structure.append(tree),
+            (structure @ None, Some(tree)) => {
+                *structure = Some(tree);
+                0
+            }
+            (_, None) => 0,
+        };
+        for (tag, items) in part.tagged.into_iter().enumerate() {
+            for item in items {
+                let item = match item {
+                    Tagged::Mark { page, mcid } => Tagged::Mark { page: page + first_page, mcid },
+                    Tagged::Link { page, index } => Tagged::Link { page: page + first_page, index },
+                };
+                self.record(tag as u32 + tag_offset, item);
+            }
+        }
+
+        for mut page in part.pages {
+            let map = |list: &[usize], to: &[usize]| list.iter().map(|&i| to[i]).collect();
+            page.resources = Some(match page.resources {
+                Some(r) => Resources { fonts: map(&r.fonts, &fonts), images: map(&r.images, &images), forms: map(&r.forms, &forms) },
+                None => Resources { fonts: fonts.clone(), images: images.clone(), forms: forms.clone() },
+            });
+            for mark in &mut page.marks {
+                *mark += tag_offset;
+            }
+            for annotation in &mut page.annotations {
+                annotation.tag = annotation.tag.map(|t| t + tag_offset);
+            }
+            self.pages.push(page);
+        }
+        for (name, (page, x, y)) in part.destinations {
+            self.destinations.entry(name).or_insert((page + first_page, x, y));
+        }
+        self.bookmarks.extend(part.bookmarks);
+        let first_box = self.deferred.len();
+        for mut slot in part.deferred {
+            slot.page += first_page;
+            slot.chunk = self.chunks;
+            self.deferred.push(slot);
+        }
+        let chunk = Chunk {
+            index: self.chunks,
+            first_page,
+            pages: self.pages.len() - first_page,
+            deferred: self.deferred[first_box..].iter().map(DeferredSlot::public).collect(),
+        };
+        self.chunks += 1;
+        chunk
+    }
+
     /// The deferred boxes on the pages rendered so far.
     pub fn deferred(&self) -> impl Iterator<Item = DeferredBox> + '_ {
         self.deferred.iter().map(DeferredSlot::public)
@@ -444,6 +593,7 @@ impl PdfOutputter {
         let round = self.round;
         let current = self.current.as_mut().expect("page begun");
         current.fill = true;
+        current.resources = self.pages[page].resources.take();
         current.content.save_state();
         current.content.rect(round.at(x), round.at(page_height - y - depth), round.at(width), round.at(height + depth));
         current.content.clip_nonzero();
@@ -452,6 +602,7 @@ impl PdfOutputter {
         self.end_mark();
         let mut current = self.current.take().expect("page begun");
         current.content.restore_state();
+        self.pages[page].resources = current.resources;
         self.page_stream(current.content, page_width, page_height, true)
     }
 
@@ -504,18 +655,23 @@ impl PdfOutputter {
     /// face at one set of variations share one embedded font, across
     /// layouts too.
     pub fn register_font(&mut self, key: &str, face: Arc<FontFace>, variations: Vec<([u8; 4], f32)>) {
+        let embedded = self.embed(face, variations);
+        self.font_names.insert(key.to_string(), embedded);
+    }
+
+    /// The embedded font for `face` at `variations`, added if there is none.
+    fn embed(&mut self, face: Arc<FontFace>, variations: Vec<([u8; 4], f32)>) -> usize {
         let (data, index) = face.raw_data();
         let same_face = |entry: &FontEntry, exact: bool| {
             let (other, other_index) = entry.face.raw_data();
             index == other_index && entry.variations == variations && if exact { std::ptr::eq(data, other) } else { data == other }
         };
         let embedded = self.fonts.iter().position(|e| same_face(e, true)).or_else(|| self.fonts.iter().position(|e| same_face(e, false)));
-        let embedded = embedded.unwrap_or_else(|| {
+        embedded.unwrap_or_else(|| {
             let pdf_name = format!("F{}", self.fonts.len());
             self.fonts.push(FontEntry { face, variations, glyphs: BTreeSet::new(), cid_to_unicode: BTreeMap::new(), pdf_name });
             self.fonts.len() - 1
-        });
-        self.font_names.insert(key.to_string(), embedded);
+        })
     }
 
     /// The embedded font that a layout's font name stands for.
@@ -535,9 +691,21 @@ impl PdfOutputter {
         gid
     }
 
-    /// The name page resources give `font`.
-    fn font_resource(&self, font: Option<usize>) -> &str {
-        font.and_then(|f| self.fonts.get(f)).map_or("F0", |e| e.pdf_name.as_str())
+    /// The name the current page's resources give `font`.
+    fn font_resource(&mut self, font: Option<usize>) -> String {
+        match font.filter(|&f| f < self.fonts.len()) {
+            Some(font) => format!("F{}", self.resource(Resource::Font, font)),
+            None => "F0".to_string(),
+        }
+    }
+
+    /// The number the current page's resource names give the PDF's
+    /// resource `index`.
+    fn resource(&mut self, kind: Resource, index: usize) -> usize {
+        match self.current.as_mut().and_then(|page| page.resources.as_mut()) {
+            Some(resources) => resources.local(kind, index),
+            None => index,
+        }
     }
 
     // -- Image management --------------------------------------------------
@@ -625,6 +793,7 @@ impl PdfOutputter {
             open_mark: None,
             marks: Vec::new(),
             fill: false,
+            resources: None,
         });
     }
 
@@ -633,6 +802,7 @@ impl PdfOutputter {
         let page = self.current.take().expect("begin_page() not called");
         let content = self.page_stream(page.content, page.width, page.height, false);
         self.pages.push(BuiltPage {
+            resources: None,
             width: page.width,
             height: page.height,
             offset: self.offset(page.width, page.height),
@@ -675,11 +845,11 @@ impl PdfOutputter {
 
     pub fn set_font(&mut self, font_key: &str, size: f64) {
         let font = self.embedded_font(font_key);
-        let pdf_name = self.font_resource(font).to_string();
-        let page = self.current.as_mut().expect("no current page");
-        if page.current_font == Some((font, size)) {
+        if self.current.as_ref().expect("no current page").current_font == Some((font, size)) {
             return;
         }
+        let pdf_name = self.font_resource(font);
+        let page = self.current.as_mut().expect("no current page");
         page.content.set_font(Name(pdf_name.as_bytes()), size as f32);
         page.current_font = Some((font, size));
     }
@@ -714,7 +884,7 @@ impl PdfOutputter {
         let font = self.embedded_font(font_key);
         let cids: Vec<u16> = glyphs.iter().map(|g| self.track_glyph(font, g.0, "")).collect();
         self.mark();
-        let pdf_name = self.font_resource(font).to_string();
+        let pdf_name = self.font_resource(font);
         let page = self.current.as_mut().expect("no current page");
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), font_size as f32);
@@ -756,6 +926,7 @@ impl PdfOutputter {
     ) {
         self.mark();
         let round = self.round;
+        let img_name = format!("Im{}", self.resource(Resource::Image, image_idx));
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
         let pdf_y = page_height - y - height;
@@ -763,7 +934,6 @@ impl PdfOutputter {
         // The image is a unit square, so its scales are its size in points.
         page.content.save_state();
         page.content.transform([round.at(width), 0.0, 0.0, round.at(height), round.at(x), round.at(pdf_y)]);
-        let img_name = format!("Im{image_idx}");
         page.content.x_object(Name(img_name.as_bytes()));
         page.content.restore_state();
     }
@@ -773,13 +943,14 @@ impl PdfOutputter {
     fn draw_form(&mut self, index: usize, page_box: [f64; 4], x: f64, y: f64, width: f64, height: f64) {
         self.mark();
         let round = self.round;
+        let name = format!("Fm{}", self.resource(Resource::Form, index));
         let page = self.current.as_mut().expect("no current page");
         let pdf_y = page.height - y - height;
         let [left, bottom, right, top] = page_box;
         let (sx, sy) = (width / (right - left), height / (top - bottom));
         page.content.save_state();
         page.content.transform([sx as f32, 0.0, 0.0, sy as f32, round.at(x - left * sx), round.at(pdf_y - bottom * sy)]);
-        page.content.x_object(Name(format!("Fm{index}").as_bytes()));
+        page.content.x_object(Name(name.as_bytes()));
         page.content.restore_state();
     }
 
@@ -866,10 +1037,9 @@ impl PdfOutputter {
 
         self.mark();
         let round = self.round;
+        let pdf_name = self.font_resource(Some(font));
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
-
-        let pdf_name = self.fonts[font].pdf_name.as_str();
 
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
@@ -1081,26 +1251,28 @@ impl PdfOutputter {
                 }
             }
 
-            // Resources
+            // Resources: the PDF's own, or those of a page rendered apart.
+            let all = |n: usize| (0..n).collect::<Vec<_>>();
+            let own = Resources { fonts: all(self.fonts.len()), images: all(self.images.len()), forms: all(form_refs.len()) };
+            let used = built_page.resources.as_ref().unwrap_or(&own);
             let mut resources = pg.resources();
-            if !self.fonts.is_empty() {
+            if !used.fonts.is_empty() {
                 let mut font_dict = resources.fonts();
-                for (entry, frefs) in self.fonts.iter().zip(&font_refs) {
-                    if let Some(frefs) = frefs {
-                        font_dict.pair(Name(entry.pdf_name.as_bytes()), frefs.type0);
+                for (j, &font) in used.fonts.iter().enumerate() {
+                    if let Some(frefs) = &font_refs[font] {
+                        font_dict.pair(Name(format!("F{j}").as_bytes()), frefs.type0);
                     }
                 }
                 font_dict.finish();
             }
 
-            if !self.images.is_empty() || !form_refs.is_empty() {
+            if !used.images.is_empty() || !used.forms.is_empty() {
                 let mut xobjects = resources.x_objects();
-                for (j, (img_ref, _)) in image_data.iter().enumerate() {
-                    let name = format!("Im{j}");
-                    xobjects.pair(Name(name.as_bytes()), *img_ref);
+                for (j, &image) in used.images.iter().enumerate() {
+                    xobjects.pair(Name(format!("Im{j}").as_bytes()), image_data[image].0);
                 }
-                for (j, form_ref) in form_refs.iter().enumerate() {
-                    xobjects.pair(Name(format!("Fm{j}").as_bytes()), *form_ref);
+                for (j, &form) in used.forms.iter().enumerate() {
+                    xobjects.pair(Name(format!("Fm{j}").as_bytes()), form_refs[form]);
                 }
                 xobjects.finish();
             }

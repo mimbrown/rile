@@ -7,9 +7,10 @@
 //! ```
 //!
 //! Each chapter is a book of its own, starting on an odd page, with
-//! deferred folios. Chapters are rendered in order as they arrive and then
-//! dropped; a chapter with an odd number of pages is followed by a blank
-//! page.
+//! deferred folios. Each thread renders the chapters it lays out and drops
+//! them; the main thread puts them in order as they arrive, following a
+//! chapter with an odd number of pages with a blank page, and fills the
+//! folios at the end.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,7 +23,7 @@ use rile::frame::PaperSize;
 use rile::metadata::Metadata;
 use rile_pages::DocumentBuilder;
 use rile_pages::class::{Book, Heading};
-use rile_pdf::{Assembler, PdfOptions};
+use rile_pdf::{Assembler, PdfOptions, RenderedLayout};
 
 const FONTS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -134,7 +135,7 @@ fn paragraph(seed: u64) -> String {
 fn chapter(number: usize, paragraphs: usize) -> Result<Layout, BuilderError> {
     let mut doc = DocumentBuilder::new(PaperSize::A5);
     let mut book = Book::new();
-    book.folio.deferred = std::env::var("IMMEDIATE").is_err();
+    book.folio.deferred = true;
     // The chapter starts on the chunk's first page, which is odd already.
     book.chapters_open_spread = false;
     doc.set_class(book);
@@ -198,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut book = Assembler::new(metadata, PdfOptions::default());
     let next = AtomicUsize::new(0);
+    let mut rendering = std::time::Duration::ZERO;
     std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
         let (send, receive) = mpsc::channel();
         for _ in 0..threads.max(1) {
@@ -205,7 +207,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scope.spawn(move || {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= chapters || send.send((i, chapter(i + 1, paragraphs))).is_err() {
+                    if i >= chapters {
+                        break;
+                    }
+                    let rendered = chapter(i + 1, paragraphs)
+                        .map(|layout| RenderedLayout::new(&layout, PdfOptions::default()));
+                    if send.send((i, rendered)).is_err() {
                         break;
                     }
                 }
@@ -214,10 +221,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         drop(send);
         let mut waiting = BTreeMap::new();
         let mut wanted = 0;
-        for (i, layout) in receive {
-            waiting.insert(i, layout?);
-            while let Some(layout) = waiting.remove(&wanted) {
-                book.add(layout);
+        for (i, rendered) in receive {
+            waiting.insert(i, rendered?);
+            while let Some(rendered) = waiting.remove(&wanted) {
+                let started = Instant::now();
+                book.add_rendered(rendered);
+                rendering += started.elapsed();
                 wanted += 1;
             }
         }
@@ -238,8 +247,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pdf = book.finish()?;
     std::fs::write(&out, &pdf)?;
     eprintln!(
-        "{chapters} chapters, {pages} pages on {threads} threads: laid out and rendered in {:.2}s, {:.2}s in all; wrote {out} ({} KB)",
+        "{chapters} chapters, {pages} pages on {threads} threads: laid out and rendered in {:.2}s ({:.2}s putting them together), {:.2}s in all; wrote {out} ({} KB)",
         laid_out.as_secs_f64(),
+        rendering.as_secs_f64(),
         start.elapsed().as_secs_f64(),
         pdf.len() / 1024
     );
