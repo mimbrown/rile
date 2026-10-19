@@ -23,8 +23,8 @@ pdf-images = ["dep:lopdf", "rile/pdf-images"]
 rile = { version = "0.1.0", path = "../rile", default-features = false }
 ttf-parser = "0.25"
 pdf-writer = "0.12"
-# Patched in the workspace (vendor/subsetter): CFF subsets must give each
-# glyph its original glyph id as its CID, which upstream 0.2.3 doesn't.
+# Patched in the workspace to a fork with `CidMapping::OriginalGlyphId`
+# (CFF subsets whose CIDs are the original glyph ids), until released.
 subsetter = "0.2"
 miniz_oxide = "0.8"
 lopdf = { version = "0.45", default-features = false, optional = true }

@@ -14,8 +14,8 @@
 //! page's content doesn't depend on what was rendered before it, and fonts
 //! are subset once every page is rendered. A TrueType subset maps CIDs to
 //! its glyphs with a `CIDToGIDMap`; a CFF subset is embedded as a bare
-//! CID-keyed CFF font whose charset does it, which needs the workspace's
-//! patched `subsetter`.
+//! CID-keyed CFF font whose charset does it (`subsetter`'s
+//! `CidMapping::OriginalGlyphId`).
 //!
 //! Several layouts can make one PDF ([`Assembler`], or
 //! [`PdfOutputter::add_layout`]), and boxes they deferred, such as page
@@ -1616,7 +1616,8 @@ fn write_font(
     // don't read the charset of a CFF font wrapped as OpenType).
     let glyphs: Vec<u16> = entry.glyphs.iter().copied().collect();
     let remapper = subsetter::GlyphRemapper::new_from_glyphs_sorted(&glyphs);
-    let font_data = subsetter::subset_with_variations(raw_data, face_index, &variations, &remapper)
+    let options = subsetter::Options { cid_mapping: subsetter::CidMapping::OriginalGlyphId, variation_coordinates: &variations };
+    let font_data = subsetter::subset_with_options(raw_data, face_index, &remapper, &options)
         .map_err(|e| PdfError::Font(format!("{}: {e:?}", entry.pdf_name)))?;
     let subset = ttf_parser::Face::parse(&font_data, 0).map_err(|e| PdfError::Font(format!("{}: {e}", entry.pdf_name)))?;
     let cff = subset.tables().cff.is_some();

@@ -1,12 +1,11 @@
 [workspace]
 members = ["rile", "rile-cli", "rile-markdown", "rile-pages", "rile-pdf", "rile-svg", "sile-parity", "starter"]
-exclude = ["vendor"]
 resolver = "3"
 
 [workspace.package]
 repository = "https://github.com/mimbrown/rile"
 
-# rile-pdf needs subset CFF fonts whose CIDs are the original glyph ids;
-# see vendor/subsetter/Cargo.toml.
+# rile-pdf needs subsetter's `CidMapping::OriginalGlyphId`, proposed
+# upstream from this fork; drop the patch once a release has it.
 [patch.crates-io]
-subsetter = { path = "vendor/subsetter" }
+subsetter = { git = "https://github.com/mimbrown/subsetter", rev = "61bead5619fe0e9660eb50a12a162fadd395bbd7" }
