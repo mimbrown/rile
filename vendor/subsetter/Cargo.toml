@@ -1,0 +1,24 @@
+# subsetter 0.2.3 (https://github.com/typst/subsetter), vendored by rile with
+# one change: the charset of a CID-keyed CFF subset gives each glyph its
+# glyph id in the original font as its CID (src/cff/charset.rs), so that
+# rile-pdf's content streams can address glyphs before the subset is known.
+[package]
+name = "subsetter"
+version = "0.2.3"
+edition = "2021"
+rust-version = "1.82"
+authors = ["Laurenz Mädje <laurmaedje@gmail.com>", "Laurenz Stampfl <laurenz.stampfl@gmail.com>"]
+description = "Reduces the size and coverage of OpenType fonts."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/typst/subsetter"
+publish = false
+
+[features]
+default = ["variable-fonts"]
+variable-fonts = ["dep:skrifa", "dep:write-fonts", "dep:kurbo"]
+
+[dependencies]
+rustc-hash = "2.1"
+skrifa = { optional = true, version = "0.37" }
+kurbo = { optional = true, version = "0.12" }
+write-fonts = { optional = true, version = "0.43.0" }

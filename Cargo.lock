@@ -1406,8 +1406,6 @@ dependencies = [
 [[package]]
 name = "subsetter"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb6895a12ac5599bb6057362f00e8a3cf1daab4df33f553a55690a44e4fed8d0"
 dependencies = [
  "kurbo",
  "rustc-hash",

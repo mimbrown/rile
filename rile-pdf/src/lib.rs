@@ -9,17 +9,28 @@
 //! std::fs::write("out.pdf", pdf)?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! Content streams show each glyph by its id in the font (its CID), so a
+//! page's content doesn't depend on what was rendered before it, and fonts
+//! are subset once every page is rendered. A TrueType subset maps CIDs to
+//! its glyphs with a `CIDToGIDMap`; a CFF subset is embedded as a bare
+//! CID-keyed CFF font whose charset does it, which needs the workspace's
+//! patched `subsetter`.
+//!
+//! Several layouts can make one PDF ([`Assembler`], or
+//! [`PdfOutputter::add_layout`]), and boxes they deferred, such as page
+//! numbers, can be filled once they are all rendered.
 
 #[cfg(feature = "pdf-images")]
 mod pdf_image;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, TableHeaderScope};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
 
-use rile::builder::Layout;
+use rile::builder::{Fill, Layout};
 use rile::color::Color;
 use rile::font::FontFace;
 use rile::metadata::{Bookmark, Metadata};
@@ -91,17 +102,101 @@ impl Round {
 /// Write `layout` as a PDF.
 pub fn render(layout: &Layout, options: PdfOptions) -> Result<Vec<u8>, PdfError> {
     let mut pdf = PdfOutputter::new(layout.metadata().clone(), options);
-    for (name, face, variations) in layout.fonts() {
-        pdf.register_font(name, Arc::clone(face), variations);
-    }
-    for bookmark in layout.bookmarks() {
-        pdf.add_bookmark(bookmark.clone());
-    }
-    if let Some(structure) = layout.structure() {
-        pdf.set_structure(structure.clone());
-    }
-    pdf.render_pages(&layout.pages);
+    pdf.add_layout(layout);
     pdf.finish()
+}
+
+/// A deferred box (`Ink::Deferred`) on a rendered page, for
+/// `PdfOutputter::fill` to fill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeferredBox {
+    pub key: String,
+    /// The page it is on, counted from 0 across every layout rendered.
+    pub page: usize,
+    pub width: f64,
+    pub height: f64,
+    pub depth: f64,
+}
+
+/// The pages one layout was rendered into.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chunk {
+    /// How many layouts were added before this one.
+    pub index: usize,
+    /// Its first page, counted from 0 across every layout rendered.
+    pub first_page: usize,
+    pub pages: usize,
+    /// Its deferred boxes, in the order they were drawn.
+    pub deferred: Vec<DeferredBox>,
+}
+
+/// Puts documents laid out apart, such as a book's chapters laid out on
+/// several threads, into one PDF in order, each starting on an odd page,
+/// and fills their deferred boxes once every page is known.
+///
+/// Each layout's pages are rendered and compressed as it is added and the
+/// layout dropped, so what is held is about the size of the PDF. Glyphs
+/// are shown by their id in the font, so pages can be rendered in any
+/// order and fonts are subset once, at the end.
+///
+/// ```no_run
+/// # fn chapters() -> Vec<rile::builder::Layout> { unimplemented!() }
+/// # fn folio(number: usize, width: f64) -> rile::builder::Fill { unimplemented!() }
+/// let mut book = rile_pdf::Assembler::new(Default::default(), rile_pdf::PdfOptions::default());
+/// for chapter in chapters() {
+///     book.add(chapter);
+/// }
+/// for chunk in book.chunks().to_vec() {
+///     for deferred in &chunk.deferred {
+///         book.fill(chunk.index, &deferred.key, &folio(deferred.page + 1, deferred.width));
+///     }
+/// }
+/// std::fs::write("book.pdf", book.finish()?)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct Assembler {
+    pdf: PdfOutputter,
+    chunks: Vec<Chunk>,
+}
+
+impl Assembler {
+    /// The document is described by `metadata`, not by the layouts'.
+    pub fn new(metadata: Metadata, options: PdfOptions) -> Self {
+        Self { pdf: PdfOutputter::new(metadata, options), chunks: Vec::new() }
+    }
+
+    /// Render `layout`'s pages after those added before, with a blank
+    /// page first if they end on an odd page.
+    pub fn add(&mut self, layout: Layout) -> &Chunk {
+        if let Some(last) = self.pdf.pages.last().filter(|_| self.pdf.pages.len() % 2 == 1) {
+            let (width, height) = (last.width, last.height);
+            self.pdf.begin_page(width, height);
+            self.pdf.end_page();
+        }
+        let chunk = self.pdf.add_layout(&layout);
+        self.chunks.push(chunk);
+        self.chunks.last().expect("just added")
+    }
+
+    /// The layouts added, in order.
+    pub fn chunks(&self) -> &[Chunk] {
+        &self.chunks
+    }
+
+    /// Pages so far, blank ones included.
+    pub fn page_count(&self) -> usize {
+        self.pdf.pages.len()
+    }
+
+    /// Fill the deferred boxes named `key` in the layout `chunk` (its
+    /// `Chunk::index`) with `fill`, returning how many there were.
+    pub fn fill(&mut self, chunk: usize, key: &str, fill: &Fill) -> usize {
+        self.pdf.fill_chunk(chunk, key, fill)
+    }
+
+    pub fn finish(self) -> Result<Vec<u8>, PdfError> {
+        self.pdf.finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,22 +236,13 @@ struct FontEntry {
     face: Arc<FontFace>,
     /// Axis positions to instance a variable font at.
     variations: Vec<([u8; 4], f32)>,
-    /// Glyphs in the order pages first use them; content streams address
-    /// each by its index here, which is its glyph id in the subset.
-    remapper: subsetter::GlyphRemapper,
-    /// Text for ToUnicode, by subset glyph id.
+    /// The glyphs pages draw, by their id in the font, which is also the
+    /// code content streams show them by. The subset is made from these
+    /// at the end; a font nothing is drawn in is left out.
+    glyphs: BTreeSet<u16>,
+    /// Text for ToUnicode, by glyph id.
     cid_to_unicode: BTreeMap<u16, String>,
     pdf_name: String,
-    /// Whether any page draws from it; a font the layout loaded and never
-    /// drew is left out.
-    used: bool,
-}
-
-impl FontEntry {
-    fn cid(&mut self, gid: u16) -> u16 {
-        self.used = true;
-        self.remapper.remap(gid)
-    }
 }
 
 struct ImageEntry {
@@ -174,6 +260,7 @@ struct BuiltPage {
     height: f64,
     /// Where the page's origin is on its sheet.
     offset: (f64, f64),
+    /// The content stream, compressed when the PDF is.
     content: Vec<u8>,
     annotations: Vec<LinkAnnotation>,
     /// The tag of each marked content sequence, by MCID.
@@ -185,13 +272,35 @@ struct CurrentPage {
     height: f64,
     content: Content,
     annotations: Vec<LinkAnnotation>,
-    current_font: Option<(String, f64)>,
+    current_font: Option<(Option<usize>, f64)>,
     current_color: Option<Color>,
     /// The tag of what is drawn next, and of the marked content sequence
     /// open in the content stream, if one is.
     tag: Option<u32>,
     open_mark: Option<Option<u32>>,
     marks: Vec<u32>,
+    /// Whether this is a fill, all of it page furniture.
+    fill: bool,
+}
+
+/// Where a deferred box is, and what fills it once it is filled.
+struct DeferredSlot {
+    chunk: usize,
+    key: String,
+    page: usize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    depth: f64,
+    /// The fill's content stream, drawn over the page's.
+    fill: Option<Vec<u8>>,
+}
+
+impl DeferredSlot {
+    fn public(&self) -> DeferredBox {
+        DeferredBox { key: self.key.clone(), page: self.page, width: self.width, height: self.height, depth: self.depth }
+    }
 }
 
 /// Where content with a tag ended up.
@@ -209,11 +318,10 @@ pub struct PdfOutputter {
     metadata: Metadata,
     options: PdfOptions,
     round: Round,
-    fonts: BTreeMap<String, FontEntry>,
-    /// Fonts registered under one name that are the face and variations
-    /// already registered under another, which is the one embedded.
-    font_aliases: HashMap<String, String>,
-    font_counter: usize,
+    /// The embedded fonts, each a face at one set of variations.
+    fonts: Vec<FontEntry>,
+    /// The embedded font each name text refers to fonts by stands for.
+    font_names: HashMap<String, usize>,
     images: Vec<ImageEntry>,
     #[cfg(feature = "pdf-images")]
     forms: Vec<pdf_image::Form>,
@@ -228,7 +336,13 @@ pub struct PdfOutputter {
     pages: Vec<BuiltPage>,
     current: Option<CurrentPage>,
     structure: Option<StructTree>,
+    /// What is added to the tags of the layout being rendered to make them
+    /// tags of `structure`.
+    tag_offset: u32,
     tagged: Vec<Vec<Tagged>>,
+    deferred: Vec<DeferredSlot>,
+    /// How many layouts `add_layout` has rendered.
+    chunks: usize,
 }
 
 impl PdfOutputter {
@@ -237,9 +351,8 @@ impl PdfOutputter {
             metadata,
             round: Round::new(options.precision),
             options,
-            fonts: BTreeMap::new(),
-            font_aliases: HashMap::new(),
-            font_counter: 0,
+            fonts: Vec::new(),
+            font_names: HashMap::new(),
             images: Vec::new(),
             #[cfg(feature = "pdf-images")]
             forms: Vec::new(),
@@ -251,13 +364,95 @@ impl PdfOutputter {
             pages: Vec::new(),
             current: None,
             structure: None,
+            tag_offset: 0,
             tagged: Vec::new(),
+            deferred: Vec::new(),
+            chunks: 0,
         }
     }
 
     /// Tag the PDF with `structure`, whose tags the drawn content carries.
     pub fn set_structure(&mut self, structure: StructTree) {
         self.structure = Some(structure);
+        self.tag_offset = 0;
+    }
+
+    /// Render `layout`'s pages after those already rendered, with its
+    /// fonts, bookmarks and structure; the layout isn't needed after this.
+    /// The structure of each layout goes under one document, so a PDF made
+    /// of several is tagged when every one of them is.
+    pub fn add_layout(&mut self, layout: &Layout) -> Chunk {
+        for (name, face, variations) in layout.fonts() {
+            self.register_font(name, Arc::clone(face), variations);
+        }
+        self.bookmarks.extend(layout.bookmarks().iter().cloned());
+        if let Some(tree) = layout.structure() {
+            match &mut self.structure {
+                Some(structure) => self.tag_offset = structure.append(tree.clone()),
+                None => self.set_structure(tree.clone()),
+            }
+        }
+        let (first_page, first_box) = (self.pages.len(), self.deferred.len());
+        self.render_pages(&layout.pages);
+        let chunk = Chunk {
+            index: self.chunks,
+            first_page,
+            pages: self.pages.len() - first_page,
+            deferred: self.deferred[first_box..].iter().map(DeferredSlot::public).collect(),
+        };
+        self.chunks += 1;
+        chunk
+    }
+
+    /// The deferred boxes on the pages rendered so far.
+    pub fn deferred(&self) -> impl Iterator<Item = DeferredBox> + '_ {
+        self.deferred.iter().map(DeferredSlot::public)
+    }
+
+    /// Fill every deferred box named `key` with `fill`, drawn over its page
+    /// clipped to the box, as page furniture; filling a box again replaces
+    /// what filled it. Returns how many boxes there were.
+    pub fn fill(&mut self, key: &str, fill: &Fill) -> usize {
+        self.fill_where(|slot| slot.key == key, fill)
+    }
+
+    /// Fill the deferred boxes named `key` that the layout `chunk` (its
+    /// `Chunk::index`) drew, as `fill` does.
+    pub fn fill_chunk(&mut self, chunk: usize, key: &str, fill: &Fill) -> usize {
+        self.fill_where(|slot| slot.chunk == chunk && slot.key == key, fill)
+    }
+
+    fn fill_where(&mut self, which: impl Fn(&DeferredSlot) -> bool, fill: &Fill) -> usize {
+        let slots: Vec<usize> = (0..self.deferred.len()).filter(|&i| which(&self.deferred[i])).collect();
+        if slots.is_empty() {
+            return 0;
+        }
+        for (name, face, variations) in fill.fonts() {
+            self.register_font(name, Arc::clone(face), variations);
+        }
+        for &i in &slots {
+            let stream = self.draw_fill(i, fill);
+            self.deferred[i].fill = Some(stream);
+        }
+        slots.len()
+    }
+
+    fn draw_fill(&mut self, slot: usize, fill: &Fill) -> Vec<u8> {
+        let DeferredSlot { page, x, y, width, height, depth, .. } = self.deferred[slot];
+        let (page_width, page_height) = (self.pages[page].width, self.pages[page].height);
+        self.begin_page(page_width, page_height);
+        let round = self.round;
+        let current = self.current.as_mut().expect("page begun");
+        current.fill = true;
+        current.content.save_state();
+        current.content.rect(round.at(x), round.at(page_height - y - depth), round.at(width), round.at(height + depth));
+        current.content.clip_nonzero();
+        current.content.end_path();
+        rile::render::draw_fill(&fill.nodes, x, y, width, self);
+        self.end_mark();
+        let mut current = self.current.take().expect("page begun");
+        current.content.restore_state();
+        self.page_stream(current.content, page_width, page_height, true)
     }
 
     fn record(&mut self, tag: u32, item: Tagged) {
@@ -303,50 +498,46 @@ impl PdfOutputter {
 
     // -- Font management ---------------------------------------------------
 
-    /// Registers a font under the name its text refers to it by. A layout
-    /// names a font once for each size, direction and set of features it
-    /// is used with; names for one face at one set of variations share one
-    /// embedded font.
+    /// Registers a font under the name its text refers to it by, for the
+    /// pages rendered from now on. A layout names a font once for each
+    /// size, direction and set of features it is used with; names for one
+    /// face at one set of variations share one embedded font, across
+    /// layouts too.
     pub fn register_font(&mut self, key: &str, face: Arc<FontFace>, variations: Vec<([u8; 4], f32)>) {
-        if self.fonts.contains_key(key) || self.font_aliases.contains_key(key) {
-            return;
-        }
-        let same_face = |entry: &FontEntry| {
-            let ((data, index), (other, other_index)) = (face.raw_data(), entry.face.raw_data());
-            index == other_index && (std::ptr::eq(data, other) || data == other) && entry.variations == variations
+        let (data, index) = face.raw_data();
+        let same_face = |entry: &FontEntry, exact: bool| {
+            let (other, other_index) = entry.face.raw_data();
+            index == other_index && entry.variations == variations && if exact { std::ptr::eq(data, other) } else { data == other }
         };
-        if let Some(embedded) = self.fonts.iter().find(|(_, entry)| same_face(entry)).map(|(name, _)| name.clone()) {
-            self.font_aliases.insert(key.to_string(), embedded);
-            return;
-        }
-        let pdf_name = format!("F{}", self.font_counter);
-        self.font_counter += 1;
-        self.fonts.insert(
-            key.to_string(),
-            FontEntry {
-                face,
-                variations,
-                remapper: subsetter::GlyphRemapper::new(),
-                cid_to_unicode: BTreeMap::new(),
-                pdf_name,
-                used: false,
-            },
-        );
+        let embedded = self.fonts.iter().position(|e| same_face(e, true)).or_else(|| self.fonts.iter().position(|e| same_face(e, false)));
+        let embedded = embedded.unwrap_or_else(|| {
+            let pdf_name = format!("F{}", self.fonts.len());
+            self.fonts.push(FontEntry { face, variations, glyphs: BTreeSet::new(), cid_to_unicode: BTreeMap::new(), pdf_name });
+            self.fonts.len() - 1
+        });
+        self.font_names.insert(key.to_string(), embedded);
     }
 
-    /// The name of the embedded font that a layout's font name stands for.
-    fn embedded_font<'a>(&'a self, key: &'a str) -> &'a str {
-        self.font_aliases.get(key).map_or(key, String::as_str)
+    /// The embedded font that a layout's font name stands for.
+    fn embedded_font(&self, key: &str) -> Option<usize> {
+        self.font_names.get(key).copied()
     }
 
-    /// The code that shows `gid` in the content stream.
-    fn track_glyph(&mut self, font_key: &str, gid: u16, text: &str) -> u16 {
-        let Some(entry) = self.fonts.get_mut(font_key) else { return gid };
-        let cid = entry.cid(gid);
-        if !text.is_empty() {
-            entry.cid_to_unicode.entry(cid).or_insert_with(|| text.to_string());
+    /// Note that `gid` is drawn, standing for `text`, and return the code
+    /// that shows it: its glyph id, whichever pages draw it.
+    fn track_glyph(&mut self, font: Option<usize>, gid: u16, text: &str) -> u16 {
+        if let Some(entry) = font.and_then(|f| self.fonts.get_mut(f)) {
+            entry.glyphs.insert(gid);
+            if !text.is_empty() {
+                entry.cid_to_unicode.entry(gid).or_insert_with(|| text.to_string());
+            }
         }
-        cid
+        gid
+    }
+
+    /// The name page resources give `font`.
+    fn font_resource(&self, font: Option<usize>) -> &str {
+        font.and_then(|f| self.fonts.get(f)).map_or("F0", |e| e.pdf_name.as_str())
     }
 
     // -- Image management --------------------------------------------------
@@ -433,45 +624,64 @@ impl PdfOutputter {
             tag: None,
             open_mark: None,
             marks: Vec::new(),
+            fill: false,
         });
     }
 
     pub fn end_page(&mut self) {
         self.end_mark();
         let page = self.current.take().expect("begin_page() not called");
-        let offset = self.metadata.sheet.map_or((0.0, 0.0), |s| ((s.width - page.width) / 2.0, (s.height - page.height) / 2.0));
-        let mut content = Content::new();
-        if offset != (0.0, 0.0) {
-            content.transform([1.0, 0.0, 0.0, 1.0, self.round.at(offset.0), self.round.at(offset.1)]);
-        }
-        let mut content = content.finish();
-        if !content.is_empty() {
-            content.push(b'\n');
-        }
-        content.extend(page.content.finish());
+        let content = self.page_stream(page.content, page.width, page.height, false);
         self.pages.push(BuiltPage {
             width: page.width,
             height: page.height,
-            offset,
+            offset: self.offset(page.width, page.height),
             content,
             annotations: page.annotations,
             marks: page.marks,
         });
     }
 
+    /// Where a page this size goes on its sheet.
+    fn offset(&self, width: f64, height: f64) -> (f64, f64) {
+        self.metadata.sheet.map_or((0.0, 0.0), |s| ((s.width - width) / 2.0, (s.height - height) / 2.0))
+    }
+
+    /// `content` placed on the page's sheet, compressed when the PDF is,
+    /// and with the graphics state restored after it when `isolated`.
+    fn page_stream(&self, content: Content, width: f64, height: f64, isolated: bool) -> Vec<u8> {
+        let mut prefix = Content::new();
+        if isolated {
+            prefix.save_state();
+        }
+        let offset = self.offset(width, height);
+        if offset != (0.0, 0.0) {
+            prefix.transform([1.0, 0.0, 0.0, 1.0, self.round.at(offset.0), self.round.at(offset.1)]);
+        }
+        let mut stream = prefix.finish();
+        if !stream.is_empty() {
+            stream.push(b'\n');
+        }
+        stream.extend(content.finish());
+        if isolated {
+            stream.extend(b"\nQ");
+        }
+        self.compressed(stream)
+    }
+
+    fn compressed(&self, data: Vec<u8>) -> Vec<u8> {
+        if self.options.compress { compress_data(&data) } else { data }
+    }
+
     pub fn set_font(&mut self, font_key: &str, size: f64) {
-        let font_key = &self.embedded_font(font_key).to_string();
+        let font = self.embedded_font(font_key);
+        let pdf_name = self.font_resource(font).to_string();
         let page = self.current.as_mut().expect("no current page");
-        if page.current_font.as_ref().is_some_and(|(k, s)| k == font_key && *s == size) {
+        if page.current_font == Some((font, size)) {
             return;
         }
-        let pdf_name = self
-            .fonts
-            .get(font_key)
-            .map(|e| e.pdf_name.clone())
-            .unwrap_or_else(|| "F0".to_string());
         page.content.set_font(Name(pdf_name.as_bytes()), size as f32);
-        page.current_font = Some((font_key.to_string(), size));
+        page.current_font = Some((font, size));
     }
 
     pub fn set_color(&mut self, color: Color) {
@@ -501,17 +711,12 @@ impl PdfOutputter {
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
-        let font_key = &self.embedded_font(font_key).to_string();
-        let cids: Vec<u16> = glyphs.iter().map(|g| self.track_glyph(font_key, g.0, "")).collect();
+        let font = self.embedded_font(font_key);
+        let cids: Vec<u16> = glyphs.iter().map(|g| self.track_glyph(font, g.0, "")).collect();
         self.mark();
+        let pdf_name = self.font_resource(font).to_string();
         let page = self.current.as_mut().expect("no current page");
         page.content.begin_text();
-
-        let pdf_name = self
-            .fonts
-            .get(font_key)
-            .map(|e| e.pdf_name.clone())
-            .unwrap_or_else(|| "F0".to_string());
         page.content.set_font(Name(pdf_name.as_bytes()), font_size as f32);
 
         let round = self.round;
@@ -629,18 +834,19 @@ impl PdfOutputter {
         // earlier on the page would bleed into everything after it.
         self.set_color(nnode.color.unwrap_or(Color::Grayscale { l: 0.0 }));
 
-        let font_key = self.embedded_font(&nnode.font_key).to_string();
-        let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(&font_key, g.gid, &g.text)).collect();
-        let space = (self.structure.is_some() && nnode.space_after && !nnode.vertical && nnode.bidi_level.unwrap_or(0).is_multiple_of(2))
-            .then(|| self.fonts.get(&font_key)?.face.glyph_id(' '))
+        let Some(font) = self.embedded_font(&nnode.font_key) else { return };
+        let cids: Vec<u16> = nnode.glyphs.iter().map(|g| self.track_glyph(Some(font), g.gid, &g.text)).collect();
+        let filling = self.current.as_ref().is_some_and(|page| page.fill);
+        let space = (self.structure.is_some() && !filling && nnode.space_after && !nnode.vertical && nnode.bidi_level.unwrap_or(0).is_multiple_of(2))
+            .then(|| self.fonts[font].face.glyph_id(' '))
             .flatten()
             .filter(|&gid| gid != 0)
-            .map(|gid| self.track_glyph(&font_key, gid, " "));
+            .map(|gid| self.track_glyph(Some(font), gid, " "));
 
         // Where the font's own advances are those of the embedded font,
         // glyphs follow each other in one TJ array, adjusted where the
         // shaper moved them; otherwise each is placed on its own.
-        let entry = &self.fonts[&font_key];
+        let entry = &self.fonts[font];
         let advance = |gid: u16| entry.face.advance_width(gid).unwrap_or(0) as f64 * nnode.font_size / entry.face.units_per_em() as f64;
         let chained = !nnode.vertical && !entry.face.is_variable();
         let mut placed: Vec<(f64, f64, u16, Option<f64>)> = Vec::with_capacity(cids.len() + 1);
@@ -663,7 +869,7 @@ impl PdfOutputter {
         let page = self.current.as_mut().expect("no current page");
         let page_height = page.height;
 
-        let pdf_name = self.fonts.get(&font_key).map_or("F0", |e| e.pdf_name.as_str());
+        let pdf_name = self.fonts[font].pdf_name.as_str();
 
         page.content.begin_text();
         page.content.set_font(Name(pdf_name.as_bytes()), nnode.font_size as f32);
@@ -727,21 +933,18 @@ impl PdfOutputter {
             .collect();
 
         // Allocate font refs
-        let font_refs: BTreeMap<String, FontRefs> = self
+        let font_refs: Vec<Option<FontRefs>> = self
             .fonts
             .iter()
-            .filter(|(_, entry)| entry.used)
-            .map(|(key, _)| {
-                (
-                    key.clone(),
-                    FontRefs {
-                        type0: alloc.bump(),
-                        cid_font: alloc.bump(),
-                        descriptor: alloc.bump(),
-                        font_file: alloc.bump(),
-                        tounicode: alloc.bump(),
-                    },
-                )
+            .map(|entry| {
+                (!entry.glyphs.is_empty()).then(|| FontRefs {
+                    type0: alloc.bump(),
+                    cid_font: alloc.bump(),
+                    descriptor: alloc.bump(),
+                    font_file: alloc.bump(),
+                    tounicode: alloc.bump(),
+                    cid_to_gid_map: alloc.bump(),
+                })
             })
             .collect();
 
@@ -841,14 +1044,24 @@ impl PdfOutputter {
             .count(self.pages.len() as i32);
 
         // -- Write pages --
+        // A page with fills draws its own content inside q and Q streams
+        // shared by every such page, so that each fill starts from the
+        // page's initial graphics state.
+        let mut fills: Vec<Vec<(Ref, &[u8])>> = vec![Vec::new(); self.pages.len()];
+        for slot in &self.deferred {
+            if let Some(stream) = &slot.fill {
+                fills[slot.page].push((alloc.bump(), stream));
+            }
+        }
+        let isolation = fills.iter().any(|f| !f.is_empty()).then(|| (alloc.bump(), alloc.bump()));
+        if let Some((save, restore)) = isolation {
+            for (r, op) in [(save, b"q"), (restore, b"Q")] {
+                pdf.stream(r, op);
+            }
+        }
         for (i, built_page) in self.pages.iter().enumerate() {
             let (page_ref, content_ref) = page_data[i];
-
-            let content_bytes = if self.options.compress {
-                compress_data(&built_page.content)
-            } else {
-                built_page.content.clone()
-            };
+            let content_bytes = &built_page.content;
 
             let mut pg = pdf.page(page_ref);
             let (dx, dy) = built_page.offset;
@@ -859,14 +1072,21 @@ impl PdfOutputter {
                 (built_page.height + 2.0 * dy) as f32,
             ));
             pg.parent(page_tree_ref);
-            pg.contents(content_ref);
+            match isolation {
+                Some((save, restore)) if !fills[i].is_empty() => {
+                    pg.contents_array([save, content_ref, restore].into_iter().chain(fills[i].iter().map(|f| f.0)));
+                }
+                _ => {
+                    pg.contents(content_ref);
+                }
+            }
 
             // Resources
             let mut resources = pg.resources();
             if !self.fonts.is_empty() {
                 let mut font_dict = resources.fonts();
-                for (key, entry) in &self.fonts {
-                    if let Some(frefs) = font_refs.get(key) {
+                for (entry, frefs) in self.fonts.iter().zip(&font_refs) {
+                    if let Some(frefs) = frefs {
                         font_dict.pair(Name(entry.pdf_name.as_bytes()), frefs.type0);
                     }
                 }
@@ -900,16 +1120,18 @@ impl PdfOutputter {
             pg.finish();
 
             // Content stream
-            let mut stream = pdf.stream(content_ref, &content_bytes);
-            if self.options.compress {
-                stream.filter(Filter::FlateDecode);
+            for (r, data) in std::iter::once((content_ref, content_bytes.as_slice())).chain(fills[i].iter().copied()) {
+                let mut stream = pdf.stream(r, data);
+                if self.options.compress {
+                    stream.filter(Filter::FlateDecode);
+                }
+                stream.finish();
             }
-            stream.finish();
         }
 
         // -- Write fonts --
-        for (key, entry) in &self.fonts {
-            if let Some(frefs) = font_refs.get(key) {
+        for (entry, frefs) in self.fonts.iter().zip(&font_refs) {
+            if let Some(frefs) = frefs {
                 write_font(&mut pdf, entry, frefs, self.options.compress)?;
             }
         }
@@ -1014,6 +1236,8 @@ struct FontRefs {
     descriptor: Ref,
     font_file: Ref,
     tounicode: Ref,
+    /// Unused for CFF fonts, whose CIDs the font program maps itself.
+    cid_to_gid_map: Ref,
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,7 +1405,14 @@ impl rile::render::Canvas for PdfOutputter {
     }
 
     fn set_tag(&mut self, tag: Option<u32>) {
-        self.current.as_mut().expect("no current page").tag = tag;
+        let offset = self.tag_offset;
+        let page = self.current.as_mut().expect("no current page");
+        page.tag = tag.filter(|_| !page.fill).map(|t| t + offset);
+    }
+
+    fn deferred(&mut self, key: &str, x: f64, y: f64, width: f64, height: f64, depth: f64) {
+        let (chunk, page) = (self.chunks, self.pages.len());
+        self.deferred.push(DeferredSlot { chunk, key: key.to_string(), page, x, y, width, height, depth, fill: None });
     }
 
     fn frame_outline(&mut self, frame: &rile::frame::FrameGeometry) {
@@ -1206,9 +1437,14 @@ fn write_font(
     let (raw_data, face_index) = entry.face.raw_data();
     let variations: Vec<(subsetter::Tag, f32)> =
         entry.variations.iter().map(|(tag, v)| (subsetter::Tag::new(tag), *v)).collect();
-    // Content streams address glyphs by their id in the subset, so the
-    // embedded font is always the subset and CIDs are its glyph ids.
-    let font_data = subsetter::subset_with_variations(raw_data, face_index, &variations, &entry.remapper)
+    // Content streams show glyphs by their id in the font. The subset
+    // numbers them in order; a TrueType font maps CIDs to its glyphs with
+    // `CIDToGIDMap`, while the charset of the bare CFF font program that
+    // is embedded gives each glyph its original id as its CID (viewers
+    // don't read the charset of a CFF font wrapped as OpenType).
+    let glyphs: Vec<u16> = entry.glyphs.iter().copied().collect();
+    let remapper = subsetter::GlyphRemapper::new_from_glyphs_sorted(&glyphs);
+    let font_data = subsetter::subset_with_variations(raw_data, face_index, &variations, &remapper)
         .map_err(|e| PdfError::Font(format!("{}: {e:?}", entry.pdf_name)))?;
     let subset = ttf_parser::Face::parse(&font_data, 0).map_err(|e| PdfError::Font(format!("{}: {e}", entry.pdf_name)))?;
     let cff = subset.tables().cff.is_some();
@@ -1216,11 +1452,11 @@ fn write_font(
     let face = ttf_parser::Face::parse(raw_data, face_index).map_err(|e| PdfError::Font(format!("{}: {e}", entry.pdf_name)))?;
     let base_name = subset_name(&face, &entry.pdf_name, &font_data);
 
-    let font_bytes = if compress {
-        compress_data(&font_data)
-    } else {
-        font_data.clone()
+    let program = match subset.raw_face().table(ttf_parser::Tag::from_bytes(b"CFF ")) {
+        Some(table) if cff => table,
+        _ => &font_data,
     };
+    let font_bytes = if compress { compress_data(program) } else { program.to_vec() };
 
     let mut type0 = pdf.type0_font(refs.type0);
     type0.base_font(Name(base_name.as_bytes()));
@@ -1239,16 +1475,37 @@ fn write_font(
     });
     cid.font_descriptor(refs.descriptor);
     if !cff {
-        cid.cid_to_gid_map_predefined(Name(b"Identity"));
+        cid.cid_to_gid_map_stream(refs.cid_to_gid_map);
     }
     cid.default_width(0.0);
+    let subset_id = |gid: u16| remapper.get(gid).expect("glyph in subset");
+    let advance = |gid: u16| subset.glyph_hor_advance(ttf_parser::GlyphId(subset_id(gid))).unwrap_or(0) as f32 * scale;
     let mut widths = cid.widths();
-    for g in 0..subset.number_of_glyphs() {
-        let advance = subset.glyph_hor_advance(ttf_parser::GlyphId(g)).unwrap_or(0);
-        widths.same(g, g, advance as f32 * scale);
+    let mut run = glyphs.iter().peekable();
+    while let Some(&first) = run.next() {
+        let mut advances = vec![advance(first)];
+        while let Some(&&next) = run.peek().filter(|&&&g| g as usize == first as usize + advances.len()) {
+            advances.push(advance(next));
+            run.next();
+        }
+        widths.consecutive(first, advances);
     }
     widths.finish();
     cid.finish();
+
+    if !cff {
+        let last = glyphs.last().copied().unwrap_or(0) as usize;
+        let mut map = vec![0u8; 2 * (last + 1)];
+        for &gid in &glyphs {
+            map[2 * gid as usize..][..2].copy_from_slice(&subset_id(gid).to_be_bytes());
+        }
+        let map = if compress { compress_data(&map) } else { map };
+        let mut stream = pdf.stream(refs.cid_to_gid_map, &map);
+        if compress {
+            stream.filter(Filter::FlateDecode);
+        }
+        stream.finish();
+    }
 
     let bbox = face.global_bounding_box();
     let italic_angle = face.italic_angle();
@@ -1287,7 +1544,7 @@ fn write_font(
         stream.filter(Filter::FlateDecode);
     }
     if cff {
-        stream.pair(Name(b"Subtype"), Name(b"OpenType"));
+        stream.pair(Name(b"Subtype"), Name(b"CIDFontType0C"));
     } else {
         stream.pair(Name(b"Length1"), font_data.len() as i32);
     }
@@ -2121,12 +2378,41 @@ mod tests {
     }
 
     #[test]
-    fn cff_fonts_embed_as_opentype() {
+    fn content_streams_do_not_depend_on_the_order_pages_are_rendered_in() {
+        use rile_pages::DocumentBuilder;
+        use rile::font::FontSpec;
+        use rile::frame::PaperSize;
+        let mut doc = DocumentBuilder::new(PaperSize::A5);
+        doc.load_fonts_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts"));
+        doc.set_font_spec(FontSpec { family: Some("Libertinus Mono".into()), ..Default::default() }).unwrap();
+        doc.add_text("Zebras quiz the jury");
+        doc.new_paragraph().unwrap();
+        doc.add_page_break().unwrap();
+        doc.add_text("Waxy and vexing");
+        doc.new_paragraph().unwrap();
+        let layout = doc.lay_out().unwrap();
+        assert_eq!(layout.pages.len(), 2);
+        let render = |pages: &[rile::pagebuilder::Page]| {
+            let mut out = PdfOutputter::new(Metadata::default(), PdfOptions { compress: false, ..Default::default() });
+            for (name, face, variations) in layout.fonts() {
+                out.register_font(name, Arc::clone(face), variations);
+            }
+            out.render_pages(pages);
+            out.pages.into_iter().map(|p| p.content).collect::<Vec<_>>()
+        };
+        let forwards = render(&layout.pages);
+        let mut backwards = render(&[layout.pages[1].clone(), layout.pages[0].clone()]);
+        backwards.reverse();
+        assert_eq!(forwards, backwards);
+    }
+
+    #[test]
+    fn cff_fonts_embed_as_bare_cff() {
         let pdf = render_with_test_fonts(&[("Libertinus Mono", "")]);
         let text = String::from_utf8_lossy(&pdf);
         assert!(text.contains("/CIDFontType0"));
         assert!(text.contains("/FontFile3"));
-        assert!(text.contains("/Subtype /OpenType"));
+        assert!(text.contains("/Subtype /CIDFontType0C"));
         assert!(!text.contains("/CIDToGIDMap"));
         assert!(text.contains("+LibertinusMono-Regular"));
     }
