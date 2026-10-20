@@ -46,6 +46,10 @@ Patterns are SILE's copies of hyph-utf8's (and a few others), converted to `rile
 
 `rile/src/math` ports SILE's math package. Formulas are a typed `MathNode` tree; `TexMath` parses SILE's TeX-like syntax into it and `mathml::Element` converts MathML (the parity driver uses this for `\mathml`). `Arranger::add_math` sets a formula inline or displayed. The operator dictionary `rile/math/operators.txt` is generated from SILE's by `scripts/import-sile-math.py <sile checkout>`.
 
+## Deferred content and parallel chunks
+
+A deferred box (`Ink::Deferred`, `Typesetter::add_deferred`) is a rigid box whose content is set after layout: a `Fill` shaped by rile (`Galley::take_fill`), never text handed to a renderer. `Layout::fill` fills it in the layout; `rile_pdf::Assembler` puts several layouts into one PDF, renders them on the threads that laid them out (`RenderedLayout`), starts every chunk on an odd page, and fills boxes before `finish`. `Folio::deferred` makes a document's folios such boxes. Content streams use the fonts' own glyph ids as CIDs so pages are independent of render order; the CFF charset that keeps those ids is subsetter's `CidMapping::OriginalGlyphId`, taken from Michael's fork through `[patch.crates-io]` until upstream releases it (a published rile-pdf needs that release). `rile-pdf/examples/parallel_book.rs` is the example and the timing.
+
 ## Tagged PDF
 
 `Typesetter::set_tagged` records the document's structure (`rile/src/structure.rs`, SILE's `pdfstructure`): every NNode and inked HBox carries the tag of the structure element it belongs to, and `rile-pdf` wraps content in marked content, untagged content being artifacts. Text opens paragraphs on its own; classes, lists, links, the TOC, images and math tag themselves. Page furniture (folios, running heads) is set inside `untagged`. Check output with veraPDF's PDF/UA-1 profile (`greenfield-apps` from Maven Central; software.verapdf.org is blocked).

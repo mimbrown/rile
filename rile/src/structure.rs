@@ -241,6 +241,33 @@ impl StructTree {
         self.close_auto(&[Auto::Paragraph]);
     }
 
+    /// Add `other`'s elements and tags after this tree's, its document's
+    /// content becoming this document's, and return what was added to its
+    /// tags to make them this tree's.
+    pub fn append(&mut self, other: StructTree) -> u32 {
+        let tags = self.owners.len() as u32;
+        let elements = self.elements.len() - 1;
+        let element = |e: usize| if e == 0 { 0 } else { e + elements };
+        let kid = |kid: StructKid| match kid {
+            StructKid::Content(tag) => StructKid::Content(tag + tags),
+            StructKid::Element(e) => StructKid::Element(element(e)),
+        };
+        let lang = (other.lang() != self.lang()).then(|| other.lang().to_string());
+        let mut others = other.elements.into_iter();
+        let root = others.next().expect("document");
+        self.elements[0].kids.extend(root.kids.into_iter().map(kid));
+        for mut e in others {
+            if e.parent == Some(0) && e.lang.is_none() {
+                e.lang.clone_from(&lang);
+            }
+            e.parent = e.parent.map(element);
+            e.kids = e.kids.into_iter().map(kid).collect();
+            self.elements.push(e);
+        }
+        self.owners.extend(other.owners.into_iter().map(element));
+        tags
+    }
+
     /// The tag for content in `lang` added now.
     pub fn tag(&mut self, lang: &str) -> u32 {
         if self.top().auto == Some(Auto::Language) && self.effective_lang(self.current()) != lang {
@@ -453,5 +480,26 @@ mod tests {
         let p = tree.owner(item);
         assert_eq!(tree.elements[p].role, Role::P);
         assert_eq!(tree.elements[tree.elements[p].parent.unwrap()].role, Role::LBody);
+    }
+
+    #[test]
+    fn an_appended_tree_follows_under_the_same_document() {
+        let mut first = StructTree::new("en");
+        first.begin(Role::H1, "en");
+        first.tag("en");
+        first.end();
+        let mut second = StructTree::new("fr");
+        second.begin(Role::H1, "fr");
+        let heading = second.tag("fr");
+        second.end();
+        let body = second.tag("fr");
+        let offset = first.append(second);
+        assert_eq!(offset, 1);
+        assert_eq!(kids(&first, 0), ["H1", "H1", "P"]);
+        let h1 = first.owner(heading + offset);
+        assert_eq!((first.elements[h1].role, first.elements[h1].parent), (Role::H1, Some(0)));
+        assert_eq!(first.elements[h1].lang.as_deref(), Some("fr"));
+        assert_eq!(kids(&first, h1), [format!("#{}", heading + offset)]);
+        assert_eq!(first.elements[first.owner(body + offset)].role, Role::P);
     }
 }

@@ -11,6 +11,8 @@ use rile::font::{FontSpec, FontStyle, FontWeight};
 use crate::framespec::FrameSpec;
 use rile::frame::FrameDirection;
 use rile::length::Length;
+use rile::node::{HBox, Node};
+use rile::pagebuilder::Underlay;
 use rile::structure::Role;
 
 /// The frames of a page and the one content starts in.
@@ -68,12 +70,23 @@ pub struct Folio {
     pub display: String,
     pub state: FolioState,
     pub frame: String,
+    /// Set a deferred box as wide as the frame, named by [`folio_key`], in
+    /// place of the number: for a chunk of a longer document, such as a
+    /// chapter laid out on its own, whose page numbers are known once
+    /// the chunks are put together.
+    pub deferred: bool,
 }
 
 impl Default for Folio {
     fn default() -> Self {
-        Self { value: 1, display: "arabic".to_string(), state: FolioState::On, frame: "folio".to_string() }
+        Self { value: 1, display: "arabic".to_string(), state: FolioState::On, frame: "folio".to_string(), deferred: false }
     }
+}
+
+/// The key of the deferred folio on the page numbered `page`, counting
+/// from 1, of a document whose `Folio::deferred` is set.
+pub fn folio_key(page: usize) -> String {
+    format!("folio:{page}")
 }
 
 impl Folio {
@@ -85,6 +98,19 @@ impl Folio {
         match self.state {
             FolioState::OffThisPage => self.state = FolioState::On,
             FolioState::Off => {}
+            FolioState::On if self.deferred => {
+                let Some(frame) = doc.frame(&self.frame).cloned() else { return Ok(()) };
+                let saved = doc.settings().clone();
+                doc.use_toplevel().start_hbox().add_text("0123456789");
+                let digits = doc.make_hbox();
+                doc.restore_settings(saved);
+                let digits = digits?;
+                let height = digits.height.length.to_pt().unwrap_or(0.0);
+                let deferred = HBox::deferred(folio_key(doc.page_number()), frame.width(), height, digits.depth.length.to_pt().unwrap_or(0.0));
+                let mut folio = HBox::new(deferred.width, deferred.height, deferred.depth);
+                folio.nodes.push(Node::HBox(deferred));
+                doc.add_overlay(Underlay::Box(folio, [frame.left, frame.top + height]))?;
+            }
             FolioState::On => {
                 let text = self.number().to_string();
                 doc.typeset_into(&self.frame, |d| {

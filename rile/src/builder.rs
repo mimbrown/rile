@@ -76,6 +76,7 @@ impl From<FontError> for BuilderError {
 // FontEntry (internal)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct RegisteredFont {
     spec: FontSpec,
     face: Arc<FontFace>,
@@ -434,6 +435,47 @@ impl Layout {
         self.structure.as_ref()
     }
 
+    /// Give every deferred box named `key` the content of `fill`, returning
+    /// how many there were.
+    pub fn fill(&mut self, key: &str, fill: &Fill) -> usize {
+        fn walk(nodes: &mut [Node], key: &str, fill: &[Node]) -> usize {
+            nodes
+                .iter_mut()
+                .map(|node| match node {
+                    Node::VBox(vbox) => walk(&mut vbox.nodes, key, fill),
+                    Node::HBox(hbox) => walk_box(hbox, key, fill),
+                    _ => 0,
+                })
+                .sum()
+        }
+        fn walk_box(hbox: &mut node::HBox, key: &str, fill: &[Node]) -> usize {
+            match &hbox.ink {
+                Some(Ink::Deferred(k)) if k == key => {
+                    hbox.nodes = fill.to_vec();
+                    1
+                }
+                _ => walk(&mut hbox.nodes, key, fill),
+            }
+        }
+        let mut filled = 0;
+        for page in &mut self.pages {
+            for (_, nodes) in &mut page.content {
+                filled += walk(nodes, key, &fill.nodes);
+            }
+            for decoration in page.underlay.iter_mut().chain(&mut page.overlay) {
+                if let pagebuilder::Underlay::Box(hbox, _) = decoration {
+                    filled += walk_box(hbox, key, &fill.nodes);
+                }
+            }
+        }
+        if filled > 0 {
+            for (name, font) in &fill.fonts {
+                self.fonts.entry(name.clone()).or_insert_with(|| font.clone());
+            }
+        }
+        filled
+    }
+
     /// Describe the layout as text, one node a line.
     // SILE: the debug outputter's format, as in its tests' expectations.
     pub fn render_debug(&self) -> String {
@@ -443,6 +485,22 @@ impl Layout {
         }
         crate::render::draw_pages(&self.pages, &mut trace);
         trace.finish()
+    }
+}
+
+/// Content for deferred boxes (`Typesetter::add_deferred`), set once the
+/// document is laid out: a vertical list, usually of one line, and the
+/// fonts it is drawn in. `Galley::take_fill` makes one.
+#[derive(Clone)]
+pub struct Fill {
+    pub nodes: Vec<Node>,
+    fonts: BTreeMap<String, RegisteredFont>,
+}
+
+impl Fill {
+    /// The fonts the fill's glyphs are set in, as `Layout::fonts` gives them.
+    pub fn fonts(&self) -> impl Iterator<Item = (&str, &Arc<FontFace>, Variations)> {
+        self.fonts.iter().map(|(name, entry)| (name.as_str(), &entry.face, entry.face.variations(&entry.spec)))
     }
 }
 
@@ -1657,6 +1715,13 @@ impl Typesetter {
     pub fn add_node(&mut self, node: Node) -> &mut Self {
         self.push_inline(Inline::Node(Box::new(node)));
         self
+    }
+
+    /// Keep a box of this size, named `key`, for content set once the
+    /// document is laid out (a `Fill`). Lines and pages treat it as a box
+    /// of fixed size; the fill doesn't move anything else.
+    pub fn add_deferred(&mut self, key: impl Into<String>, width: f64, height: f64, depth: f64) -> &mut Self {
+        self.add_node(Node::HBox(node::HBox::deferred(key, width, height, depth)))
     }
 
     /// A paragraph opens with a zero box and its indent.
