@@ -1,8 +1,9 @@
 //! Draws a `Layout` as SVG: one standalone document per page (or galley
 //! surface), glyphs as outlines from the fonts themselves.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use rile::builder::Layout;
@@ -23,8 +24,66 @@ pub fn render(layout: &Layout) -> Vec<String> {
     canvas.pages
 }
 
+/// Glyph outlines and images shared by the pages drawn with it, so each
+/// page refers to them instead of carrying its own copies. Ids depend only
+/// on the font data, its variations and the glyph (or the image data), so a
+/// sheet kept across layouts gives a glyph the same id every time.
 #[derive(Default)]
-struct SvgCanvas {
+pub struct Sheet {
+    glyphs: HashMap<(u64, String, u16), Option<usize>>,
+    images: HashMap<u64, usize>,
+    defs: String,
+}
+
+impl Sheet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every page of `layout` as an SVG document whose glyphs and images
+    /// are `<use>`s of this sheet's ids. The pages show only where the
+    /// sheet's definitions are in the same document, as when both are
+    /// inlined into one HTML page.
+    pub fn render(&mut self, layout: &Layout) -> Vec<String> {
+        let mut fingerprints = HashMap::new();
+        let fonts = layout.fonts().map(|(key, face, variations)| (key.to_string(), (Arc::clone(face), variations))).collect::<BTreeMap<_, _>>();
+        let keys = fonts
+            .iter()
+            .map(|(key, (face, variations))| {
+                let print = *fingerprints.entry(Arc::as_ptr(face)).or_insert_with(|| fingerprint(face.raw_data()));
+                (key.clone(), (print, format!("{variations:?}")))
+            })
+            .collect();
+        let mut canvas = SvgCanvas { fonts, shared: Some(Shared { sheet: self, keys }), ..Default::default() };
+        draw_pages(&layout.pages, &mut canvas);
+        canvas.pages
+    }
+
+    /// The definitions so far, as an SVG document drawing nothing.
+    pub fn to_svg(&self) -> String {
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"0\" height=\"0\" style=\"position:absolute\"><defs>{}</defs></svg>\n",
+            self.defs
+        )
+    }
+}
+
+fn fingerprint((data, index): (&[u8], u32)) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    index.hash(&mut hasher);
+    hasher.finish()
+}
+
+struct Shared<'a> {
+    sheet: &'a mut Sheet,
+    /// Each font key's data fingerprint and variations.
+    keys: HashMap<String, (u64, String)>,
+}
+
+#[derive(Default)]
+struct SvgCanvas<'a> {
+    shared: Option<Shared<'a>>,
     fonts: BTreeMap<String, (Arc<FontFace>, Variations)>,
     /// Outlines drawn on the current page, by font key and glyph, with
     /// their ids.
@@ -35,22 +94,29 @@ struct SvgCanvas {
     pages: Vec<String>,
 }
 
-impl SvgCanvas {
+impl SvgCanvas<'_> {
     fn glyph_id(&mut self, font_key: &str, gid: u16) -> Option<usize> {
+        if let Some(shared) = &mut self.shared {
+            let (print, variations) = shared.keys.get(font_key)?;
+            let key = (*print, variations.clone(), gid);
+            if let Some(id) = shared.sheet.glyphs.get(&key) {
+                return *id;
+            }
+            let id = outline(&self.fonts, font_key, gid).map(|path| {
+                let id = shared.sheet.glyphs.len();
+                let _ = write!(shared.sheet.defs, "<path id=\"g{id}\" d=\"{path}\"/>");
+                id
+            });
+            shared.sheet.glyphs.insert(key, id);
+            return id;
+        }
         if let Some(id) = self.glyphs.get(&(font_key.to_string(), gid)) {
             return *id;
         }
-        let id = self.fonts.get(font_key).and_then(|(face, variations)| {
-            let (data, index) = face.raw_data();
-            let mut face = ttf_parser::Face::parse(data, index).ok()?;
-            for (tag, value) in variations {
-                face.set_variation(ttf_parser::Tag::from_bytes(tag), *value);
-            }
-            let mut path = PathBuilder(String::new());
-            face.outline_glyph(ttf_parser::GlyphId(gid), &mut path)?;
+        let id = outline(&self.fonts, font_key, gid).map(|path| {
             let id = self.glyphs.len();
-            let _ = write!(self.defs, "<path id=\"g{id}\" d=\"{}\"/>", path.0);
-            Some(id)
+            let _ = write!(self.defs, "<path id=\"g{id}\" d=\"{path}\"/>");
+            id
         });
         self.glyphs.insert((font_key.to_string(), gid), id);
         id
@@ -76,7 +142,19 @@ impl SvgCanvas {
     }
 }
 
-impl Canvas for SvgCanvas {
+fn outline(fonts: &BTreeMap<String, (Arc<FontFace>, Variations)>, font_key: &str, gid: u16) -> Option<String> {
+    let (face, variations) = fonts.get(font_key)?;
+    let (data, index) = face.raw_data();
+    let mut face = ttf_parser::Face::parse(data, index).ok()?;
+    for (tag, value) in variations {
+        face.set_variation(ttf_parser::Tag::from_bytes(tag), *value);
+    }
+    let mut path = PathBuilder(String::new());
+    face.outline_glyph(ttf_parser::GlyphId(gid), &mut path)?;
+    Some(path.0)
+}
+
+impl Canvas for SvgCanvas<'_> {
     fn begin_page(&mut self, width: f64, height: f64) {
         self.size = (width, height);
         self.glyphs.clear();
@@ -160,6 +238,28 @@ impl Canvas for SvgCanvas {
             // SVG has no way to show a PDF page.
             ImageFormat::Pdf => return,
         };
+        if let Some(shared) = &mut self.shared {
+            let mut hasher = DefaultHasher::new();
+            image.data.hash(&mut hasher);
+            let next = shared.sheet.images.len();
+            let id = *shared.sheet.images.entry(hasher.finish()).or_insert_with(|| {
+                let _ = write!(
+                    shared.sheet.defs,
+                    "<image id=\"i{next}\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" xlink:href=\"data:{mime};base64,{}\"/>",
+                    base64(&image.data)
+                );
+                next
+            });
+            let _ = write!(
+                self.body,
+                "<use xlink:href=\"#i{id}\" transform=\"matrix({} 0 0 {} {} {})\"/>",
+                num(width),
+                num(height),
+                num(x),
+                num(y)
+            );
+            return;
+        }
         let _ = write!(
             self.body,
             "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" xlink:href=\"data:{mime};base64,{}\"/>",
