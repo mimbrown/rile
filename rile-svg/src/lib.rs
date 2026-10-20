@@ -30,7 +30,9 @@ pub fn render(layout: &Layout) -> Vec<String> {
 /// sheet kept across layouts gives a glyph the same id every time.
 #[derive(Default)]
 pub struct Sheet {
-    glyphs: HashMap<(u64, String, u16), Option<usize>>,
+    /// Each font, by its data's fingerprint and its variations.
+    fonts: HashMap<(u64, String), u32>,
+    glyphs: HashMap<(u32, u16), Option<usize>>,
     images: HashMap<u64, usize>,
     defs: String,
 }
@@ -51,10 +53,12 @@ impl Sheet {
             .iter()
             .map(|(key, (face, variations))| {
                 let print = *fingerprints.entry(Arc::as_ptr(face)).or_insert_with(|| fingerprint(face.raw_data()));
-                (key.clone(), (print, format!("{variations:?}")))
+                let next = self.fonts.len() as u32;
+                (key.clone(), *self.fonts.entry((print, format!("{variations:?}"))).or_insert(next))
             })
             .collect();
-        let mut canvas = SvgCanvas { fonts, shared: Some(Shared { sheet: self, keys }), ..Default::default() };
+        let mut canvas =
+            SvgCanvas { fonts, shared: Some(Shared { sheet: self, keys, images: HashMap::new() }), ..Default::default() };
         draw_pages(&layout.pages, &mut canvas);
         canvas.pages
     }
@@ -77,8 +81,11 @@ fn fingerprint((data, index): (&[u8], u32)) -> u64 {
 
 struct Shared<'a> {
     sheet: &'a mut Sheet,
-    /// Each font key's data fingerprint and variations.
-    keys: HashMap<String, (u64, String)>,
+    /// Each font key's font in the sheet.
+    keys: HashMap<String, u32>,
+    /// The sheet's id for each image drawn so far, by its data's address:
+    /// hashing the data is left to the first time an image is drawn.
+    images: HashMap<*const Vec<u8>, usize>,
 }
 
 #[derive(Default)]
@@ -97,8 +104,7 @@ struct SvgCanvas<'a> {
 impl SvgCanvas<'_> {
     fn glyph_id(&mut self, font_key: &str, gid: u16) -> Option<usize> {
         if let Some(shared) = &mut self.shared {
-            let (print, variations) = shared.keys.get(font_key)?;
-            let key = (*print, variations.clone(), gid);
+            let key = (*shared.keys.get(font_key)?, gid);
             if let Some(id) = shared.sheet.glyphs.get(&key) {
                 return *id;
             }
@@ -239,16 +245,19 @@ impl Canvas for SvgCanvas<'_> {
             ImageFormat::Pdf => return,
         };
         if let Some(shared) = &mut self.shared {
-            let mut hasher = DefaultHasher::new();
-            image.data.hash(&mut hasher);
-            let next = shared.sheet.images.len();
-            let id = *shared.sheet.images.entry(hasher.finish()).or_insert_with(|| {
-                let _ = write!(
-                    shared.sheet.defs,
-                    "<image id=\"i{next}\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" xlink:href=\"data:{mime};base64,{}\"/>",
-                    base64(&image.data)
-                );
-                next
+            let sheet = &mut *shared.sheet;
+            let id = *shared.images.entry(Arc::as_ptr(&image.data)).or_insert_with(|| {
+                let mut hasher = DefaultHasher::new();
+                image.data.hash(&mut hasher);
+                let next = sheet.images.len();
+                *sheet.images.entry(hasher.finish()).or_insert_with(|| {
+                    let _ = write!(
+                        sheet.defs,
+                        "<image id=\"i{next}\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" xlink:href=\"data:{mime};base64,{}\"/>",
+                        base64(&image.data)
+                    );
+                    next
+                })
             });
             let _ = write!(
                 self.body,
