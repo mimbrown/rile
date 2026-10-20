@@ -45,3 +45,31 @@ fn pages_become_one_svg_each() {
     assert_eq!(svgs.len(), 2);
     assert!(svgs[1].contains("<rect x="));
 }
+
+#[test]
+fn a_sheet_holds_the_glyphs_of_every_layout_drawn_with_it() {
+    let lay_out = |text: &str| {
+        let mut g = Galley::new(Some(150.0));
+        with_font(&mut g);
+        g.add_text(text);
+        g.lay_out().unwrap()
+    };
+    let mut sheet = rile_svg::Sheet::new();
+    let first = sheet.render(&lay_out("ab"));
+    assert!(!first[0].contains("<defs>"), "{}", first[0]);
+    let defs = sheet.to_svg();
+    assert_eq!(defs.matches("<path id=").count(), 2, "{defs}");
+
+    // A new layout, with its own fonts, reuses the ids it shares with the first.
+    let second = sheet.render(&lay_out("ba"));
+    assert_eq!(sheet.to_svg(), defs);
+    let uses = |svg: &str| {
+        let mut ids: Vec<_> = svg.split("xlink:href=\"#").skip(1).map(|s| s.split('"').next().unwrap().to_string()).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(uses(&first[0]), uses(&second[0]));
+
+    sheet.render(&lay_out("c"));
+    assert_eq!(sheet.to_svg().matches("<path id=").count(), 3);
+}
